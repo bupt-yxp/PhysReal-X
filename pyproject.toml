@@ -1,0 +1,116 @@
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "physreal-x"
+dynamic = ["version"]
+description = "A contract-first platform for reproducible embodied-AI simulation and data generation."
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+  { name = "PhysReal-X Contributors" },
+]
+keywords = ["embodied-ai", "robotics", "simulation", "synthetic-data"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Typing :: Typed",
+]
+dependencies = [
+  "pydantic>=2.9,<3",
+  "PyYAML>=6.0.2,<7",
+]
+
+[project.optional-dependencies]
+train = [
+  "numpy>=1.26,<3",
+  "safetensors>=0.4.5,<1",
+]
+dev = [
+  "build>=1.2.2,<2",
+  "mypy>=1.13,<2",
+  "pytest>=8.3,<9",
+  "pytest-cov>=6,<7",
+  "ruff>=0.8,<1",
+  "twine>=6,<7",
+]
+
+[project.scripts]
+physrealx = "physrealx.cli:main"
+
+[tool.hatch.version]
+path = "src/physrealx/__init__.py"
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/src",
+  "/tests",
+  "/LICENSE",
+  "/README.md",
+  "/docs",
+  "/environment.yml",
+  "/pyproject.toml",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/physrealx"]
+
+[tool.pytest.ini_options]
+addopts = [
+  "--strict-config",
+  "--strict-markers",
+  "-ra",
+]
+testpaths = ["tests"]
+markers = [
+  "gpu: requires a CUDA-capable GPU and the project's cu121 PyTorch environment",
+  "integration: exercises more than one platform component",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["physrealx"]
+
+[tool.coverage.report]
+exclude_also = [
+  "if TYPE_CHECKING:",
+  "if __name__ == .__main__.:",
+  "raise NotImplementedError",
+]
+show_missing = true
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["B", "E", "F", "I", "RUF", "SIM", "UP"]
+ignore = ["B008"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["physrealx"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src/physrealx"]
+strict = true
+plugins = ["pydantic.mypy"]
+warn_unreachable = true
+pretty = true
+
+[[tool.mypy.overrides]]
+module = "yaml.*"
+ignore_missing_imports = true

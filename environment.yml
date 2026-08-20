@@ -1,0 +1,12 @@
+name: PhysReal-X
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11.15
+  - pip>=24.3
+  - pip:
+      # The exact local version ensures this resolves from PyTorch's cu121 index,
+      # while the default PyPI index remains available for the project dependencies.
+      - --extra-index-url https://download.pytorch.org/whl/cu121
+      - torch==2.5.1+cu121
+      - -e .[dev,train]

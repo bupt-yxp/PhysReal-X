@@ -1,0 +1,35 @@
+# Python caches and tooling
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Packaging and local environments
+build/
+dist/
+*.egg-info/
+.venv/
+venv/
+.conda/
+.wheel-smoke/
+
+# Editors and operating systems
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Local configuration and generated platform state
+.physrealx/
+.env
+.env.*
+!.env.example
+/artifacts/
+/data/
+/logs/
+/runs/
