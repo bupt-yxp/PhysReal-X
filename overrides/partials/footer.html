@@ -1,0 +1,53 @@
+<footer class="md-footer prx-footer">
+  {% if "navigation.footer" in features and (page.previous_page or page.next_page) %}
+    {% if page.meta and page.meta.hide %}
+      {% set hidden = "hidden" if "footer" in page.meta.hide %}
+    {% endif %}
+    <nav class="prx-footer__pager{% if not page.previous_page or not page.next_page %} prx-footer__pager--single{% endif %} md-grid" aria-label="{{ lang.t('footer') }}" {{ hidden }}>
+      {% if page.previous_page %}
+        <a href="{{ page.previous_page.url | url }}" class="prx-footer__page prx-footer__page--prev" aria-label="上一篇：{{ page.previous_page.title | e }}">
+          <span aria-hidden="true">←</span>
+          <small>上一篇</small>
+          <strong>{{ page.previous_page.title }}</strong>
+        </a>
+      {% endif %}
+      {% if page.next_page %}
+        <a href="{{ page.next_page.url | url }}" class="prx-footer__page prx-footer__page--next" aria-label="下一篇：{{ page.next_page.title | e }}">
+          <span aria-hidden="true">→</span>
+          <small>下一篇</small>
+          <strong>{{ page.next_page.title }}</strong>
+        </a>
+      {% endif %}
+    </nav>
+  {% endif %}
+
+  <div class="prx-footer__main">
+    <div class="prx-footer__grid md-grid">
+      <div class="prx-footer__brand">
+        <a href="{{ config.extra.homepage | d(nav.homepage.url, true) | url }}" aria-label="返回 PhysReal-X 首页">
+          <img src="{{ 'assets/images/physreal-x.png' | url }}" alt="">
+          <strong>PhysReal-X</strong>
+        </a>
+        <p>连接数字孪生、物理仿真、多模态数据与机器人学习的统一平台。</p>
+      </div>
+      <div class="prx-footer__links">
+        <div>
+          <strong>使用平台</strong>
+          <a href="{{ 'getting-started/' | url }}">入门</a>
+          <a href="{{ 'user-guide/' | url }}">用户指南</a>
+          <a href="{{ 'api/' | url }}">API 文档</a>
+        </div>
+        <div>
+          <strong>参与开发</strong>
+          <a href="{{ 'development/' | url }}">开发文档</a>
+          <a href="{{ 'development/plugin-development/' | url }}">扩展协议</a>
+          <a href="{{ config.repo_url }}" target="_blank" rel="noopener">GitHub 仓库</a>
+        </div>
+      </div>
+    </div>
+    <div class="prx-footer__bottom md-grid">
+      <span>{{ config.copyright }}</span>
+      <span>文档内容以中文为准</span>
+    </div>
+  </div>
+</footer>

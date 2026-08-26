@@ -1,6 +1,20 @@
+---
+title: API 总览
+description: PhysReal-X Python SDK 的服务命名空间、公共约定与完整接口入口
+hide:
+  - toc
+---
+
 # API 总览
 
-PhysReal-X 提供一个统一客户端和按领域拆分的服务命名空间。相同 API 可连接本地工作区或远程控制面，业务代码不直接依赖存储、队列、仿真器或机器人运行时。
+<div class="prx-page-lead" markdown>
+
+PhysReal-X 提供统一客户端和按领域拆分的服务命名空间。相同 API 可连接本地工作区或远程控制面，业务代码无需直接依赖存储、队列、仿真器或机器人运行时。
+
+[客户端与公共约定](client.md){ .md-button .md-button--primary }
+[查看领域模型](models.md){ .md-button }
+
+</div>
 
 ## 连接
 
@@ -83,8 +97,11 @@ async with PhysRealX.connect("https://physreal.example.org") as px:
 
 同步与异步版本共享模型、错误与方法语义，不维护两套领域逻辑。
 
-## 下一步
+## 关键参考
 
-- [客户端与公共约定](client.md)
-- [领域模型](models.md)
-- [错误、状态与幂等](errors.md)
+<div class="prx-route-grid">
+  <a class="prx-route-card" href="client/"><strong>客户端与公共约定</strong><span>连接、资源引用、分页、幂等、异步任务和线程安全。</span></a>
+  <a class="prx-route-card" href="models/"><strong>领域模型</strong><span>资产、场景、任务、Episode、数据集、模型和评测对象。</span></a>
+  <a class="prx-route-card" href="plugins/"><strong>扩展协议</strong><span>仿真后端、策略、训练器、资产构建器和机器人协议。</span></a>
+  <a class="prx-route-card" href="errors/"><strong>错误、状态与幂等</strong><span>错误层次、任务状态机、重试语义和一致性保证。</span></a>
+</div>

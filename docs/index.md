@@ -1,94 +1,172 @@
 ---
-title: PhysReal-X 文档
-description: 从真实资产、物理仿真到机器人学习闭环的统一数据与实验平台
+title: PhysReal-X
+description: 连接数字孪生、物理仿真、多模态数据与机器人学习的统一平台
 hide:
+  - navigation
   - toc
+  - footer
 ---
 
-<div class="prx-intro" markdown>
+<div class="prx-home" markdown>
 
-<img src="assets/images/physreal-x.png" alt="PhysReal-X 项目标识">
+<section class="prx-hero" markdown>
 
-<div markdown>
+<div class="prx-hero__copy" markdown>
 
-# 从真实资产，到可复现的机器人学习闭环
+<span class="prx-eyebrow">具身智能数据与实验平台</span>
 
-PhysReal-X 是位于 Isaac Sim、Genesis、MuJoCo 与真实机器人之上的具身智能数据与实验平台。它用统一契约连接数字孪生、场景任务、仿真执行、Episode 数据、策略训练、评测与失败回流。
+# 把真实资产、仿真数据与机器人学习连成一条生产链
 
-[认识平台](getting-started/index.md){ .md-button .md-button--primary }
-[运行完整闭环](getting-started/quickstart.md){ .md-button }
+PhysReal-X 统一管理数字孪生、场景任务、仿真执行、Episode 数据、策略训练、独立评测与真机反馈，让每一次实验都可运行、可追溯、可复现。
 
+<div class="prx-actions" markdown>
+
+[快速开始](getting-started/quickstart.md){ .md-button .md-button--primary }
+[浏览 API](api/index.md){ .md-button }
+
+</div>
+
+<div class="prx-hero__proof" role="list">
+  <div role="listitem"><strong>统一契约</strong><span>资产、任务、数据与模型共享稳定语义</span></div>
+  <div role="listitem"><strong>多后端</strong><span>按能力接入主流仿真器、训练器与机器人</span></div>
+  <div role="listitem"><strong>全血缘</strong><span>版本、摘要、种子、环境与结果完整关联</span></div>
 </div>
 
 </div>
 
-!!! important "先看清平台边界"
-    PhysReal-X **不重新实现物理引擎**，也不把多个论文仓库拼成一个大工程。它定义稳定的数据对象、执行协议和血缘规则，再让仿真器、重建算法、世界模型、训练器与机器人驱动以独立适配器接入。
-
-## 一条完整主链路
-
-<div class="prx-flow">
-  <div class="prx-flow__step"><span class="prx-flow__number">01 · REAL</span><strong>真实采集</strong><small>RGB-D、点云、事件、力觉、机器人状态与标定信息</small></div>
-  <div class="prx-flow__step"><span class="prx-flow__number">02 · ASSET</span><strong>数字孪生</strong><small>Mesh、USD、Gaussian、部件、关节、约束与物性</small></div>
-  <div class="prx-flow__step"><span class="prx-flow__number">03 · SIM</span><strong>场景与仿真</strong><small>任务编排、轨迹、物理执行、随机化与同步渲染</small></div>
-  <div class="prx-flow__step"><span class="prx-flow__number">04 · DATA</span><strong>Episode 数据</strong><small>观测—动作—状态时间线、标签、事件与不可变数据集</small></div>
-  <div class="prx-flow__step"><span class="prx-flow__number">05 · LEARN</span><strong>训练与评测</strong><small>模仿学习、强化学习、VLA、世界模型与独立评测</small></div>
-  <div class="prx-flow__step"><span class="prx-flow__number">06 · REAL</span><strong>真机反馈</strong><small>失败归因、参数校准、缺口定位与定向再生成</small></div>
+<div class="prx-hero__visual" role="img" aria-label="PhysReal-X 连接真实世界、数字孪生、仿真数据和机器人学习">
+  <div class="prx-hero__halo" aria-hidden="true"></div>
+  <img src="assets/images/physreal-x.png" alt="PhysReal-X 项目标识">
+  <div class="prx-hero__node prx-hero__node--asset"><span>01</span>数字孪生</div>
+  <div class="prx-hero__node prx-hero__node--data"><span>02</span>仿真数据</div>
+  <div class="prx-hero__node prx-hero__node--policy"><span>03</span>机器人策略</div>
+  <div class="prx-hero__caption"><strong>一套平台契约</strong><span>贯通本地、集群与真实机器人</span></div>
 </div>
 
-这条链路中，资产、任务、运行、Episode、数据集、模型和评测报告都具有明确版本与摘要。由此可以回答：**用了什么、怎么生成、由谁训练、在哪失败、如何复现。**
+</section>
 
-## 按你的目标阅读
+<nav class="prx-entry-strip" aria-label="文档快捷入口">
+  <a href="getting-started/"><span>01</span><strong>入门</strong><small>安装并完成首个项目</small></a>
+  <a href="user-guide/"><span>02</span><strong>用户指南</strong><small>按工作流使用平台</small></a>
+  <a href="api/"><span>03</span><strong>API 文档</strong><small>查询服务与领域模型</small></a>
+  <a href="development/"><span>04</span><strong>开发</strong><small>实现适配器与扩展能力</small></a>
+</nav>
 
-<div class="grid cards prx-doc-cards" markdown>
+<section class="prx-section">
 
--   :material-map-search-outline:{ .lg .middle } **我要理解这个平台**
+<div class="prx-section__heading">
+  <span>平台能力</span>
+  <h2>覆盖从真实世界到真机反馈的完整链路</h2>
+  <p>每个环节都使用可验证的资源、明确的生命周期和可追溯的输入输出。</p>
+</div>
 
-    ---
+<div class="prx-capability-grid">
+  <a class="prx-capability-card" href="user-guide/assets/">
+    <span class="prx-card-index">01</span>
+    <h3>资产与数字孪生</h3>
+    <p>接入 RGB-D、点云、CAD、Mesh、USD 与 Gaussian，统一描述几何、关节、碰撞、物性和标定。</p>
+    <strong>查看资产工作流 <span aria-hidden="true">→</span></strong>
+  </a>
+  <a class="prx-capability-card" href="user-guide/scenes-and-tasks/">
+    <span class="prx-card-index">02</span>
+    <h3>场景与任务</h3>
+    <p>组合机器人、物体、传感器与环境，声明观测、动作、初始条件、成功条件和随机化空间。</p>
+    <strong>查看场景与任务 <span aria-hidden="true">→</span></strong>
+  </a>
+  <a class="prx-capability-card" href="user-guide/simulation/">
+    <span class="prx-card-index">03</span>
+    <h3>仿真与运行编排</h3>
+    <p>根据能力选择 Isaac Sim、Genesis、MuJoCo 等后端，统一提交、观察、取消、恢复和重试。</p>
+    <strong>查看运行方式 <span aria-hidden="true">→</span></strong>
+  </a>
+  <a class="prx-capability-card" href="user-guide/data-generation/">
+    <span class="prx-card-index">04</span>
+    <h3>多模态数据生成</h3>
+    <p>同步记录图像、深度、点云、接触、力觉、状态与动作，发布经过质量门禁的 Episode。</p>
+    <strong>查看数据生成 <span aria-hidden="true">→</span></strong>
+  </a>
+  <a class="prx-capability-card" href="user-guide/training/">
+    <span class="prx-card-index">05</span>
+    <h3>训练与独立评测</h3>
+    <p>用一致入口组织模仿学习、强化学习、VLA 和世界模型训练，并在冻结矩阵上独立评测。</p>
+    <strong>查看训练流程 <span aria-hidden="true">→</span></strong>
+  </a>
+  <a class="prx-capability-card" href="user-guide/evaluation-and-deployment/">
+    <span class="prx-card-index">06</span>
+    <h3>部署与反馈闭环</h3>
+    <p>记录真机运行与失败证据，定位模型、数据和物理参数缺口，驱动校准与定向数据再生成。</p>
+    <strong>查看闭环方法 <span aria-hidden="true">→</span></strong>
+  </a>
+</div>
 
-    理解平台定位、六项服务、完整业务闭环，以及与底层仿真器的关系。
+</section>
 
-    [阅读平台概览](getting-started/index.md)
+<section class="prx-section prx-section--workflow">
 
--   :material-play-circle-outline:{ .lg .middle } **我要跑通一个完整实验**
+<div class="prx-section__heading">
+  <span>标准工作流</span>
+  <h2>一次定义，贯穿生成、训练与部署</h2>
+  <p>资源在进入运行前解析为精确版本；结果通过质量检查后才发布，失败不会留下可见的半成品。</p>
+</div>
 
-    ---
+<div class="prx-workflow" aria-label="PhysReal-X 标准工作流">
+  <div><span>01</span><strong>注册资产</strong><small>结构、物理与标定</small></div>
+  <div><span>02</span><strong>定义任务</strong><small>观测、动作与目标</small></div>
+  <div><span>03</span><strong>提交运行</strong><small>后端、策略与种子</small></div>
+  <div><span>04</span><strong>发布数据</strong><small>Episode 与数据集</small></div>
+  <div><span>05</span><strong>训练评测</strong><small>模型、指标与失败</small></div>
+  <div><span>06</span><strong>真机回流</strong><small>校准与定向补数</small></div>
+</div>
 
-    从资产注册开始，完成任务编排、数据生成、训练和独立评测。
+</section>
 
-    [阅读用户指南](user-guide/index.md)
+<section class="prx-sdk" markdown>
 
--   :material-puzzle-outline:{ .lg .middle } **我要接入仿真器或算法**
+<div class="prx-sdk__copy" markdown>
 
-    ---
+<span class="prx-eyebrow">统一 Python SDK</span>
 
-    先看扩展协议、能力声明、生命周期、失败隔离和验收门槛。
+## 同一套接口，连接本地工作区与远程平台
 
-    [阅读插件开发](development/plugin-development.md)
+服务按领域组织，业务代码不直接依赖数据库、任务队列或某个仿真器。将端点从本地切换到远程时，资源模型和方法语义保持一致。
 
--   :material-api:{ .lg .middle } **我要查接口**
-
-    ---
-
-    查看应用门面、领域模型、运行时协议和完整服务 API。
-
-    [进入 API 文档](api/index.md)
+[阅读快速开始](getting-started/quickstart.md) · [查看客户端约定](api/client.md)
 
 </div>
 
-## 平台交付面
+<div class="prx-sdk__code" markdown>
 
-| 能力域 | 统一能力 |
-| --- | --- |
-| 领域契约 | 严格、冻结、带 schema 版本的资产、任务、运行、数据集、模型和评测对象 |
-| 资源与制品 | 元数据目录、SHA-256 内容寻址制品、不可变版本和完整血缘 |
-| 仿真执行 | Isaac Sim/Isaac Lab、Genesis、MuJoCo 等后端的统一会话协议与能力匹配 |
-| 多模态数据 | RGB、Depth、Mask、点云、事件、接触、力觉、状态与动作的同步 Episode |
-| 训练 | 模仿学习、强化学习、VLA 与世界模型的一致训练、登记和评测入口 |
-| 真机闭环 | ROS 2 采集与部署、失败归因、物理校准、缺口定位和定向再生成 |
+```python
+from physrealx import PhysRealX
 
-## 为什么先做文档与契约
+px = PhysRealX.connect("local:///.physrealx")
 
-仿真器、数据格式和训练框架变化很快；资产、任务、Episode、血缘和失败语义一旦混乱，任何算法接入都会形成不可维护的耦合。先固定平台语言、对象关系、扩展边界和验收标准，再实现各类生产适配器，是成本最低也最稳健的建设顺序。
+run = px.runs.submit(
+    task="open-drawer@1.0.0",
+    scene="drawer-lab@1.0.0",
+    backend="isaac-sim@5",
+    episodes=100,
+    seed=42,
+)
 
-[查看架构与实施顺序](development/architecture.md){ .md-button .md-button--primary }
+dataset = px.datasets.create_from_run(run.id)
+```
+
+</div>
+
+</section>
+
+<section class="prx-final-cta" markdown>
+
+<span class="prx-eyebrow">开始构建</span>
+
+## 用一个完整项目认识 PhysReal-X
+
+从安装环境开始，注册资产、定义场景任务、生成多模态数据，并把结果交给训练与评测服务。
+
+[安装与环境](getting-started/installation.md){ .md-button }
+[开始第一个项目](getting-started/first-project.md){ .md-button .md-button--primary }
+
+</section>
+
+</div>

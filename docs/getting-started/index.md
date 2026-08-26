@@ -1,8 +1,22 @@
+---
+title: 平台概览
+description: 了解 PhysReal-X 的定位、完整工作流、核心服务与资源模型
+hide:
+  - toc
+---
+
 # 平台概览
+
+<div class="prx-page-lead" markdown>
 
 PhysReal-X 是面向具身智能的**物理可信数据与机器人学习平台**。它将真实资产、数字孪生、场景任务、物理仿真、多模态数据、策略训练、评测部署与真机反馈组织成一条统一流水线。
 
-## 一句话理解
+[安装平台](installation.md){ .md-button .md-button--primary }
+[查看快速开始](quickstart.md){ .md-button }
+
+</div>
+
+## 平台定位
 
 如果 SAPIEN、Genesis、MuJoCo 和 Isaac Sim 主要解决“虚拟世界如何运行”，PhysReal-X 解决的是：
 
@@ -82,10 +96,11 @@ Episode 校验、数据集发布与导出
 
 维护领域契约、运行状态机、制品一致性、调度、权限、可观测性和共享契约测试。
 
-## 推荐阅读顺序
+## 继续阅读
 
-1. [安装与环境](installation.md)
-2. [快速开始](quickstart.md)
-3. [第一个完整项目](first-project.md)
-4. [用户指南](../user-guide/index.md)
-5. [API 文档](../api/index.md)
+<div class="prx-route-grid">
+  <a class="prx-route-card" href="installation/"><strong>安装与环境</strong><span>准备 Python、核心服务、计算工作节点与存储。</span></a>
+  <a class="prx-route-card" href="quickstart/"><strong>快速开始</strong><span>通过 Python SDK 跑通资产、任务、运行、训练和评测。</span></a>
+  <a class="prx-route-card" href="first-project/"><strong>第一个完整项目</strong><span>从项目结构和 YAML 规格开始构建可复现工程。</span></a>
+  <a class="prx-route-card" href="../user-guide/"><strong>用户指南</strong><span>按照真实工作顺序深入使用平台的每项服务。</span></a>
+</div>

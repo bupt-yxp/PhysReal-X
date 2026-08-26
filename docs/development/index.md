@@ -1,6 +1,20 @@
+---
+title: 开发总览
+description: PhysReal-X 的架构边界、扩展协议、数据契约与工程质量规范
+hide:
+  - toc
+---
+
 # 开发总览
 
-PhysReal-X 的开发目标是保持小而稳定的领域核心，同时让数字孪生、仿真、数据、训练、世界模型和机器人能力独立演进。
+<div class="prx-page-lead" markdown>
+
+PhysReal-X 保持小而稳定的领域核心，同时让数字孪生、仿真、数据、训练、世界模型和机器人能力独立演进。扩展从协议和契约开始，不把外部运行时类型带入核心领域。
+
+[阅读架构原则](architecture.md){ .md-button .md-button--primary }
+[开发第一个插件](plugin-development.md){ .md-button }
+
+</div>
 
 ## 依赖方向
 
@@ -12,12 +26,12 @@ PhysReal-X 的开发目标是保持小而稳定的领域核心，同时让数字
 
 ## 开发文档
 
-| 文档 | 内容 |
-| --- | --- |
-| [架构与 SOLID 原则](architecture.md) | 最终平台分层、服务边界、技术路线、研究能力落位和实施顺序 |
-| [数据契约与血缘](data-contracts.md) | 不可变资源、Episode、内容寻址、原子发布和迁移 |
-| [插件开发](plugin-development.md) | 仿真、训练、资产、导出和机器人适配器实现规范 |
-| [测试与质量门禁](testing.md) | 单元、契约、集成、端到端、性能与真机验收 |
+<div class="prx-route-grid">
+  <a class="prx-route-card" href="architecture/"><strong>架构与 SOLID 原则</strong><span>平台分层、服务边界、依赖方向和研究能力落位。</span></a>
+  <a class="prx-route-card" href="data-contracts/"><strong>数据契约与血缘</strong><span>不可变资源、Episode、内容寻址、原子发布和迁移。</span></a>
+  <a class="prx-route-card" href="plugin-development/"><strong>插件开发</strong><span>仿真、训练、资产、导出和机器人适配器实现规范。</span></a>
+  <a class="prx-route-card" href="testing/"><strong>测试与质量门禁</strong><span>单元、契约、集成、端到端、性能与真机验收。</span></a>
+</div>
 
 ## 仓库建议结构
 

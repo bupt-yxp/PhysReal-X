@@ -26,8 +26,6 @@ PhysReal-X 不重复实现物理引擎。SAPIEN、Isaac Sim、Genesis、渲染�
 - **API 文档**：Python SDK、领域模型、扩展协议、CLI、错误和幂等约定。
 - **开发**：架构边界、数据契约、插件开发与质量门禁。
 
-本阶段先固化最终产品的信息架构、资源模型和公共 API；平台实现按这些契约逐层落地。
-
 ## 快速开始
 
 Python 3.11 是推荐开发环境：
@@ -39,7 +37,7 @@ python -m pip install -e '.[dev,docs]'
 physrealx doctor
 ```
 
-最终版 SDK 使用按领域划分的服务接口：
+公共 SDK 使用按领域划分的服务接口：
 
 ```python
 from physrealx import PhysRealX
