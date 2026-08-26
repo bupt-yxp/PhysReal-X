@@ -49,7 +49,7 @@ Episode 校验、数据集发布与导出
 
 | 服务 | 输入 | 输出 |
 | --- | --- | --- |
-| 真实资产接入 | RGB-D、点云、多视角图像、机器人位姿、力觉 | 带标定与血缘的采集数据 |
+| 真实资产接入 | RGB-D、点云、多视角图像、机器人位姿、力觉 | 带标定与来源记录的采集数据 |
 | 数字孪生与资产库 | 采集数据、Mesh、USD、Gaussian、物性测量 | 可交互、可校准、可训练资产 |
 | 场景与任务 | 资产、机器人、语言任务、初始/目标状态 | 场景规格、任务规格、轨迹与随机化计划 |
 | 仿真与数据生成 | 场景、任务、后端、策略、种子 | 同步多模态 Episode 和数据集 |
@@ -62,7 +62,7 @@ Episode 校验、数据集发布与导出
   <div class="prx-layer"><strong>用户入口</strong><span>Python SDK、命令行、远程 API 与 Web 控制台，共享同一应用语义。</span></div>
   <div class="prx-layer"><strong>控制面</strong><span>资源注册、能力匹配、任务编译、运行编排、状态管理、评测与再生成计划。</span></div>
   <div class="prx-layer"><strong>计算面</strong><span>隔离运行重建、仿真、轨迹、训练、世界模型与真实机器人适配器。</span></div>
-  <div class="prx-layer"><strong>数据面</strong><span>保存内容寻址制品、Episode 时间线、数据集、权重、指标与完整血缘。</span></div>
+  <div class="prx-layer"><strong>数据面</strong><span>保存内容寻址制品、Episode 时间线、数据集、权重、指标与完整来源关联。</span></div>
 </div>
 
 ## 核心资源

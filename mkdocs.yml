@@ -13,8 +13,8 @@ theme:
   language: zh
   font: false
   custom_dir: overrides
-  logo: assets/images/physreal-x.png
-  favicon: assets/images/favicon.png
+  logo: assets/images/brand-mark.png
+  favicon: assets/images/favicon-v2.png
   icon:
     repo: fontawesome/brands/github
   palette:
@@ -81,7 +81,7 @@ nav:
   - 开发:
       - 开发总览: development/index.md
       - 架构与 SOLID 原则: development/architecture.md
-      - 数据契约与血缘: development/data-contracts.md
+      - 数据契约与可追溯性: development/data-contracts.md
       - 插件开发: development/plugin-development.md
       - 测试与质量门禁: development/testing.md
 

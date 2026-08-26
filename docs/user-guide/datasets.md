@@ -123,4 +123,4 @@ with px.datasets.open(dataset, split="train", streaming=True) as stream:
 3. 根据保留策略删除无引用派生制品；
 4. 保留必要元数据、摘要和审计记录。
 
-不要直接删除对象存储目录；这会绕过引用检查并破坏历史血缘。
+不要直接删除对象存储目录；这会绕过引用检查并破坏历史来源与版本关系。

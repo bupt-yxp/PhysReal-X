@@ -27,29 +27,29 @@ PhysReal-X 统一管理数字孪生、场景任务、仿真执行、Episode 数�
 </div>
 
 <div class="prx-hero__proof" role="list">
-  <div role="listitem"><strong>统一契约</strong><span>资产、任务、数据与模型共享稳定语义</span></div>
-  <div role="listitem"><strong>多后端</strong><span>按能力接入主流仿真器、训练器与机器人</span></div>
-  <div role="listitem"><strong>全血缘</strong><span>版本、摘要、种子、环境与结果完整关联</span></div>
+  <div role="listitem"><strong>统一契约</strong><span>资产、任务、数据与模型语义一致</span></div>
+  <div role="listitem"><strong>多后端</strong><span>统一接入仿真、训练与机器人后端</span></div>
+  <div role="listitem"><strong>全程可追溯</strong><span>版本、环境、种子与结果完整关联</span></div>
 </div>
 
 </div>
 
-<div class="prx-hero__visual" role="img" aria-label="PhysReal-X 连接真实世界、数字孪生、仿真数据和机器人学习">
+<div class="prx-hero__visual" role="img" aria-label="真实工作站、数字孪生、多模态数据与机器人策略构成闭环">
   <div class="prx-hero__halo" aria-hidden="true"></div>
-  <img src="assets/images/physreal-x.png" alt="PhysReal-X 项目标识">
-  <div class="prx-hero__node prx-hero__node--asset"><span>01</span>数字孪生</div>
-  <div class="prx-hero__node prx-hero__node--data"><span>02</span>仿真数据</div>
-  <div class="prx-hero__node prx-hero__node--policy"><span>03</span>机器人策略</div>
-  <div class="prx-hero__caption"><strong>一套平台契约</strong><span>贯通本地、集群与真实机器人</span></div>
+  <img src="assets/images/hero-platform-loop.webp" alt="机器人工作站经由数字孪生、多模态数据和策略训练形成反馈闭环">
+  <div class="prx-hero__node prx-hero__node--reality"><span>01</span>真实工作站</div>
+  <div class="prx-hero__node prx-hero__node--twin"><span>02</span>数字孪生</div>
+  <div class="prx-hero__node prx-hero__node--data"><span>03</span>多模态数据</div>
+  <div class="prx-hero__node prx-hero__node--policy"><span>04</span>机器人策略</div>
 </div>
 
 </section>
 
 <nav class="prx-entry-strip" aria-label="文档快捷入口">
-  <a href="getting-started/"><span>01</span><strong>入门</strong><small>安装并完成首个项目</small></a>
-  <a href="user-guide/"><span>02</span><strong>用户指南</strong><small>按工作流使用平台</small></a>
-  <a href="api/"><span>03</span><strong>API 文档</strong><small>查询服务与领域模型</small></a>
-  <a href="development/"><span>04</span><strong>开发</strong><small>实现适配器与扩展能力</small></a>
+  <a href="getting-started/"><span>01</span><strong>入门</strong><small>完成安装、环境配置与首个闭环实验</small></a>
+  <a href="user-guide/"><span>02</span><strong>用户指南</strong><small>掌握资产、仿真、数据、训练与部署流程</small></a>
+  <a href="api/"><span>03</span><strong>API 文档</strong><small>查询资源模型、服务方法与错误语义</small></a>
+  <a href="development/"><span>04</span><strong>开发</strong><small>实现后端适配器、扩展协议与质量门禁</small></a>
 </nav>
 
 <section class="prx-section">

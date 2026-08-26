@@ -28,7 +28,7 @@ PhysReal-X 保持小而稳定的领域核心，同时让数字孪生、仿真、
 
 <div class="prx-route-grid">
   <a class="prx-route-card" href="architecture/"><strong>架构与 SOLID 原则</strong><span>平台分层、服务边界、依赖方向和研究能力落位。</span></a>
-  <a class="prx-route-card" href="data-contracts/"><strong>数据契约与血缘</strong><span>不可变资源、Episode、内容寻址、原子发布和迁移。</span></a>
+  <a class="prx-route-card" href="data-contracts/"><strong>数据契约与可追溯性</strong><span>不可变资源、Episode、内容寻址、原子发布和迁移。</span></a>
   <a class="prx-route-card" href="plugin-development/"><strong>插件开发</strong><span>仿真、训练、资产、导出和机器人适配器实现规范。</span></a>
   <a class="prx-route-card" href="testing/"><strong>测试与质量门禁</strong><span>单元、契约、集成、端到端、性能与真机验收。</span></a>
 </div>

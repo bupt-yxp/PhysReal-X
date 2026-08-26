@@ -13,7 +13,7 @@
 | 碰撞 | primitive、凸分解、低模 Mesh 或 SDF |
 | 运动学 | joint type、axis、limits、初始状态、damping 和 drive |
 | 动力学 | mass、center of mass、inertia、friction、restitution、stiffness |
-| 血缘 | 原始采集、构建管线、算法版本、校准数据和摘要 |
+| 来源与版本 | 原始采集、构建管线、算法版本、校准数据和摘要 |
 | 质量 | 几何、穿模、碰撞、稳定性、运动范围和物理一致性报告 |
 
 ## 三种接入方式

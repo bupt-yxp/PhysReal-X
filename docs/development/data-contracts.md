@@ -1,4 +1,4 @@
-# 数据契约与血缘
+# 数据契约与可追溯性
 
 ## 不可变资源
 
@@ -50,7 +50,7 @@ raw episode → align@1.0.0 → window@2.0.0 → normalized training view
 
 内容相同的制品自然去重；内容不同不能占用相同摘要路径。
 
-## 血缘图
+## 可追溯关系图
 
 ```text
 Capture ─→ Asset ─→ Scene ─→ Task ─→ Run ─→ Episode ─→ Dataset

@@ -61,7 +61,7 @@ PoseSpec(
 | 结构 | `tuple[LinkSpec, ...]`, `tuple[JointSpec, ...]` |
 | 表示 | `tuple[GeometrySpec, ...]`, `MaterialSpec`, `CollisionSpec` |
 | 物理 | `tuple[BodyPhysicsSpec, ...]` |
-| 血缘 | `ProvenanceSpec`, `CalibrationRef`, `ValidationReportRef` |
+| 来源与验证 | `ProvenanceSpec`, `CalibrationRef`, `ValidationReportRef` |
 
 ### `JointSpec`
 
@@ -138,7 +138,7 @@ Predicate(
 
 ### `ModelManifest`
 
-包含训练器、数据集/环境血缘、权重、输入输出模式、训练配置、指标、检查点和推理适配器。
+包含训练器、数据集与环境来源、权重、输入输出模式、训练配置、指标、检查点和推理适配器。
 
 ### `EvaluationSpec` / `EvaluationReport`
 
