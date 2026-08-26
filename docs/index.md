@@ -1,6 +1,6 @@
 ---
-title: 用户指南
-description: PhysReal-X 中文用户指南
+title: PhysReal-X 文档
+description: 从真实资产、物理仿真到机器人学习闭环的统一数据与实验平台
 hide:
   - toc
 ---
@@ -11,117 +11,84 @@ hide:
 
 <div markdown>
 
-# PhysReal-X 用户指南
+# 从真实资产，到可复现的机器人学习闭环
 
-PhysReal-X 是位于物理引擎之上的具身智能实验平台。它以统一、不可变的契约连接数字资产、仿真任务、轨迹数据、模型训练和独立评测，使每次实验都可以校验、追溯和复现。
+PhysReal-X 是位于 Isaac Sim、Genesis、MuJoCo 与真实机器人之上的具身智能数据与实验平台。它用统一契约连接数字孪生、场景任务、仿真执行、Episode 数据、策略训练、评测与失败回流。
 
-[快速开始](getting-started/quickstart.md){ .md-button .md-button--primary }
-[安装环境](getting-started/installation.md){ .md-button }
-
-</div>
+[认识平台](getting-started/index.md){ .md-button .md-button--primary }
+[运行完整闭环](getting-started/quickstart.md){ .md-button }
 
 </div>
 
-!!! note "当前版本"
-    `0.1` 已跑通抽屉任务的完整参考闭环：资产与任务注册、确定性数据生成、数据集发布、CUDA 行为克隆训练和新种子评测。尚未通过契约测试的外部仿真器与真实机器人不会被标记为已支持。
+</div>
 
-## 入门
+!!! important "先看清平台边界"
+    PhysReal-X **不重新实现物理引擎**，也不把多个论文仓库拼成一个大工程。它定义稳定的数据对象、执行协议和血缘规则，再让仿真器、重建算法、世界模型、训练器与机器人驱动以独立适配器接入。
+
+## 一条完整主链路
+
+<div class="prx-flow">
+  <div class="prx-flow__step"><span class="prx-flow__number">01 · REAL</span><strong>真实采集</strong><small>RGB-D、点云、事件、力觉、机器人状态与标定信息</small></div>
+  <div class="prx-flow__step"><span class="prx-flow__number">02 · ASSET</span><strong>数字孪生</strong><small>Mesh、USD、Gaussian、部件、关节、约束与物性</small></div>
+  <div class="prx-flow__step"><span class="prx-flow__number">03 · SIM</span><strong>场景与仿真</strong><small>任务编排、轨迹、物理执行、随机化与同步渲染</small></div>
+  <div class="prx-flow__step"><span class="prx-flow__number">04 · DATA</span><strong>Episode 数据</strong><small>观测—动作—状态时间线、标签、事件与不可变数据集</small></div>
+  <div class="prx-flow__step"><span class="prx-flow__number">05 · LEARN</span><strong>训练与评测</strong><small>模仿学习、强化学习、VLA、世界模型与独立评测</small></div>
+  <div class="prx-flow__step"><span class="prx-flow__number">06 · REAL</span><strong>真机反馈</strong><small>失败归因、参数校准、缺口定位与定向再生成</small></div>
+</div>
+
+这条链路中，资产、任务、运行、Episode、数据集、模型和评测报告都具有明确版本与摘要。由此可以回答：**用了什么、怎么生成、由谁训练、在哪失败、如何复现。**
+
+## 按你的目标阅读
 
 <div class="grid cards prx-doc-cards" markdown>
 
--   :material-download:{ .lg .middle } **安装与环境**
+-   :material-map-search-outline:{ .lg .middle } **我要理解这个平台**
 
     ---
 
-    创建 Python 或 Conda 环境，检查可选 CUDA 运行时，并验证安装结果。
+    理解平台定位、六项服务、完整业务闭环，以及与底层仿真器的关系。
 
-    [开始安装](getting-started/installation.md)
+    [阅读平台概览](getting-started/index.md)
 
--   :material-rocket-launch-outline:{ .lg .middle } **快速开始**
+-   :material-play-circle-outline:{ .lg .middle } **我要跑通一个完整实验**
 
     ---
 
-    使用一个命令生成轨迹、训练策略并完成独立评测。
+    从资产注册开始，完成任务编排、数据生成、训练和独立评测。
 
-    [运行参考闭环](getting-started/quickstart.md)
+    [阅读用户指南](user-guide/index.md)
+
+-   :material-puzzle-outline:{ .lg .middle } **我要接入仿真器或算法**
+
+    ---
+
+    先看扩展协议、能力声明、生命周期、失败隔离和验收门槛。
+
+    [阅读插件开发](development/plugin-development.md)
+
+-   :material-api:{ .lg .middle } **我要查接口**
+
+    ---
+
+    查看应用门面、领域模型、运行时协议和完整服务 API。
+
+    [进入 API 文档](api/index.md)
 
 </div>
 
-## 用户指南
+## 平台交付面
 
-<div class="grid cards prx-doc-cards" markdown>
-
--   :material-cube-outline:{ .lg .middle } **资产与任务**
-
-    ---
-
-    了解 `AssetSpec`、`TaskSpec`、信号定义、动作边界和成功条件。
-
-    [定义实验输入](user-guide/assets-and-tasks.md)
-
--   :material-source-branch:{ .lg .middle } **数据生成、训练与评测**
-
-    ---
-
-    从 `RunSpec` 到 `DatasetManifest`、`ModelManifest` 和评测报告。
-
-    [执行完整工作流](user-guide/workflow.md)
-
-</div>
-
-## 核心概念
-
-<div class="grid cards prx-doc-cards" markdown>
-
--   :material-sitemap-outline:{ .lg .middle } **平台架构**
-
-    ---
-
-    理解领域、契约、应用、适配器和用户接口之间的依赖方向。
-
-    [阅读架构说明](ARCHITECTURE.md)
-
--   :material-file-check-outline:{ .lg .middle } **数据契约**
-
-    ---
-
-    理解 Episode 时间语义、内容寻址、版本血缘和原子发布。
-
-    [阅读数据契约](concepts/data-contracts.md)
-
--   :material-puzzle-outline:{ .lg .middle } **插件与适配器**
-
-    ---
-
-    按统一生命周期接入仿真器、策略和训练器。
-
-    [阅读接入规则](concepts/plugins.md)
-
-</div>
-
-## 接口与开发
-
-| 内容 | 适合场景 |
+| 能力域 | 统一能力 |
 | --- | --- |
-| [命令行参考](reference/cli.md) | 初始化工作区、校验规格、运行实验和检查资源 |
-| [Python 接口](reference/python-api.md) | 将平台工作流嵌入研究代码或上层服务 |
-| [开发与测试](development.md) | 修改核心代码、运行质量门禁和构建文档 |
-| [能力边界与路线图](roadmap.md) | 判断当前支持范围以及外部能力接入顺序 |
+| 领域契约 | 严格、冻结、带 schema 版本的资产、任务、运行、数据集、模型和评测对象 |
+| 资源与制品 | 元数据目录、SHA-256 内容寻址制品、不可变版本和完整血缘 |
+| 仿真执行 | Isaac Sim/Isaac Lab、Genesis、MuJoCo 等后端的统一会话协议与能力匹配 |
+| 多模态数据 | RGB、Depth、Mask、点云、事件、接触、力觉、状态与动作的同步 Episode |
+| 训练 | 模仿学习、强化学习、VLA 与世界模型的一致训练、登记和评测入口 |
+| 真机闭环 | ROS 2 采集与部署、失败归因、物理校准、缺口定位和定向再生成 |
 
-## 平台工作流
+## 为什么先做文档与契约
 
-```text
-资产规格 + 任务规格
-        ↓
-解析版本、摘要和随机种子
-        ↓
-仿真后端 + 策略
-        ↓
-Episode → 数据集清单
-        ↓
-训练器 → 模型清单
-        ↓
-独立评测 → 失败案例
-```
+仿真器、数据格式和训练框架变化很快；资产、任务、Episode、血缘和失败语义一旦混乱，任何算法接入都会形成不可维护的耦合。先固定平台语言、对象关系、扩展边界和验收标准，再实现各类生产适配器，是成本最低也最稳健的建设顺序。
 
-平台只负责统一控制面、数据面和验证语义；具体物理计算、视觉重建和机器人控制由通过契约测试的外部适配器负责。
+[查看架构与实施顺序](development/architecture.md){ .md-button .md-button--primary }

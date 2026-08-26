@@ -1,156 +1,105 @@
 # PhysReal-X
 
 [中文文档](https://bupt-yxp.github.io/PhysReal-X/) ·
-[平台架构](https://bupt-yxp.github.io/PhysReal-X/ARCHITECTURE/)
+[快速开始](https://bupt-yxp.github.io/PhysReal-X/getting-started/quickstart/) ·
+[用户指南](https://bupt-yxp.github.io/PhysReal-X/user-guide/) ·
+[API 文档](https://bupt-yxp.github.io/PhysReal-X/api/)
 
-PhysReal-X is a contract-first platform for reproducible embodied-AI data generation and
-robot-learning experiments. It is an orchestration and data system above simulators—not a new
-physics engine.
-
-The detailed platform boundaries and research-method integration order are documented in
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-
-The first release intentionally implements one complete vertical slice:
+PhysReal-X 是面向具身智能的仿真、数据与机器人学习一体化平台。它位于物理仿真器、
+生成式模型和真实机器人之上，通过统一资源模型把以下环节组织成可复现闭环：
 
 ```text
-versioned asset + task
-        ↓
-resolved, seeded run
-        ↓
-deterministic reference drawer simulation
-        ↓
-validated Episode artifacts and Dataset manifest
-        ↓
-PyTorch behavior cloning (CUDA 12.1 when requested)
-        ↓
-held-out evaluation and structured failures
+真实采集 → 数字孪生 → 场景与任务 → 仿真及多模态数据 → 策略训练与评测 → 真机反馈
 ```
 
-Isaac Sim, Genesis, robot hardware, and research models join through narrow adapters. They are not
-core dependencies and importing `physrealx` never initializes Torch, CUDA, a simulator, the network,
-or a workspace.
+PhysReal-X 不重复实现物理引擎。SAPIEN、Isaac Sim、Genesis、渲染器、训练框架和机器人
+运行时都通过能力明确的适配器接入；平台负责资源编排、异步作业、数据契约、版本血缘、
+质量门禁和可观测性。
 
-## Design principles
+## 文档结构
 
-- **One public name:** distribution `physreal-x`, import and CLI `physrealx`.
-- **Immutable contracts:** Pydantic v2 models reject unknown fields and non-finite values.
-- **Exact lineage:** every run resolves asset, task, backend, policy, version, digest, and seed.
-- **Atomic publication:** artifacts are SHA-256 addressed; manifests publish only after validation.
-- **Narrow plugins:** simulation, policy, and training adapters expose separate protocols.
-- **No compatibility debt:** this repository began empty; there are no legacy aliases or v0 APIs.
-- **Local-first, replaceable infrastructure:** SQLite/WAL and a local artifact store provide the same
-  boundaries that future PostgreSQL/S3 adapters can implement.
+文档站只保留五个稳定入口：
 
-## Installation
+- **首页**：平台定位、能力边界与端到端闭环。
+- **入门**：安装、快速开始和第一个完整项目。
+- **用户指南**：资产、场景、仿真、数据、训练、评测与部署教程。
+- **API 文档**：Python SDK、领域模型、扩展协议、CLI、错误和幂等约定。
+- **开发**：架构边界、数据契约、插件开发与质量门禁。
 
-Python 3.11 is the recommended development runtime; the package and CPU CI also support Python
-3.12. GPU development uses PyTorch 2.5.1 compiled for CUDA 12.1.
-The PyTorch wheel contains its CUDA user-space runtime; the NVIDIA driver only needs to be new
-enough to run it.
+本阶段先固化最终产品的信息架构、资源模型和公共 API；平台实现按这些契约逐层落地。
+
+## 快速开始
+
+Python 3.11 是推荐开发环境：
 
 ```bash
 conda env create -f environment.yml
 conda activate PhysReal-X
+python -m pip install -e '.[dev,docs]'
 physrealx doctor
 ```
 
-On this workstation CUDA 12.1 compilation tools live at `/usr/local/cuda-12.1`. Do not change the
-global CUDA symlink. Only custom extension builds should use command-local settings:
-
-```bash
-CUDA_HOME=/usr/local/cuda-12.1 \
-PATH=/usr/local/cuda-12.1/bin:$PATH \
-python -m build
-```
-
-Core-only development does not require Torch:
-
-```bash
-python -m pip install -e '.[dev]'
-```
-
-## Quick start
-
-Create a local workspace and run the deterministic end-to-end demonstration:
-
-```bash
-physrealx init .physrealx
-physrealx demo --workspace .physrealx --episodes 8
-```
-
-Inspect the environment, plugins, resources, and a persisted run:
-
-```bash
-physrealx doctor --json
-physrealx plugins
-physrealx list asset --workspace .physrealx
-physrealx status RUN_ID --workspace .physrealx
-```
-
-All CLI commands return stable non-zero exit codes for expected operational errors and suppress
-tracebacks unless `--debug` is explicitly requested.
-
-The same vertical slice is available as a typed Python API:
+最终版 SDK 使用按领域划分的服务接口：
 
 ```python
-from pathlib import Path
+from physrealx import PhysRealX
 
-from physrealx import PhysRealX, TrainingSpec
-from physrealx.reference import reference_asset, reference_run, reference_task
+px = PhysRealX.connect("local:///.physrealx")
 
-platform = PhysRealX.open(Path(".physrealx"), discover_plugins=False)
-asset = reference_asset()
-task = reference_task(asset)
-platform.register_asset(asset)
-platform.register_task(task)
+asset = px.assets.register("configs/assets/drawer.yaml")
+scene = px.scenes.create("configs/scenes/drawer_lab.yaml")
+task = px.tasks.create("configs/tasks/open_drawer.yaml")
 
-run = platform.execute(reference_run(asset, task, episode_count=8, base_seed=7))
-assert run.result is not None and run.result.dataset is not None
-model = platform.train(
-    TrainingSpec(
-        resource_id="drawer.bc",
-        version="1.0.0",
-        dataset=run.result.dataset,
-        trainer="torch_bc",
-        config={"device": "cuda", "epochs": 120, "seed": 17},
-    )
+run = px.runs.submit(
+    task=task.ref,
+    scene=scene.ref,
+    backend="isaac-sim@5",
+    episodes=100,
+    seed=42,
+    wait=True,
+)
+
+dataset = px.datasets.create_from_run(run.id, name="drawer-open-v1")
+training = px.training.submit(
+    dataset=dataset.ref,
+    recipe="diffusion-policy@1",
+    config="configs/training/diffusion_policy.yaml",
+)
+evaluation = px.evaluations.submit(
+    policy=training.output_policy,
+    suite="drawer-generalization@1",
+    wait=True,
 )
 ```
 
-`PhysRealX.open` owns the application composition root. Production simulator, policy, and trainer
-packages register narrow adapters through the `physrealx.plugins` entry-point group; core domain
-models remain independent of those packages.
+完整教程见[第一个完整项目](https://bupt-yxp.github.io/PhysReal-X/getting-started/first-project/)，
+所有方法、参数、返回值与异常见 [API 文档](https://bupt-yxp.github.io/PhysReal-X/api/)。
 
-## Package boundaries
+## 架构原则
 
-```text
-domain.py       frozen specifications and manifests
-contracts.py    simulation, policy, trainer, artifact ports
-plugins.py      explicit registry and entry-point discovery
-storage.py      atomic local artifacts and transactional SQLite metadata
-runtime.py      run compilation, execution, Episode validation, datasets
-reference.py    deterministic drawer backend and scripted policy
-training.py     optional, lazy Torch behavior-cloning adapter
-platform.py     application facade
-cli.py          thin command-line interface
+- **依赖倒置**：领域层只依赖协议，仿真器、存储、训练框架和设备位于适配器层。
+- **统一资源模型**：资产、场景、任务、运行、数据集、模型、评测和部署都具有稳定引用。
+- **可复现优先**：每个结果绑定配置快照、输入版本、内容摘要、随机种子和运行环境。
+- **原子发布**：产物完成校验后才发布清单；失败作业不会留下可见的半成品资源。
+- **显式能力协商**：提交前验证后端是否支持所需传感器、物理特性和执行模式。
+- **异步作业统一**：长任务采用一致的提交、观察、取消、重试和错误语义。
+- **幂等写入**：创建和提交接口支持幂等键，网络重试不会重复生成资源。
+- **无隐式副作用**：导入核心包不会初始化 CUDA、仿真器、网络连接或工作区。
+
+更完整的模块边界见[架构与 SOLID 原则](https://bupt-yxp.github.io/PhysReal-X/development/architecture/)。
+
+## 文档开发
+
+```bash
+python -m pip install -e '.[docs]'
+python -m mkdocs serve
+python -m mkdocs build --strict
 ```
 
-Execution depends inward on contracts. Domain code never imports storage, Torch, CUDA, CLI, or a
-simulator. A backend session and policy are created once per run and reset for each seeded episode,
-so expensive scenes and GPU models are not reconstructed for every rollout. Trainers receive a
-lazy episode iterable; production adapters can batch and stream rather than loading the entire
-dataset in the application facade.
+推送到 `main` 后，`.github/workflows/docs.yml` 会严格构建文档并通过 GitHub Actions 发布
+GitHub Pages。
 
-## Data semantics
-
-An Episode step follows RLDS-style semantics: it contains the current observation and the action
-taken from that observation. The final step contains the final observation and has no action or
-reward. Control timestamps are monotonic; each sensor value may also carry its own timestamp.
-
-High-bandwidth observations are represented by immutable `ArtifactRef` values instead of embedding
-images or point clouds in JSON. Numeric state may be inlined when its declared dtype and shape match.
-
-## Quality gates
+## 质量门禁
 
 ```bash
 python -m ruff format --check .
@@ -158,26 +107,9 @@ python -m ruff check .
 python -m mypy
 python -m pytest -m 'not gpu' --cov=physrealx --cov-branch
 python -m build
+python -m mkdocs build --strict
 ```
 
-The CUDA smoke test is deliberately separate because it requires the `PhysReal-X` cu121 environment:
+## 许可证
 
-```bash
-python -m pytest -m gpu tests/integration/test_cuda.py
-```
-
-It performs only a 16×16 matrix multiplication, which is safe on a busy development GPU.
-
-## Backend roadmap
-
-1. Keep the reference backend as the executable contract suite.
-2. Add an Isaac Sim/Isaac Lab worker for USD, RTX rendering, and articulated manipulation.
-3. Add Genesis only where high-throughput or deformable simulation is required.
-4. Add ROS 2 capture/deployment without changing the Episode contract.
-
-An adapter is considered supported only after it passes the shared lifecycle, determinism, schema,
-capability, and failure-isolation contract tests.
-
-## License
-
-MIT. See [LICENSE](LICENSE).
+MIT，见 [LICENSE](LICENSE)。

@@ -41,30 +41,49 @@ theme:
     - navigation.path
     - navigation.top
     - navigation.footer
+    - navigation.tracking
     - search.suggest
     - search.highlight
     - content.code.copy
     - content.code.annotate
+    - content.tabs.link
     - toc.follow
 
 nav:
   - 首页: index.md
   - 入门:
+      - 平台概览: getting-started/index.md
       - 安装与环境: getting-started/installation.md
       - 快速开始: getting-started/quickstart.md
+      - 第一个完整项目: getting-started/first-project.md
   - 用户指南:
-      - 资产与任务: user-guide/assets-and-tasks.md
-      - 数据生成、训练与评测: user-guide/workflow.md
-  - 核心概念:
-      - 平台架构: ARCHITECTURE.md
-      - 数据契约: concepts/data-contracts.md
-      - 插件与适配器: concepts/plugins.md
-  - 接口参考:
-      - 命令行: reference/cli.md
-      - Python 接口: reference/python-api.md
+      - 指南总览: user-guide/index.md
+      - 资产与数字孪生: user-guide/assets.md
+      - 场景与任务: user-guide/scenes-and-tasks.md
+      - 仿真运行与后端: user-guide/simulation.md
+      - 多模态数据生成: user-guide/data-generation.md
+      - 数据集管理: user-guide/datasets.md
+      - 策略训练: user-guide/training.md
+      - 评测、部署与反馈闭环: user-guide/evaluation-and-deployment.md
+  - API 文档:
+      - API 总览: api/index.md
+      - 客户端与公共约定: api/client.md
+      - 资产 API: api/assets.md
+      - 场景与任务 API: api/scenes-and-tasks.md
+      - 运行与数据生成 API: api/runs.md
+      - 数据集 API: api/datasets.md
+      - 训练 API: api/training.md
+      - 评测、部署与反馈 API: api/evaluation-deployment-feedback.md
+      - 领域模型: api/models.md
+      - 扩展协议: api/plugins.md
+      - 命令行: api/cli.md
+      - 错误、状态与幂等: api/errors.md
   - 开发:
-      - 开发与测试: development.md
-      - 能力边界与路线图: roadmap.md
+      - 开发总览: development/index.md
+      - 架构与 SOLID 原则: development/architecture.md
+      - 数据契约与血缘: development/data-contracts.md
+      - 插件开发: development/plugin-development.md
+      - 测试与质量门禁: development/testing.md
 
 plugins:
   - search:
