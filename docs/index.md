@@ -36,7 +36,7 @@ PhysReal-X 统一管理数字孪生、场景任务、仿真执行、Episode 数�
 
 <div class="prx-hero__visual" role="img" aria-label="真实工作站、数字孪生、多模态数据与机器人策略构成闭环">
   <div class="prx-hero__halo" aria-hidden="true"></div>
-  <img src="assets/images/hero-platform-loop.webp" alt="机器人工作站经由数字孪生、多模态数据和策略训练形成反馈闭环">
+  <img src="assets/images/hero-platform-loop-transparent.png" alt="机器人工作站经由数字孪生、多模态数据和策略训练形成反馈闭环">
   <div class="prx-hero__node prx-hero__node--reality"><span>01</span>真实工作站</div>
   <div class="prx-hero__node prx-hero__node--twin"><span>02</span>数字孪生</div>
   <div class="prx-hero__node prx-hero__node--data"><span>03</span>多模态数据</div>

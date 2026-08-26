@@ -2,7 +2,7 @@ site_name: PhysReal-X
 site_description: 连接数字孪生、物理仿真、多模态数据与机器人学习的统一平台
 site_url: https://bupt-yxp.github.io/PhysReal-X/
 repo_url: https://github.com/bupt-yxp/PhysReal-X
-repo_name: bupt-yxp/PhysReal-X
+repo_name: GitHub
 edit_uri: edit/main/docs/
 
 docs_dir: docs
