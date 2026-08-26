@@ -1,0 +1,95 @@
+site_name: PhysReal-X
+site_description: 可复现的具身智能仿真、数据生成与机器人学习平台
+site_url: https://bupt-yxp.github.io/PhysReal-X/
+repo_url: https://github.com/bupt-yxp/PhysReal-X
+repo_name: bupt-yxp/PhysReal-X
+edit_uri: edit/main/docs/
+
+docs_dir: docs
+site_dir: site
+
+theme:
+  name: material
+  language: zh
+  font: false
+  custom_dir: docs/overrides
+  logo: assets/images/physreal-x.png
+  favicon: assets/images/favicon.png
+  icon:
+    repo: fontawesome/brands/github
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-night
+        name: 切换至深色模式
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-sunny
+        name: 切换至浅色模式
+  features:
+    - navigation.instant
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.indexes
+    - navigation.path
+    - navigation.top
+    - navigation.footer
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+    - toc.follow
+
+nav:
+  - 首页: index.md
+  - 入门:
+      - 安装与环境: getting-started/installation.md
+      - 快速开始: getting-started/quickstart.md
+  - 用户指南:
+      - 资产与任务: user-guide/assets-and-tasks.md
+      - 数据生成、训练与评测: user-guide/workflow.md
+  - 核心概念:
+      - 平台架构: ARCHITECTURE.md
+      - 数据契约: concepts/data-contracts.md
+      - 插件与适配器: concepts/plugins.md
+  - 接口参考:
+      - 命令行: reference/cli.md
+      - Python 接口: reference/python-api.md
+  - 开发:
+      - 开发与测试: development.md
+      - 能力边界与路线图: roadmap.md
+
+plugins:
+  - search:
+      lang:
+        - zh
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+
+extra_css:
+  - stylesheets/extra.css
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/bupt-yxp/PhysReal-X
+      name: PhysReal-X 项目仓库
+
+copyright: Copyright &copy; 2026 PhysReal-X 贡献者 · MIT 许可证

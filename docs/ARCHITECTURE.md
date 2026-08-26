@@ -1,144 +1,110 @@
-# PhysReal-X architecture
+# 平台架构
 
-## Platform responsibility
+## 平台职责
 
-PhysReal-X is the control plane and data plane that connects digital-twin assets, simulator
-workers, trajectory generation, multimodal datasets, policy training, evaluation, and real-robot
-feedback. It is not another physics engine and does not copy Isaac Sim, Genesis, or MuJoCo APIs
-into the domain model.
+PhysReal-X 是连接数字孪生资产、仿真工作节点、轨迹生成、多模态数据集、策略训练、评测和真实机器人反馈的控制面与数据面。它不是新的物理引擎，也不会把 Isaac Sim、Genesis 或 MuJoCo 的接口复制到领域模型中。
 
-The platform closes three loops:
+平台需要闭合三条链路：
 
 ```text
-real capture -> reconstruction/calibration -> versioned trainable asset
-asset + task -> seeded simulation -> validated episodes -> immutable dataset
-dataset -> training -> held-out/real evaluation -> failure cases -> directed regeneration
+真实采集 → 重建与标定 → 版本化可训练资产
+资产 + 任务 → 确定性仿真 → 已校验 Episode → 不可变数据集
+数据集 → 训练 → 独立或真实评测 → 失败案例 → 定向再生成
 ```
 
-The current `0.1` release deliberately proves that architecture with one executable drawer
-vertical slice. Production integrations remain external adapters until they pass the shared
-contracts; the repository does not advertise placeholder Isaac, robot, or reconstruction support.
+当前 `0.1` 版本使用一个可执行的抽屉参考闭环验证架构。生产仿真器、机器人和重建方法只有在通过共享契约后，才会作为正式适配器进入平台。
 
-## Dependency direction
+## 依赖方向
 
 ```text
-domain <- contracts <- application services <- adapters/interfaces
+领域 ← 契约 ← 应用服务 ← 适配器与用户接口
 ```
 
-- `domain.py` owns frozen, versioned specifications and manifests. It cannot import storage,
-  Torch, a simulator, or a service framework.
-- `contracts.py` owns narrow simulator, policy, trainer, repository, and artifact ports.
-- `runtime.py` and `platform.py` resolve lineage, enforce task semantics, execute workflows, and
-  publish only validated terminal results.
-- `reference.py`, `training.py`, and `storage.py` are replaceable adapters.
-- `cli.py` is a thin interface over the same application facade; a future HTTP interface must be
-  equally thin.
+- `domain.py`：冻结且版本化的规格和清单，不依赖存储、Torch、仿真器或服务框架；
+- `contracts.py`：仿真后端、策略、训练器、仓库和制品库的窄接口；
+- `runtime.py` 与 `platform.py`：解析血缘、执行工作流、校验任务语义并发布终态结果；
+- `reference.py`、`training.py` 与 `storage.py`：可替换适配器；
+- `cli.py`：应用门面的轻量命令行入口。
 
-This implements dependency inversion without creating interfaces that have no consumer. A new
-adapter is introduced only when an actual method is ready to integrate.
+平台只为实际需要接入的能力创建接口，避免形成没有消费者的抽象层。
 
-## Core execution contract
+## 核心执行契约
 
-1. Register an `AssetSpec` and `TaskSpec`; bytes are canonicalized and addressed by SHA-256.
-2. Compile a `RunSpec` into resolved asset/task digests plus exact backend/policy versions.
-3. Create one expensive simulator session and policy per run, then reset both for each seed.
-4. Validate initial, success, and termination predicates centrally from declared observations.
-5. Validate every action and frame against dtype, shape, unit, frame, bounds, and timestamps.
-6. Atomically publish an Episode artifact and summary for every completed rollout.
-7. Publish a Dataset manifest only after every requested Episode exists and passes validation.
-8. Stream Episodes to a trainer; verify returned weights and lineage before publishing a model.
-9. Evaluate on deterministic held-out seeds and persist categorized `FailureCase` records.
+1. 注册 `AssetSpec` 与 `TaskSpec`，规范化序列化后按 SHA-256 寻址；
+2. 将 `RunSpec` 解析为带精确摘要和插件版本的可执行运行；
+3. 每次运行只创建一个昂贵的仿真会话和策略实例，每条 Episode 使用独立种子重置；
+4. 根据声明的观测信号集中校验初始、成功与终止条件；
+5. 校验每个动作和观测帧的数据类型、形状、单位、坐标系、范围和时间戳；
+6. 每条轨迹完成后，原子发布 Episode 制品与摘要；
+7. 仅在所有请求的 Episode 均存在且通过校验后发布数据集；
+8. 将 Episode 以迭代方式交给训练器，并验证权重、信号模式和数据血缘；
+9. 使用独立种子评测模型，保存指标与分类失败案例。
 
-SQLite transactions protect metadata state transitions. The local artifact store writes a temporary
-object, syncs it, atomically renames it, and verifies its content digest before returning. These
-ports can later be implemented by PostgreSQL and S3-compatible storage without changing domain
-contracts.
+SQLite 事务保护元数据状态变化。本地制品库先写入临时对象、同步到磁盘、原子重命名并重新验证摘要。这些端口以后可以由 PostgreSQL 和兼容 S3 的对象存储实现，而不修改领域契约。
 
-## PPT capability mapping and integration order
+## 能力接入顺序
 
-The research methods in the project presentation should enter in this order:
+### 资产智能工作节点
 
-### 1. Asset intelligence worker
+输入包括已标定 RGB、深度、事件、力觉、机器人状态和物体状态。适配器负责：
 
-Input: calibrated RGB/RGB-D/event/force streams and robot/object state.
+- 标定、同步、深度补全和数据质量估计；
+- 类别级位姿、形状和网格重建；
+- 网格、三维高斯等表示的统一制品发布；
+- 部件分解、关节结构估计与可动性建模；
+- 质量、摩擦、刚度、阻尼和不确定度标定。
 
-Initial adapters:
+输出是几何制品与经过校验的 `AssetSpec`。研究方法的原生张量在适配器边界转换，不进入平台公共接口。
 
-- calibration, synchronization, depth completion, and quality/confidence estimation;
-- category-level pose and shape reconstruction;
-- VGGT/mesh/3DGS reconstruction behind one worker boundary;
-- part decomposition and articulated joint estimation such as PD²GS-style methods;
-- mass, friction, stiffness, damping, and uncertainty calibration.
+### 仿真工作节点
 
-Output: geometry artifacts plus one validated `AssetSpec`. Mesh/USD/Gaussian bytes live in the
-artifact store; manifests carry checksums, link/joint structure, physics provenance, confidence,
-and semantic version. Research-native outputs are converted at the adapter boundary rather than
-leaking model-specific tensors into the platform API.
+- Isaac Sim 或 Isaac Lab：高保真 USD、光线追踪渲染、关节物体和强化学习；
+- Genesis：高吞吐或可变形材料任务；
+- MuJoCo：轻量控制基线。
 
-### 2. Simulation workers
+每个仿真器运行在隔离环境中。工作节点必须先报告能力，对不支持的观测与动作快速失败，并返回标准 `DataValue` 帧。Isaac Kit 自带的 Python 和 Torch 运行时不应安装到核心 Conda 环境。
 
-- Isaac Sim/Isaac Lab is the primary high-fidelity USD, RTX, articulation, and RL worker.
-- Genesis is added for throughput or deformable-material workloads after it passes the same
-  backend contract suite.
-- MuJoCo is useful for lightweight control baselines, not as the visual asset source of truth.
+### 数据生成与编排
 
-Each simulator runs in its own worker environment. Isaac Kit's Python/Torch runtime must not be
-installed into the core `PhysReal-X` conda environment. The worker reports capabilities before a
-run, fails fast on unsupported observations/actions, and returns standard `DataValue` frames.
+任务模板、场景随机化、运动规划、遥操作、学习策略和长尾失败生成器都以版本化策略适配器接入。无论底层仿真器是什么，它们都产生相同的 Episode 语义。
 
-### 3. Generation and orchestration
+RGB、深度、掩码、点云、力、接触、关节状态、动作、奖励和事件共享同一时间线。大数组保存为不可变制品引用，小型数值状态可以内联。数据集保留资产、任务、后端、策略摘要以及每条轨迹的种子。
 
-Add concrete generators incrementally: task templates, scene/layout randomization, motion-planner
-or teleoperation demonstrations, learned VLA/diffusion policies, and targeted long-tail/failure
-generation. Every generator is a versioned Policy adapter and therefore produces identical Episode
-semantics regardless of simulator.
+### 学习与评测
 
-RGB, depth, masks, point clouds, force, contacts, joint state, action, reward, and events share the
-same timeline. Large arrays are immutable `ArtifactRef` objects; small numeric state is inlined.
-Dataset manifests retain asset/task/backend/policy digests and every episode seed.
+参考 Torch 行为克隆适配器证明了 CUDA 12.1 环境中的“数据集到策略”连接。后续适配器建议按以下顺序进入：
 
-### 4. Learning and evaluation
+1. 可扩展模仿学习；
+2. Isaac Lab 强化学习；
+3. 视觉—语言—动作模型微调；
+4. 动作条件世界模型或动力学模型。
 
-The reference Torch behavior-cloning adapter proves Dataset-to-Policy wiring on cu121. Next
-production adapters should be added in evidence order: scalable imitation learning, Isaac Lab RL,
-VLA fine-tuning, then action-conditioned world/dynamics models. Trainers consume lazy episode
-iterables and own batching/sharding; the application layer must never materialize a large dataset
-or GPU tensor set for them.
+训练器负责批处理、分片和设备张量，应用层不应一次性加载大型数据集。评测必须产生版本化报告、聚合指标和 Episode 级失败案例。ROS 2 适配器可以使用相同契约记录真实轨迹，再根据真实失败选择需要补充的资产、物理参数、场景或任务区域。
 
-Evaluation always produces a versioned report, aggregate metrics, and episode-level failures
-(perception, planning, control, contact, timeout, data quality, or unknown). A ROS 2 deployment
-adapter can record real Episodes using the same contracts. Real failures then select missing asset,
-physics, scene, or task regions for regeneration.
+## 服务化演进
 
-## Service evolution
-
-The Python facade is the authoritative application API. Once multiple machines or users require
-remote submission, add a thin FastAPI/gRPC control interface and durable worker queue around it:
+当前 Python 门面是权威应用接口。只有在多用户或多机器需求出现后，才在其外部增加轻量 HTTP 或远程调用接口与持久任务队列：
 
 ```text
-SDK/CLI/HTTP -> application facade -> job repository
-                                      |
-                              capability-matched worker
-                                      |
-                         artifact store + manifest commit
+软件开发包 / 命令行 / 远程接口 → 应用门面 → 任务仓库
+                                              ↓
+                                      能力匹配的工作节点
+                                              ↓
+                                      制品库 + 清单提交
 ```
 
-Remote services must preserve idempotency keys, immutable resource versions, atomic manifest
-publication, cancellation, retry state, worker heartbeats, and failure isolation. Kubernetes,
-Kafka, PostgreSQL, and object storage are deployment choices, not domain dependencies, and should
-not be introduced before scale measurements justify them.
+远程服务必须保留幂等键、不可变资源版本、原子清单发布、取消、重试、心跳和失败隔离。Kubernetes、Kafka、PostgreSQL 和对象存储是部署选择，不应在没有规模测量前进入核心领域。
 
-## Adapter acceptance gates
+## 适配器验收门槛
 
-An adapter is supported only when it demonstrates:
+一个适配器只有满足以下条件才算正式支持：
 
-- API and plugin identity compatibility, capability discovery, and fail-fast preflight;
-- `create -> reset -> step -> observe -> close` lifecycle and idempotent cleanup;
-- deterministic reset for a fixed seed where the backend claims determinism;
-- exact dtype/shape/unit/frame/device semantics and monotonic per-signal timestamps;
-- checksum and version lineage for every input and output artifact;
-- cancellation/error cleanup without publishing a partial Dataset manifest;
-- shared contract tests plus an isolated integration test in its real runtime.
+- 公共接口与插件身份兼容，能够报告能力并执行运行前检查；
+- 完成“创建、重置、步进、观测、关闭”生命周期，并支持幂等清理；
+- 在声明确定性的情况下，对固定种子提供一致重置结果；
+- 严格遵守数据类型、形状、单位、坐标系、设备和单调时间戳语义；
+- 为每个输入和输出制品保留摘要与版本血缘；
+- 取消或错误后清理资源，不发布部分数据集；
+- 通过共享契约测试以及真实运行时中的隔离集成测试。
 
-This keeps the core small while allowing the presentation's reconstruction, simulation, world
-model, VLA/RL, and real-robot results to become callable platform capabilities one at a time.
+这一门槛使核心保持小而稳定，同时允许重建、仿真、世界模型、策略学习和真实机器人能力逐步进入平台。

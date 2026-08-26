@@ -9,4 +9,4 @@ dependencies:
       # while the default PyPI index remains available for the project dependencies.
       - --extra-index-url https://download.pytorch.org/whl/cu121
       - torch==2.5.1+cu121
-      - -e .[dev,train]
+      - -e .[dev,train,docs]

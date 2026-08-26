@@ -1,5 +1,8 @@
 # PhysReal-X
 
+[中文文档](https://bupt-yxp.github.io/PhysReal-X/) ·
+[平台架构](https://bupt-yxp.github.io/PhysReal-X/ARCHITECTURE/)
+
 PhysReal-X is a contract-first platform for reproducible embodied-AI data generation and
 robot-learning experiments. It is an orchestration and data system above simulators—not a new
 physics engine.

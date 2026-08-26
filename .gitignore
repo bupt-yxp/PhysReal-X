@@ -8,6 +8,7 @@ __pycache__/
 .coverage.*
 coverage.xml
 htmlcov/
+site/
 
 # Packaging and local environments
 build/
