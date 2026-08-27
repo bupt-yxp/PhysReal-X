@@ -30,13 +30,13 @@ hide:
 ## 使用教程
 
 <div class="prx-route-grid">
-  <a class="prx-route-card" href="assets/"><strong>资产与数字孪生</strong><span>把 Mesh、USD、Gaussian 或真实采集转换为可训练资产。</span></a>
-  <a class="prx-route-card" href="scenes-and-tasks/"><strong>场景与任务</strong><span>构建环境、编译任务并定义可判定的目标与约束。</span></a>
-  <a class="prx-route-card" href="simulation/"><strong>仿真运行与后端</strong><span>选择后端、配置并行执行并管理完整运行生命周期。</span></a>
-  <a class="prx-route-card" href="data-generation/"><strong>多模态数据生成</strong><span>生成包含图像、深度、状态、动作、接触和力觉的 Episode。</span></a>
-  <a class="prx-route-card" href="datasets/"><strong>数据集管理</strong><span>版本化、查询、切分、质量分析和导出训练数据。</span></a>
-  <a class="prx-route-card" href="training/"><strong>策略训练</strong><span>训练模仿学习、强化学习、VLA 与世界模型并登记模型。</span></a>
-  <a class="prx-route-card" href="evaluation-and-deployment/"><strong>评测、部署与反馈闭环</strong><span>建立独立评测、真机部署、失败归因和定向再生成闭环。</span></a>
+  <a class="prx-route-link" href="assets/"><strong>资产与数字孪生</strong><span>把 Mesh、USD、Gaussian 或真实采集转换为可训练资产。</span></a>
+  <a class="prx-route-link" href="scenes-and-tasks/"><strong>场景与任务</strong><span>构建环境、编译任务并定义可判定的目标与约束。</span></a>
+  <a class="prx-route-link" href="simulation/"><strong>仿真运行与后端</strong><span>选择后端、配置并行执行并管理完整运行生命周期。</span></a>
+  <a class="prx-route-link" href="data-generation/"><strong>多模态数据生成</strong><span>生成包含图像、深度、状态、动作、接触和力觉的 Episode。</span></a>
+  <a class="prx-route-link" href="datasets/"><strong>数据集管理</strong><span>版本化、查询、切分、质量分析和导出训练数据。</span></a>
+  <a class="prx-route-link" href="training/"><strong>策略训练</strong><span>训练模仿学习、强化学习、VLA 与世界模型并登记模型。</span></a>
+  <a class="prx-route-link" href="evaluation-and-deployment/"><strong>评测、部署与反馈闭环</strong><span>建立独立评测、真机部署、失败归因和定向再生成闭环。</span></a>
 </div>
 
 ## 三条使用原则

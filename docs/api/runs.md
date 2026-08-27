@@ -14,7 +14,7 @@ px.runs.submit(
 ) -> RunRef
 ```
 
-提交时执行：资源解析、插件版本固定、能力匹配、预算检查和执行计划编译。
+提交时执行：资源解析、后端与策略版本固定、能力匹配、预算检查和执行计划编译。
 
 `validate_only=True` 返回已编译计划但不创建运行，适合 CI 和成本预检。
 
@@ -127,7 +127,7 @@ print(result.dataset)
 | 字段 | 说明 |
 | --- | --- |
 | `scene` / `task` | 精确场景与任务引用 |
-| `backend` / `policy` | 插件名称与可选版本约束 |
+| `backend` / `policy` | 后端与策略标识及可选版本约束 |
 | `episodes` / `seed` | Episode 数量和根随机种子 |
 | `parallelism` | 期望并行度 |
 | `record` | 需要发布的观测与状态信号 |

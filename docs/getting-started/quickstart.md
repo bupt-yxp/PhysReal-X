@@ -10,7 +10,7 @@ from physrealx import PhysRealX
 px = PhysRealX.connect("local:///.physrealx")
 ```
 
-`connect()` 是统一入口：本地工作区和远程平台使用相同服务接口。
+`local:///` 表示连接本机端点，HTTPS 地址表示连接远程控制服务。端点决定控制服务的位置；仿真与训练由平台根据后端能力调度到已注册工作节点。
 
 ## 2. 注册资产
 

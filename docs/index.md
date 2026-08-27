@@ -13,17 +13,15 @@ hide:
 
 <div class="prx-hero__copy" markdown>
 
-<span class="prx-eyebrow">具身智能数据与实验平台</span>
+<p class="prx-eyebrow">具身智能数据与实验平台</p>
 
 # 把真实资产、仿真数据与机器人学习连成一条生产链
 
 PhysReal-X 统一管理数字孪生、场景任务、仿真执行、Episode 数据、策略训练、独立评测与真机反馈，让每一次实验都可运行、可追溯、可复现。
 
-<div class="prx-actions" markdown>
-
-[快速开始](getting-started/quickstart.md){ .md-button .md-button--primary }
-[浏览 API](api/index.md){ .md-button }
-
+<div class="prx-actions">
+  <a class="md-button md-button--primary" href="getting-started/quickstart/">快速开始</a>
+  <a class="md-button" href="api/">浏览 API</a>
 </div>
 
 <div class="prx-hero__proof" role="list">
@@ -49,7 +47,6 @@ PhysReal-X 统一管理数字孪生、场景任务、仿真执行、Episode 数�
   <a href="getting-started/"><span>01</span><strong>入门</strong><small>完成安装、环境配置与首个闭环实验</small></a>
   <a href="user-guide/"><span>02</span><strong>用户指南</strong><small>掌握资产、仿真、数据、训练与部署流程</small></a>
   <a href="api/"><span>03</span><strong>API 文档</strong><small>查询资源模型、服务方法与错误语义</small></a>
-  <a href="development/"><span>04</span><strong>开发</strong><small>实现后端适配器、扩展协议与质量门禁</small></a>
 </nav>
 
 <section class="prx-section">
@@ -61,41 +58,41 @@ PhysReal-X 统一管理数字孪生、场景任务、仿真执行、Episode 数�
 </div>
 
 <div class="prx-capability-grid">
-  <a class="prx-capability-card" href="user-guide/assets/">
-    <span class="prx-card-index">01</span>
+  <a class="prx-capability-item" href="user-guide/assets/">
+    <span class="prx-capability-index">01</span>
     <h3>资产与数字孪生</h3>
     <p>接入 RGB-D、点云、CAD、Mesh、USD 与 Gaussian，统一描述几何、关节、碰撞、物性和标定。</p>
-    <strong>查看资产工作流 <span aria-hidden="true">→</span></strong>
+    <span class="prx-capability-arrow" aria-hidden="true">→</span>
   </a>
-  <a class="prx-capability-card" href="user-guide/scenes-and-tasks/">
-    <span class="prx-card-index">02</span>
+  <a class="prx-capability-item" href="user-guide/scenes-and-tasks/">
+    <span class="prx-capability-index">02</span>
     <h3>场景与任务</h3>
     <p>组合机器人、物体、传感器与环境，声明观测、动作、初始条件、成功条件和随机化空间。</p>
-    <strong>查看场景与任务 <span aria-hidden="true">→</span></strong>
+    <span class="prx-capability-arrow" aria-hidden="true">→</span>
   </a>
-  <a class="prx-capability-card" href="user-guide/simulation/">
-    <span class="prx-card-index">03</span>
+  <a class="prx-capability-item" href="user-guide/simulation/">
+    <span class="prx-capability-index">03</span>
     <h3>仿真与运行编排</h3>
     <p>根据能力选择 Isaac Sim、Genesis、MuJoCo 等后端，统一提交、观察、取消、恢复和重试。</p>
-    <strong>查看运行方式 <span aria-hidden="true">→</span></strong>
+    <span class="prx-capability-arrow" aria-hidden="true">→</span>
   </a>
-  <a class="prx-capability-card" href="user-guide/data-generation/">
-    <span class="prx-card-index">04</span>
+  <a class="prx-capability-item" href="user-guide/data-generation/">
+    <span class="prx-capability-index">04</span>
     <h3>多模态数据生成</h3>
-    <p>同步记录图像、深度、点云、接触、力觉、状态与动作，发布经过质量门禁的 Episode。</p>
-    <strong>查看数据生成 <span aria-hidden="true">→</span></strong>
+    <p>同步记录图像、深度、点云、接触、力觉、状态与动作，发布经过质量校验的 Episode。</p>
+    <span class="prx-capability-arrow" aria-hidden="true">→</span>
   </a>
-  <a class="prx-capability-card" href="user-guide/training/">
-    <span class="prx-card-index">05</span>
+  <a class="prx-capability-item" href="user-guide/training/">
+    <span class="prx-capability-index">05</span>
     <h3>训练与独立评测</h3>
     <p>用一致入口组织模仿学习、强化学习、VLA 和世界模型训练，并在冻结矩阵上独立评测。</p>
-    <strong>查看训练流程 <span aria-hidden="true">→</span></strong>
+    <span class="prx-capability-arrow" aria-hidden="true">→</span>
   </a>
-  <a class="prx-capability-card" href="user-guide/evaluation-and-deployment/">
-    <span class="prx-card-index">06</span>
+  <a class="prx-capability-item" href="user-guide/evaluation-and-deployment/">
+    <span class="prx-capability-index">06</span>
     <h3>部署与反馈闭环</h3>
     <p>记录真机运行与失败证据，定位模型、数据和物理参数缺口，驱动校准与定向数据再生成。</p>
-    <strong>查看闭环方法 <span aria-hidden="true">→</span></strong>
+    <span class="prx-capability-arrow" aria-hidden="true">→</span>
   </a>
 </div>
 
@@ -124,11 +121,11 @@ PhysReal-X 统一管理数字孪生、场景任务、仿真执行、Episode 数�
 
 <div class="prx-sdk__copy" markdown>
 
-<span class="prx-eyebrow">统一 Python SDK</span>
+<p class="prx-eyebrow">统一 Python SDK</p>
 
-## 同一套接口，连接本地工作区与远程平台
+## 同一套接口，连接本机端点与远程控制服务
 
-服务按领域组织，业务代码不直接依赖数据库、任务队列或某个仿真器。将端点从本地切换到远程时，资源模型和方法语义保持一致。
+单机实验可使用本机端点，团队与集群环境连接远程控制服务；仿真和训练由已注册工作节点执行，SDK 语义保持一致。
 
 [阅读快速开始](getting-started/quickstart.md) · [查看客户端约定](api/client.md)
 
@@ -158,14 +155,16 @@ dataset = px.datasets.create_from_run(run.id)
 
 <section class="prx-final-cta" markdown>
 
-<span class="prx-eyebrow">开始构建</span>
+<p class="prx-eyebrow">开始使用</p>
 
 ## 用一个完整项目认识 PhysReal-X
 
 从安装环境开始，注册资产、定义场景任务、生成多模态数据，并把结果交给训练与评测服务。
 
-[安装与环境](getting-started/installation.md){ .md-button }
-[开始第一个项目](getting-started/first-project.md){ .md-button .md-button--primary }
+<div class="prx-actions prx-final-cta__actions">
+  <a class="md-button" href="getting-started/installation/">安装与环境</a>
+  <a class="md-button md-button--primary" href="getting-started/first-project/">开始第一个项目</a>
+</div>
 
 </section>
 

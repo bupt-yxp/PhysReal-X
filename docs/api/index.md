@@ -9,7 +9,7 @@ hide:
 
 <div class="prx-page-lead" markdown>
 
-PhysReal-X 提供统一客户端和按领域拆分的服务命名空间。相同 API 可连接本地工作区或远程控制面，业务代码无需直接依赖存储、队列、仿真器或机器人运行时。
+PhysReal-X 提供统一客户端和按领域拆分的服务命名空间。相同 API 可连接本机端点或远程控制服务，业务代码无需直接依赖存储、队列、仿真器或机器人运行时。
 
 [客户端与公共约定](client.md){ .md-button .md-button--primary }
 [查看领域模型](models.md){ .md-button }
@@ -100,8 +100,8 @@ async with PhysRealX.connect("https://physreal.example.org") as px:
 ## 关键参考
 
 <div class="prx-route-grid">
-  <a class="prx-route-card" href="client/"><strong>客户端与公共约定</strong><span>连接、资源引用、分页、幂等、异步任务和线程安全。</span></a>
-  <a class="prx-route-card" href="models/"><strong>领域模型</strong><span>资产、场景、任务、Episode、数据集、模型和评测对象。</span></a>
-  <a class="prx-route-card" href="plugins/"><strong>扩展协议</strong><span>仿真后端、策略、训练器、资产构建器和机器人协议。</span></a>
-  <a class="prx-route-card" href="errors/"><strong>错误、状态与幂等</strong><span>错误层次、任务状态机、重试语义和一致性保证。</span></a>
+  <a class="prx-route-link" href="client/"><strong>客户端与公共约定</strong><span>连接、资源引用、分页、幂等、异步任务和线程安全。</span></a>
+  <a class="prx-route-link" href="models/"><strong>领域模型</strong><span>资产、场景、任务、Episode、数据集、模型和评测对象。</span></a>
+  <a class="prx-route-link" href="cli/"><strong>命令行接口</strong><span>项目初始化、资源操作、运行管理、诊断和自动化命令。</span></a>
+  <a class="prx-route-link" href="errors/"><strong>错误、状态与幂等</strong><span>错误层次、任务状态机、重试语义和一致性保证。</span></a>
 </div>

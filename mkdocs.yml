@@ -3,7 +3,6 @@ site_description: 连接数字孪生、物理仿真、多模态数据与机器�
 site_url: https://bupt-yxp.github.io/PhysReal-X/
 repo_url: https://github.com/bupt-yxp/PhysReal-X
 repo_name: GitHub
-edit_uri: edit/main/docs/
 
 docs_dir: docs
 site_dir: site
@@ -14,7 +13,7 @@ theme:
   font: false
   custom_dir: overrides
   logo: assets/images/brand-mark.png
-  favicon: assets/images/favicon-v2.png
+  favicon: assets/images/favicon.png
   icon:
     repo: fontawesome/brands/github
   palette:
@@ -45,7 +44,6 @@ theme:
     - search.suggest
     - search.highlight
     - content.code.copy
-    - content.code.annotate
     - content.tabs.link
     - toc.follow
 
@@ -75,15 +73,8 @@ nav:
       - 训练 API: api/training.md
       - 评测、部署与反馈 API: api/evaluation-deployment-feedback.md
       - 领域模型: api/models.md
-      - 扩展协议: api/plugins.md
       - 命令行: api/cli.md
       - 错误、状态与幂等: api/errors.md
-  - 开发:
-      - 开发总览: development/index.md
-      - 架构与 SOLID 原则: development/architecture.md
-      - 数据契约与可追溯性: development/data-contracts.md
-      - 插件开发: development/plugin-development.md
-      - 测试与质量门禁: development/testing.md
 
 plugins:
   - search:
@@ -91,16 +82,10 @@ plugins:
         - zh
 
 markdown_extensions:
-  - admonition
   - attr_list
   - md_in_html
-  - pymdownx.details
   - pymdownx.highlight:
       anchor_linenums: true
-  - pymdownx.emoji:
-      emoji_index: !!python/name:material.extensions.emoji.twemoji
-      emoji_generator: !!python/name:material.extensions.emoji.to_svg
-  - pymdownx.inlinehilite
   - pymdownx.superfences
   - pymdownx.tabbed:
       alternate_style: true
@@ -108,10 +93,7 @@ markdown_extensions:
 extra_css:
   - stylesheets/extra.css
 
-extra:
-  social:
-    - icon: fontawesome/brands/github
-      link: https://github.com/bupt-yxp/PhysReal-X
-      name: PhysReal-X 项目仓库
+extra_javascript:
+  - javascripts/toc-sync.js
 
-copyright: Copyright &copy; 2026 PhysReal-X 贡献者 · MIT 许可证
+copyright: Copyright &copy; 2026 PhysReal-X · MIT 许可证

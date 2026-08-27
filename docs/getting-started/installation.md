@@ -8,37 +8,27 @@ PhysReal-X 采用“核心客户端 + 隔离工作节点”的安装方式。核
 | --- | --- |
 | 操作系统 | Linux x86_64 |
 | Python | 3.11 或 3.12 |
-| 存储 | 本地开发至少预留 20 GB；多模态数据按任务容量规划 |
+| 存储 | 本地模式至少预留 20 GB；多模态数据按任务容量规划 |
 | GPU | 仅仿真渲染、训练或 GPU 后端需要；驱动版本以对应后端要求为准 |
-| Git | 用于获取源码和管理配置 |
 
 ## 创建核心环境
 
 === "Conda（推荐）"
 
     ```bash
-    git clone https://github.com/bupt-yxp/PhysReal-X.git
-    cd PhysReal-X
-    conda env create -f environment.yml
+    conda create -n PhysReal-X python=3.11
     conda activate PhysReal-X
+    python -m pip install physreal-x
     ```
 
 === "Python venv"
 
     ```bash
-    git clone https://github.com/bupt-yxp/PhysReal-X.git
-    cd PhysReal-X
     python3.11 -m venv .venv
     source .venv/bin/activate
     python -m pip install --upgrade pip
-    python -m pip install -e .
+    python -m pip install physreal-x
     ```
-
-开发、测试和文档依赖：
-
-```bash
-python -m pip install -e '.[dev,train,docs]'
-```
 
 ## 初始化工作区
 
@@ -76,7 +66,7 @@ PhysReal-X 核心环境
 
 ## 配置存储
 
-本地开发使用：
+本地模式使用：
 
 ```yaml
 # physrealx.yaml

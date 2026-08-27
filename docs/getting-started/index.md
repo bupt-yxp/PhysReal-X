@@ -59,10 +59,10 @@ Episode 校验、数据集发布与导出
 ## 四个稳定面
 
 <div class="prx-layer-stack">
-  <div class="prx-layer"><strong>用户入口</strong><span>Python SDK、命令行、远程 API 与 Web 控制台，共享同一应用语义。</span></div>
-  <div class="prx-layer"><strong>控制面</strong><span>资源注册、能力匹配、任务编译、运行编排、状态管理、评测与再生成计划。</span></div>
-  <div class="prx-layer"><strong>计算面</strong><span>隔离运行重建、仿真、轨迹、训练、世界模型与真实机器人适配器。</span></div>
-  <div class="prx-layer"><strong>数据面</strong><span>保存内容寻址制品、Episode 时间线、数据集、权重、指标与完整来源关联。</span></div>
+  <div class="prx-layer-row"><strong>用户入口</strong><span>Python SDK、命令行、远程 API 与 Web 控制台，共享同一应用语义。</span></div>
+  <div class="prx-layer-row"><strong>控制面</strong><span>资源注册、能力匹配、任务编译、运行编排、状态管理、评测与再生成计划。</span></div>
+  <div class="prx-layer-row"><strong>计算面</strong><span>隔离运行重建、仿真、轨迹、训练、世界模型与真实机器人适配器。</span></div>
+  <div class="prx-layer-row"><strong>数据面</strong><span>保存内容寻址制品、Episode 时间线、数据集、权重、指标与完整来源关联。</span></div>
 </div>
 
 ## 核心资源
@@ -82,25 +82,15 @@ Episode 校验、数据集发布与导出
 
 所有资源使用不可变版本与内容摘要引用。任务、数据集、模型和评测报告不会只记录一个易变路径。
 
-## 面向谁
+## 适用对象
 
-### 平台使用者
-
-使用统一客户端完成资产注册、任务编排、仿真数据生成、模型训练、评测和部署。
-
-### 能力开发者
-
-实现仿真后端、资产构建器、轨迹策略、训练器、数据导出器或机器人驱动，将外部能力转换为平台标准对象。
-
-### 平台维护者
-
-维护领域契约、运行状态机、制品一致性、调度、权限、可观测性和共享契约测试。
+PhysReal-X 面向具身智能研究人员、机器人算法工程师和数据工程师。用户可以通过 Web 控制台、Python SDK 或命令行完成资产管理、任务编排、仿真数据生成、模型训练、评测与真机反馈，不需要理解平台内部实现。
 
 ## 继续阅读
 
 <div class="prx-route-grid">
-  <a class="prx-route-card" href="installation/"><strong>安装与环境</strong><span>准备 Python、核心服务、计算工作节点与存储。</span></a>
-  <a class="prx-route-card" href="quickstart/"><strong>快速开始</strong><span>通过 Python SDK 跑通资产、任务、运行、训练和评测。</span></a>
-  <a class="prx-route-card" href="first-project/"><strong>第一个完整项目</strong><span>从项目结构和 YAML 规格开始构建可复现工程。</span></a>
-  <a class="prx-route-card" href="../user-guide/"><strong>用户指南</strong><span>按照真实工作顺序深入使用平台的每项服务。</span></a>
+  <a class="prx-route-link" href="installation/"><strong>安装与环境</strong><span>准备 Python、核心服务、计算工作节点与存储。</span></a>
+  <a class="prx-route-link" href="quickstart/"><strong>快速开始</strong><span>通过 Python SDK 跑通资产、任务、运行、训练和评测。</span></a>
+  <a class="prx-route-link" href="first-project/"><strong>第一个完整项目</strong><span>从项目结构和 YAML 规格开始构建可复现工程。</span></a>
+  <a class="prx-route-link" href="../user-guide/"><strong>用户指南</strong><span>按照真实工作顺序深入使用平台的每项服务。</span></a>
 </div>
