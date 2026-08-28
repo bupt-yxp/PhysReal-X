@@ -27,7 +27,7 @@ PhysReal-X 不重复实现物理引擎。SAPIEN、Isaac Sim、Genesis、渲染�
 
 ## 快速开始
 
-Python 3.11 是推荐运行环境：
+PhysReal-X 支持 Python 3.8–3.12；Python 3.11 是推荐运行环境：
 
 ```bash
 conda env create -f environment.yml
@@ -35,6 +35,9 @@ conda activate PhysReal-X
 python -m pip install -e '.[dev,docs]'
 physrealx doctor
 ```
+
+训练扩展在 Python 3.9–3.12 使用 NumPy 1.26.4。NumPy 1.26 不支持 Python 3.8，
+因此 Python 3.8 环境使用同为 NumPy 1.x 的 1.24.4。
 
 公共 SDK 使用按领域划分的服务接口：
 

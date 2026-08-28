@@ -9,7 +9,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class DoctorReport:
     python: str
     platform: str

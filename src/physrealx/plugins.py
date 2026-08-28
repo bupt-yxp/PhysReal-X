@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Mapping
+import sys
+from collections.abc import Mapping
 from dataclasses import dataclass
 from importlib.metadata import entry_points
-from typing import Literal
+from typing import Callable, Literal
+from typing import Mapping as TypingMapping
+
+from typing_extensions import TypeAlias
 
 from physrealx.contracts import API_VERSION, Policy, SimulationBackend, Trainer
 from physrealx.domain import JSONValue
 from physrealx.errors import PluginError, ResourceConflictError, ResourceNotFoundError
 
-PolicyFactory = Callable[[Mapping[str, JSONValue]], Policy]
+PolicyFactory: TypeAlias = Callable[[TypingMapping[str, JSONValue]], Policy]
 _PLUGIN_NAME = re.compile(r"^[a-z][a-z0-9_.-]{0,127}$")
 _PLUGIN_VERSION = re.compile(
     r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
@@ -21,7 +25,7 @@ _PLUGIN_VERSION = re.compile(
 )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class PluginDescriptor:
     kind: Literal["simulation_backend", "policy", "trainer"]
     name: str
@@ -148,7 +152,11 @@ class PluginRegistry:
     def discover(self) -> None:
         """Load external registration functions from ``physrealx.plugins`` entry points."""
 
-        for entry_point in entry_points(group="physrealx.plugins"):
+        if sys.version_info >= (3, 10):
+            selected = entry_points(group="physrealx.plugins")
+        else:
+            selected = entry_points().get("physrealx.plugins", ())
+        for entry_point in selected:
             try:
                 registration = entry_point.load()
                 if not callable(registration):

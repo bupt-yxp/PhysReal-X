@@ -355,7 +355,6 @@ class RunExecutor:
             action.inline,
             task.action.lower,
             task.action.upper,
-            strict=True,
         ):
             numeric = float(value)
             if not lower <= numeric <= upper:

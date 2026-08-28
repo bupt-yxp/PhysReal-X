@@ -285,9 +285,7 @@ class TorchBehaviorCloningPolicy:
             predicted = self._model(tensor)[0].detach().cpu().tolist()
         bounded = tuple(
             min(upper, max(lower, float(value)))
-            for value, lower, upper in zip(
-                predicted, task.action.lower, task.action.upper, strict=True
-            )
+            for value, lower, upper in zip(predicted, task.action.lower, task.action.upper)
         )
         return DataValue(
             dtype=task.action.signal.dtype,

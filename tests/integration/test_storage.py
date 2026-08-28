@@ -99,8 +99,8 @@ def test_artifact_reads_reject_bad_references_and_corruption(tmp_path: Path) -> 
         store.root
         / "objects"
         / "sha256"
-        / reference.digest.removeprefix("sha256:")[:2]
-        / reference.digest.removeprefix("sha256:")
+        / reference.digest[len("sha256:") :][:2]
+        / reference.digest[len("sha256:") :]
     )
     object_path.write_bytes(b"corrupt")
 

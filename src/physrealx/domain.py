@@ -10,14 +10,14 @@ import hashlib
 import json
 import math
 import re
+import sys
 import uuid
-from collections.abc import Mapping
-from datetime import UTC, datetime
-from enum import StrEnum
+from collections.abc import Iterator, Mapping
+from datetime import datetime, timezone
+from enum import Enum
 from functools import reduce
-from itertools import pairwise
 from operator import mul
-from typing import Annotated, Any, Final, Literal, NoReturn, Self, TypeAlias
+from typing import Any, Dict, Final, List, Literal, NoReturn, TypeVar, Union
 
 from pydantic import (
     BaseModel,
@@ -27,6 +27,18 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from typing_extensions import Annotated, Self, TypeAlias
+
+if sys.version_info >= (3, 11):
+    from enum import StrEnum
+else:
+
+    class StrEnum(str, Enum):
+        """Python 3.8-3.10 equivalent of :class:`enum.StrEnum`."""
+
+        def __str__(self) -> str:
+            return str.__str__(self)
+
 
 JSONValue: TypeAlias = JsonValue
 SCHEMA_VERSION: Final[Literal[1]] = 1
@@ -45,6 +57,11 @@ _FRAME = re.compile(r"^[A-Za-z][A-Za-z0-9_./:-]{0,126}$")
 PositiveFloat = Annotated[float, Field(gt=0, allow_inf_nan=False)]
 NonNegativeFloat = Annotated[float, Field(ge=0, allow_inf_nan=False)]
 UnitFloat = Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
+_PairT = TypeVar("_PairT")
+
+
+def _pairwise(values: tuple[_PairT, ...]) -> Iterator[tuple[_PairT, _PairT]]:
+    return zip(values, values[1:])
 
 
 def _identifier(value: str, label: str) -> str:
@@ -78,7 +95,7 @@ def _count(shape: tuple[int, ...]) -> int:
     return reduce(mul, shape, 1)
 
 
-class _FrozenDict(dict[str, Any]):
+class _FrozenDict(Dict[str, Any]):
     """A dict-compatible immutable container used by frozen contracts."""
 
     @staticmethod
@@ -103,7 +120,7 @@ class _FrozenDict(dict[str, Any]):
         return self
 
 
-class _FrozenList(list[Any]):
+class _FrozenList(List[Any]):
     """A list-compatible immutable container used for nested JSON arrays."""
 
     @staticmethod
@@ -137,7 +154,7 @@ def _deep_freeze(value: Any) -> Any:
         raise ValueError("domain values must not contain NaN or infinity")
     if isinstance(value, datetime) and (value.tzinfo is None or value.utcoffset() is None):
         raise ValueError("domain timestamps must include a UTC offset")
-    if isinstance(value, _FrozenDict | _FrozenList):
+    if isinstance(value, (_FrozenDict, _FrozenList)):
         return value
     if isinstance(value, Mapping):
         return _FrozenDict({key: _deep_freeze(item) for key, item in value.items()})
@@ -562,7 +579,7 @@ class SignalSpec(DomainModel):
         return _frame(value)
 
 
-InlineScalar: TypeAlias = bool | int | float
+InlineScalar: TypeAlias = Union[bool, int, float]
 
 
 class DataValue(DomainModel):
@@ -701,7 +718,7 @@ class ActionSpec(DomainModel):
         count = _count(self.signal.shape)
         if len(self.lower) != count or len(self.upper) != count:
             raise ValueError("action bounds must match the signal shape")
-        for lower, upper in zip(self.lower, self.upper, strict=True):
+        for lower, upper in zip(self.lower, self.upper):
             if not math.isfinite(lower) or not math.isfinite(upper) or lower > upper:
                 raise ValueError("action bounds must be finite and ordered")
         return self
@@ -916,7 +933,7 @@ class Episode(DomainModel):
         if not self.steps[-1].is_last or any(item.is_last for item in self.steps[:-1]):
             raise ValueError("only the final episode step may set is_last")
         timestamps = [item.timestamp_seconds for item in self.steps]
-        if any(right <= left for left, right in pairwise(timestamps)):
+        if any(right <= left for left, right in _pairwise(tuple(timestamps))):
             raise ValueError("episode timestamps must be strictly increasing")
         sensor_timestamps: dict[tuple[str, str], float] = {}
         for step in self.steps:
@@ -1019,7 +1036,7 @@ class DatasetManifest(DomainModel):
     observation_schema: tuple[SignalSpec, ...]
     action_schema: SignalSpec
     total_steps: int = Field(gt=0)
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     metadata: dict[str, JsonValue] = Field(default_factory=dict)
 
     @field_validator("resource_id")
@@ -1080,7 +1097,7 @@ class ModelManifest(DomainModel):
     action_signal: SignalSpec
     training_config: dict[str, JsonValue]
     metrics: dict[str, float]
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     @field_validator("resource_id", "trainer", "policy")
     @classmethod
@@ -1170,7 +1187,7 @@ class EvaluationReport(DomainModel):
     success_rate: UnitFloat
     metrics: dict[str, float]
     failures: tuple[FailureCase, ...]
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     @field_validator("resource_id")
     @classmethod

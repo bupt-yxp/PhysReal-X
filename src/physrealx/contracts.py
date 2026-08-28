@@ -27,7 +27,7 @@ from physrealx.domain import (
 API_VERSION = "1"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class BackendCapabilities:
     rigid_body: bool = True
     articulation: bool = True
@@ -39,13 +39,13 @@ class BackendCapabilities:
     action_kinds: tuple[str, ...] = ()
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class Frame:
     observations: Mapping[str, DataValue]
     state: Mapping[str, DataValue]
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class StepResult:
     frame: Frame
     reward: float

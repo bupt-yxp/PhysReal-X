@@ -15,7 +15,7 @@ import sqlite3
 import tempfile
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager, suppress
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Final, TypeVar
@@ -47,7 +47,7 @@ _T = TypeVar("_T", bound=BaseModel)
 
 
 def _utc_now() -> datetime:
-    return datetime.now(UTC)
+    return datetime.now(timezone.utc)
 
 
 def _canonical_json(value: Any) -> str:
@@ -114,7 +114,7 @@ class LocalArtifactStore:
     ) -> ArtifactRef:
         """Store bytes and return their immutable content reference."""
 
-        if not isinstance(data, bytes | bytearray | memoryview):
+        if not isinstance(data, (bytes, bytearray, memoryview)):
             raise TypeError("data must be bytes-like")
         if not isinstance(media_type, str) or not media_type.strip():
             raise DomainValidationError("media_type must be a non-empty string")
@@ -206,7 +206,7 @@ class LocalArtifactStore:
 
     def _path_for_digest(self, digest: str) -> Path:
         digest = _validate_digest(digest)
-        hexadecimal = digest.removeprefix("sha256:")
+        hexadecimal = digest[len("sha256:") :]
         return self._objects / hexadecimal[:2] / hexadecimal
 
     @staticmethod
