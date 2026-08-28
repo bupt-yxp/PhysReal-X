@@ -123,9 +123,9 @@ PhysReal-X 统一管理数字孪生、场景任务、仿真执行、Episode 数�
 
 <p class="prx-eyebrow">统一 Python SDK</p>
 
-## 同一套接口，连接本机端点与远程控制服务
+## 统一资源语义，贯通资产、仿真、数据与训练
 
-单机实验可使用本机端点，团队与集群环境连接远程控制服务；仿真和训练由已注册工作节点执行，SDK 语义保持一致。
+业务代码只面向平台资源与任务生命周期；仿真器、训练框架和机器人由平台工作节点统一接入与调度。
 
 [阅读快速开始](getting-started/quickstart.md) · [查看客户端约定](api/client.md)
 
@@ -134,19 +134,16 @@ PhysReal-X 统一管理数字孪生、场景任务、仿真执行、Episode 数�
 <div class="prx-sdk__code" markdown>
 
 ```python
-from physrealx import PhysRealX
+from physrealx import PhysRealX, RunSpec
 
-px = PhysRealX.connect("local:///.physrealx")
+px = PhysRealX.from_profile("default")
 
 run = px.runs.submit(
-    task="open-drawer@1.0.0",
-    scene="drawer-lab@1.0.0",
-    backend="isaac-sim@5",
-    episodes=100,
-    seed=42,
+    RunSpec.from_file("runs/open-drawer.run.yaml"),
+    idempotency_key="open-drawer-v1",
 )
 
-dataset = px.datasets.create_from_run(run.id)
+dataset = px.datasets.get(px.runs.wait(run).dataset)
 ```
 
 </div>

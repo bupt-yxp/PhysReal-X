@@ -59,7 +59,7 @@ Episode 校验、数据集发布与导出
 ## 四个稳定面
 
 <div class="prx-layer-stack">
-  <div class="prx-layer-row"><strong>用户入口</strong><span>Python SDK、命令行、远程 API 与 Web 控制台，共享同一应用语义。</span></div>
+  <div class="prx-layer-row"><strong>用户入口</strong><span>Python SDK、命令行、HTTP API 与 Web 控制台，共享同一应用语义。</span></div>
   <div class="prx-layer-row"><strong>控制面</strong><span>资源注册、能力匹配、任务编译、运行编排、状态管理、评测与再生成计划。</span></div>
   <div class="prx-layer-row"><strong>计算面</strong><span>隔离运行重建、仿真、轨迹、训练、世界模型与真实机器人适配器。</span></div>
   <div class="prx-layer-row"><strong>数据面</strong><span>保存内容寻址制品、Episode 时间线、数据集、权重、指标与完整来源关联。</span></div>

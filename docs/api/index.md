@@ -9,30 +9,22 @@ hide:
 
 <div class="prx-page-lead" markdown>
 
-PhysReal-X 提供统一客户端和按领域拆分的服务命名空间。相同 API 可连接本机端点或远程控制服务，业务代码无需直接依赖存储、队列、仿真器或机器人运行时。
+PhysReal-X 提供统一的平台客户端和按领域拆分的服务命名空间。业务代码面向资产、任务、运行、数据集和模型，不直接依赖存储、队列、仿真器或机器人运行时。
 
 [客户端与公共约定](client.md){ .md-button .md-button--primary }
 [查看领域模型](models.md){ .md-button }
 
 </div>
 
-## 连接
+## 创建客户端
 
 ```python
 from physrealx import PhysRealX
 
-px = PhysRealX.connect("local:///.physrealx")
+px = PhysRealX.from_profile("default")
 ```
 
-远程平台：
-
-```python
-px = PhysRealX.connect(
-    "https://physreal.example.org",
-    project="embodied-manipulation",
-    token="env:PHYSREALX_TOKEN",
-)
-```
+配置档案保存平台地址、当前项目和凭据来源，使连接配置与业务代码分离。计算资源不由客户端直接连接；仿真、训练与机器人运行时以工作节点身份接入平台。
 
 ## 服务命名空间
 
@@ -90,7 +82,7 @@ Python 客户端提供同步 API；异步程序使用 `physrealx.aio` 中的同�
 ```python
 from physrealx.aio import PhysRealX
 
-async with PhysRealX.connect("https://physreal.example.org") as px:
+async with PhysRealX.from_profile("default") as px:
     run = await px.runs.submit(spec)
     result = await px.runs.wait(run)
 ```

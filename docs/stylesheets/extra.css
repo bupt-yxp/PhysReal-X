@@ -802,30 +802,33 @@ body {
   margin: 0;
 }
 
+.prx-sdk__code {
+  --md-code-fg-color: #d7e3f2;
+  --md-code-bg-color: #06111f;
+  --md-code-hl-number-color: #ffbd66;
+  --md-code-hl-special-color: #f38fbe;
+  --md-code-hl-function-color: #8bb9ff;
+  --md-code-hl-constant-color: #b7a7ff;
+  --md-code-hl-keyword-color: #f38fbe;
+  --md-code-hl-string-color: #55d6a2;
+  --md-code-hl-name-color: #d7e3f2;
+  --md-code-hl-operator-color: #a9bdd4;
+  --md-code-hl-punctuation-color: #a9bdd4;
+  --md-code-hl-comment-color: #8298b2;
+  --md-code-hl-generic-color: #a9bdd4;
+  --md-code-hl-variable-color: #d7e3f2;
+}
+
 .md-typeset .prx-sdk__code pre > code {
   border-color: rgba(255, 255, 255, 0.12);
-  background: #06111f;
-  color: #cbd8e8;
+  background: var(--md-code-bg-color);
+  color: var(--md-code-fg-color);
   box-shadow: 0 1rem 2.6rem rgba(0, 0, 0, 0.28);
 }
 
-.prx-sdk__code .highlight .kn,
-.prx-sdk__code .highlight .k {
-  color: #f38fbe;
-}
-
-.prx-sdk__code .highlight .nn,
-.prx-sdk__code .highlight .n {
-  color: #cbd8e8;
-}
-
-.prx-sdk__code .highlight .s,
-.prx-sdk__code .highlight .s2 {
-  color: #55d6a2;
-}
-
-.prx-sdk__code .highlight .mi {
-  color: #ffbd66;
+.prx-sdk__code ::selection {
+  background: #155eef;
+  color: #fff;
 }
 
 .prx-final-cta {

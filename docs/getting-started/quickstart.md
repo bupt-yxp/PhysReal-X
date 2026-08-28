@@ -2,15 +2,15 @@
 
 本页用一个“打开抽屉”任务展示完整主链路：注册资产与场景、编译任务、生成数据集、训练策略并进行独立评测。
 
-## 1. 连接平台
+## 1. 创建平台客户端
 
 ```python
 from physrealx import PhysRealX
 
-px = PhysRealX.connect("local:///.physrealx")
+px = PhysRealX.from_profile("default")
 ```
 
-`local:///` 表示连接本机端点，HTTPS 地址表示连接远程控制服务。端点决定控制服务的位置；仿真与训练由平台根据后端能力调度到已注册工作节点。
+`default` 配置保存平台地址、当前项目和凭据来源。客户端只提交资源与任务请求；平台根据能力、配额和可用设备选择已注册工作节点执行仿真、训练或真机任务。
 
 ## 2. 注册资产
 

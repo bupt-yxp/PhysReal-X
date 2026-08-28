@@ -5,21 +5,23 @@
 ## 全局形式
 
 ```bash
-physrealx [--endpoint ENDPOINT] [--project PROJECT] [--debug] COMMAND
+physrealx [--profile PROFILE] [--project PROJECT] [--debug] COMMAND
 ```
 
 ## 命令树
 
 ```text
 physrealx
-├── workspace   init / info
-├── project     validate / apply
+├── profile     add / list / show / use / delete
+├── auth        login / status / logout
+├── project     init / validate / apply
 ├── doctor
+├── validate    asset / scene / task / run / training
 ├── workers     list / inspect
 ├── artifacts   upload / download / verify / usage
-├── assets      register / import / build / get / list / validate / calibrate / diff
-├── scenes      register / compose / get / list / validate
-├── tasks       register / compile / get / list / validate
+├── assets      register / import / build / get / list / calibrate / diff
+├── scenes      register / compose / get / list
+├── tasks       register / compile / get / list
 ├── runs        submit / get / list / watch / wait / cancel / resume / episodes
 ├── datasets    get / list / query / split / merge / validate / stats / export / diff
 ├── training    submit / get / list / watch / wait / cancel / resume
@@ -29,11 +31,23 @@ physrealx
 └── feedback    ingest / analyze / plan / execute
 ```
 
-## 工作区与项目
+## 配置档案与身份
 
 ```bash
-physrealx workspace init .physrealx
-physrealx workspace info
+physrealx profile add default \
+  --server https://<平台地址> \
+  --project embodied-manipulation
+physrealx auth login --profile default
+physrealx profile use default
+physrealx auth status
+```
+
+配置档案保存非敏感连接配置和凭据来源；凭据保存在系统密钥环或环境变量中。业务命令默认使用当前配置档案，也可以通过 `--profile` 显式选择。
+
+## 项目
+
+```bash
+physrealx project init open-drawer
 physrealx project validate .
 physrealx project apply .
 ```

@@ -39,34 +39,16 @@ physrealx doctor
 公共 SDK 使用按领域划分的服务接口：
 
 ```python
-from physrealx import PhysRealX
+from physrealx import AssetSpec, PhysRealX, RunSpec, SceneSpec, TaskSpec
 
-px = PhysRealX.connect("local:///.physrealx")
+px = PhysRealX.from_profile("default")
 
-asset = px.assets.register("configs/assets/drawer.yaml")
-scene = px.scenes.create("configs/scenes/drawer_lab.yaml")
-task = px.tasks.create("configs/tasks/open_drawer.yaml")
+px.assets.register(AssetSpec.from_file("assets/drawer.asset.yaml"))
+px.scenes.register(SceneSpec.from_file("scenes/drawer.scene.yaml"))
+px.tasks.register(TaskSpec.from_file("tasks/open_drawer.task.yaml"))
 
-run = px.runs.submit(
-    task=task.ref,
-    scene=scene.ref,
-    backend="isaac-sim@5",
-    episodes=100,
-    seed=42,
-    wait=True,
-)
-
-dataset = px.datasets.create_from_run(run.id, name="drawer-open-v1")
-training = px.training.submit(
-    dataset=dataset.ref,
-    recipe="diffusion-policy@1",
-    config="configs/training/diffusion_policy.yaml",
-)
-evaluation = px.evaluations.submit(
-    policy=training.output_policy,
-    suite="drawer-generalization@1",
-    wait=True,
-)
+run = px.runs.submit(RunSpec.from_file("runs/generate.run.yaml"))
+dataset = px.datasets.get(px.runs.wait(run).dataset)
 ```
 
 完整教程见[第一个完整项目](https://bupt-yxp.github.io/PhysReal-X/getting-started/first-project/)，

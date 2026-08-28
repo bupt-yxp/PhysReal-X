@@ -6,6 +6,9 @@
 
 ```text
 PhysRealXError
+├── ClientError
+│   ├── ConfigurationError
+│   └── ClientClosedError
 ├── ValidationError
 │   ├── AssetGraphError
 │   ├── CoordinateFrameError
@@ -94,7 +97,7 @@ px.training.submit(spec, idempotency_key="drawer-dp-v1")
 
 ## 超时
 
-客户端 `wait(timeout=...)` 超时只停止等待，不取消远程任务：
+客户端 `wait(timeout=...)` 超时只停止等待，不取消平台任务：
 
 ```python
 try:
