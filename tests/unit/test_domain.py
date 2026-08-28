@@ -19,7 +19,7 @@ from physrealx.domain import (
     canonical_json_bytes,
     sha256_digest,
 )
-from physrealx.reference import reference_asset, reference_task
+from physrealx.reference import reference_asset, reference_scene, reference_task
 
 
 def test_canonical_digest_is_mapping_order_independent() -> None:
@@ -32,13 +32,15 @@ def test_canonical_digest_is_mapping_order_independent() -> None:
 
 def test_reference_asset_has_separate_visual_and_collision_geometry() -> None:
     asset = reference_asset()
+    scene = reference_scene(asset)
 
     assert {item.role for item in asset.geometries} == {
         GeometryRole.VISUAL,
         GeometryRole.COLLISION,
     }
     assert asset.joints[0].joint_type is JointType.PRISMATIC
-    assert reference_task(asset).asset.resource_id == asset.resource_id
+    assert scene.entities[0].asset.resource_id == asset.resource_id
+    assert reference_task(scene).scene.resource_id == scene.resource_id
 
 
 def test_asset_requires_positive_definite_inertia_and_primitive_dimensions() -> None:
@@ -107,7 +109,7 @@ def test_data_value_enforces_declared_numeric_range(
 
 def test_task_predicates_cannot_reference_action_signal() -> None:
     asset = reference_asset()
-    task = reference_task(asset)
+    task = reference_task(reference_scene(asset))
     payload = task.model_dump()
     action = ActionSpec.model_validate(payload["action"])
     payload["success_conditions"][0]["signal"] = action.signal.name

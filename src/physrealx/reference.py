@@ -24,6 +24,9 @@ from physrealx.domain import (
     PredicateOperator,
     RunSpec,
     ScalarParameter,
+    SceneEntityRole,
+    SceneEntitySpec,
+    SceneSpec,
     SignalDType,
     SignalSpec,
     TaskSpec,
@@ -197,10 +200,18 @@ class ReferenceDrawerBackend:
 
     def create_session(
         self,
-        asset: AssetSpec,
+        scene: SceneSpec,
+        assets: Mapping[str, AssetSpec],
         task: TaskSpec,
         config: Mapping[str, JSONValue],
     ) -> ReferenceDrawerSession:
+        del scene
+        try:
+            asset = assets[task.subject_entity]
+        except KeyError as error:
+            raise DomainValidationError(
+                f"reference_drawer cannot resolve subject entity {task.subject_entity!r}"
+            ) from error
         return ReferenceDrawerSession(asset, task, config)
 
 
@@ -335,8 +346,25 @@ def reference_asset() -> AssetSpec:
     )
 
 
-def reference_task(asset: AssetSpec | None = None) -> TaskSpec:
+def reference_scene(asset: AssetSpec | None = None) -> SceneSpec:
     target_asset = asset or reference_asset()
+    return SceneSpec(
+        resource_id="drawer_lab.reference",
+        version="1.0.0",
+        display_name="Reference drawer laboratory",
+        entities=(
+            SceneEntitySpec(
+                name="drawer",
+                asset=target_asset.reference(),
+                role=SceneEntityRole.OBJECT,
+            ),
+        ),
+        metadata={"purpose": "executable_contract"},
+    )
+
+
+def reference_task(scene: SceneSpec | None = None) -> TaskSpec:
+    target_scene = scene or reference_scene()
     position = SignalSpec(
         name="drawer.position",
         shape=(1,),
@@ -364,7 +392,8 @@ def reference_task(asset: AssetSpec | None = None) -> TaskSpec:
     return TaskSpec(
         resource_id="open_drawer.reference",
         version="1.0.0",
-        asset=target_asset.reference(),
+        scene=target_scene.reference(),
+        subject_entity="drawer",
         instruction="Open the drawer beyond 30 centimeters.",
         initial_conditions=(
             Predicate(signal="drawer.position", operator=PredicateOperator.LE, value=0.05),
@@ -384,21 +413,21 @@ def reference_task(asset: AssetSpec | None = None) -> TaskSpec:
 
 
 def reference_run(
-    asset: AssetSpec | None = None,
+    scene: SceneSpec | None = None,
     task: TaskSpec | None = None,
     *,
     episode_count: int = 8,
     base_seed: int = 7,
 ) -> RunSpec:
-    target_asset = asset or reference_asset()
-    target_task = task or reference_task(target_asset)
+    target_scene = scene or reference_scene()
+    target_task = task or reference_task(target_scene)
     run_key = (
-        f"physrealx:reference:{target_asset.resource_id}@{target_asset.version}:"
+        f"physrealx:reference:{target_scene.resource_id}@{target_scene.version}:"
         f"{target_task.resource_id}@{target_task.version}:{episode_count}:{base_seed}"
     )
     return RunSpec(
         run_id=str(uuid.uuid5(uuid.NAMESPACE_URL, run_key)),
-        asset=target_asset.reference(),
+        scene=target_scene.reference(),
         task=target_task.reference(),
         backend="reference_drawer",
         policy="scripted_drawer",
@@ -416,5 +445,6 @@ __all__ = [
     "ScriptedDrawerPolicy",
     "reference_asset",
     "reference_run",
+    "reference_scene",
     "reference_task",
 ]

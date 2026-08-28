@@ -214,6 +214,7 @@ class DomainModel(BaseModel):
 
 class ResourceType(StrEnum):
     ASSET = "asset"
+    SCENE = "scene"
     TASK = "task"
     DATASET = "dataset"
     MODEL = "model"
@@ -539,6 +540,78 @@ class AssetSpec(DomainModel):
         )
 
 
+class SceneEntityRole(StrEnum):
+    ROBOT = "robot"
+    OBJECT = "object"
+    ENVIRONMENT = "environment"
+
+
+class SceneEntitySpec(DomainModel):
+    name: str
+    asset: VersionedRef
+    role: SceneEntityRole
+    pose: PoseSpec = Field(default_factory=PoseSpec)
+    tags: tuple[str, ...] = ()
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        return _identifier(value, "scene entity name")
+
+    @field_validator("tags")
+    @classmethod
+    def validate_tags(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        for value in values:
+            _identifier(value, "scene entity tag")
+        if len(values) != len(set(values)):
+            raise ValueError("scene entity tags must be unique")
+        return values
+
+    @model_validator(mode="after")
+    def validate_asset_reference(self) -> SceneEntitySpec:
+        if self.asset.resource_type is not ResourceType.ASSET:
+            raise ValueError("SceneEntitySpec.asset must reference an asset")
+        return self
+
+
+class SceneSpec(DomainModel):
+    schema_version: Literal[1] = SCHEMA_VERSION
+    resource_id: str
+    version: str
+    display_name: str = Field(min_length=1, max_length=255)
+    entities: tuple[SceneEntitySpec, ...]
+    metadata: dict[str, JsonValue] = Field(default_factory=dict)
+
+    @field_validator("resource_id")
+    @classmethod
+    def validate_resource_id(cls, value: str) -> str:
+        return _identifier(value, "resource_id")
+
+    @field_validator("version")
+    @classmethod
+    def validate_version(cls, value: str) -> str:
+        return _semver(value)
+
+    @model_validator(mode="after")
+    def validate_scene(self) -> SceneSpec:
+        if not self.entities:
+            raise ValueError("a scene requires at least one entity")
+        names = [item.name for item in self.entities]
+        if len(names) != len(set(names)):
+            raise ValueError("scene entity names must be unique")
+        if not any(item.role is not SceneEntityRole.ENVIRONMENT for item in self.entities):
+            raise ValueError("a scene requires at least one robot or object entity")
+        return self
+
+    def reference(self, digest: str | None = None) -> VersionedRef:
+        return VersionedRef(
+            resource_type=ResourceType.SCENE,
+            resource_id=self.resource_id,
+            version=self.version,
+            digest=digest,
+        )
+
+
 class SignalDType(StrEnum):
     FLOAT32 = "float32"
     FLOAT64 = "float64"
@@ -728,7 +801,8 @@ class TaskSpec(DomainModel):
     schema_version: Literal[1] = SCHEMA_VERSION
     resource_id: str
     version: str
-    asset: VersionedRef
+    scene: VersionedRef
+    subject_entity: str
     instruction: str = Field(min_length=1, max_length=1024)
     initial_conditions: tuple[Predicate, ...]
     success_conditions: tuple[Predicate, ...]
@@ -749,10 +823,15 @@ class TaskSpec(DomainModel):
     def validate_version(cls, value: str) -> str:
         return _semver(value)
 
+    @field_validator("subject_entity")
+    @classmethod
+    def validate_subject_entity(cls, value: str) -> str:
+        return _identifier(value, "subject_entity")
+
     @model_validator(mode="after")
     def validate_task(self) -> TaskSpec:
-        if self.asset.resource_type is not ResourceType.ASSET:
-            raise ValueError("TaskSpec.asset must reference an asset")
+        if self.scene.resource_type is not ResourceType.SCENE:
+            raise ValueError("TaskSpec.scene must reference a scene")
         if not self.success_conditions:
             raise ValueError("a task requires at least one success condition")
         names = [item.name for item in self.observations]
@@ -789,7 +868,7 @@ class TaskSpec(DomainModel):
 class RunSpec(DomainModel):
     schema_version: Literal[1] = SCHEMA_VERSION
     run_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    asset: VersionedRef
+    scene: VersionedRef
     task: VersionedRef
     backend: str
     backend_version: str | None = None
@@ -840,8 +919,8 @@ class RunSpec(DomainModel):
 
     @model_validator(mode="after")
     def validate_refs(self) -> RunSpec:
-        if self.asset.resource_type is not ResourceType.ASSET:
-            raise ValueError("RunSpec.asset must reference an asset")
+        if self.scene.resource_type is not ResourceType.SCENE:
+            raise ValueError("RunSpec.scene must reference a scene")
         if self.task.resource_type is not ResourceType.TASK:
             raise ValueError("RunSpec.task must reference a task")
         return self
@@ -885,7 +964,7 @@ class Episode(DomainModel):
     index: int = Field(ge=0)
     source: EpisodeSource
     seed: int = Field(ge=0, lt=2**63)
-    asset: VersionedRef
+    scene: VersionedRef
     task: VersionedRef
     backend: str
     backend_version: str
@@ -952,10 +1031,10 @@ class Episode(DomainModel):
             raise ValueError("failed episodes require a failure_reason")
         if self.success and not self.steps[-1].is_terminal:
             raise ValueError("successful episodes must end in a terminal observation")
-        if not self.asset.resolved or not self.task.resolved:
-            raise ValueError("episodes require resolved asset and task references")
-        if self.asset.resource_type is not ResourceType.ASSET:
-            raise ValueError("Episode.asset must reference an asset")
+        if not self.scene.resolved or not self.task.resolved:
+            raise ValueError("episodes require resolved scene and task references")
+        if self.scene.resource_type is not ResourceType.SCENE:
+            raise ValueError("Episode.scene must reference a scene")
         if self.task.resource_type is not ResourceType.TASK:
             raise ValueError("Episode.task must reference a task")
 
@@ -1345,6 +1424,9 @@ __all__ = [
     "RunSpec",
     "RunStatus",
     "ScalarParameter",
+    "SceneEntityRole",
+    "SceneEntitySpec",
+    "SceneSpec",
     "SignalDType",
     "SignalSpec",
     "TaskSpec",

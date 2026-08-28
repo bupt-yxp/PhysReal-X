@@ -31,6 +31,7 @@ from physrealx.domain import (
     RunResult,
     RunSpec,
     RunStatus,
+    SceneSpec,
     TaskSpec,
     VersionedRef,
     sha256_digest,
@@ -52,13 +53,16 @@ class RunExecutor:
         self._artifacts = artifacts
         self._plugins = plugins
 
-    def compile(self, spec: RunSpec) -> tuple[RunSpec, AssetSpec, TaskSpec]:
-        asset_ref, asset = self._resolve(spec.asset, AssetSpec)
+    def compile(self, spec: RunSpec) -> tuple[RunSpec, SceneSpec, dict[str, AssetSpec], TaskSpec]:
+        scene_ref, scene = self._resolve(spec.scene, SceneSpec)
         task_ref, task = self._resolve(spec.task, TaskSpec)
-        if task.asset.resource_id != asset.resource_id or task.asset.version != asset.version:
-            raise DomainValidationError("task asset does not match the run asset")
-        if task.asset.digest is not None and task.asset.digest != asset_ref.digest:
-            raise DomainValidationError("task asset digest does not match the catalog asset")
+        if task.scene.resource_id != scene.resource_id or task.scene.version != scene.version:
+            raise DomainValidationError("task scene does not match the run scene")
+        if task.scene.digest is not None and task.scene.digest != scene_ref.digest:
+            raise DomainValidationError("task scene digest does not match the catalog scene")
+        assets = self._resolve_scene_assets(scene)
+        if task.subject_entity not in assets:
+            raise DomainValidationError("task subject_entity does not exist in the scene")
         known_observations = {item.name for item in task.observations}
         unknown = set(spec.record_signals) - known_observations
         if unknown:
@@ -73,16 +77,16 @@ class RunExecutor:
             raise ResourceConflictError("requested policy version is not registered")
         resolved = spec.model_copy(
             update={
-                "asset": asset_ref,
+                "scene": scene_ref,
                 "task": task_ref,
                 "backend_version": backend.plugin_version,
                 "policy_version": policy.version,
             }
         )
-        return resolved, asset, task
+        return resolved, scene, assets, task
 
     def execute(self, spec: RunSpec) -> RunRecord:
-        resolved, asset, task = self.compile(spec)
+        resolved, scene, assets, task = self.compile(spec)
         existing = self._repository.create_run(resolved)
         if existing.status is RunStatus.SUCCEEDED:
             return existing
@@ -96,7 +100,7 @@ class RunExecutor:
             backend = self._plugins.backend(resolved.backend)
             self._preflight(backend.capabilities(), task)
             with ExitStack() as resources:
-                session = backend.create_session(asset, task, resolved.backend_config)
+                session = backend.create_session(scene, assets, task, resolved.backend_config)
                 resources.callback(session.close)
                 policy = self._plugins.policy(resolved.policy, resolved.policy_config)
                 resources.callback(policy.close)
@@ -141,7 +145,7 @@ class RunExecutor:
                 action_schema=task.action.signal,
                 total_steps=sum(item.step_count for item in summaries),
                 metadata={
-                    "asset_digest": resolved.asset.digest or "",
+                    "scene_digest": resolved.scene.digest or "",
                     "task_digest": resolved.task.digest or "",
                     "backend": resolved.backend,
                     "backend_version": resolved.backend_version or "",
@@ -224,6 +228,17 @@ class RunExecutor:
         if sha256_digest(resolved) != registered.digest:
             raise DomainValidationError("resource payload digest does not match the catalog")
         return registered, resolved
+
+    def _resolve_scene_assets(self, scene: SceneSpec) -> dict[str, AssetSpec]:
+        assets: dict[str, AssetSpec] = {}
+        for entity in scene.entities:
+            asset_ref, asset = self._resolve(entity.asset, AssetSpec)
+            if entity.asset.digest is not None and entity.asset.digest != asset_ref.digest:
+                raise ResourceConflictError(
+                    f"scene entity {entity.name!r} asset digest does not match the catalog"
+                )
+            assets[entity.name] = asset
+        return assets
 
     @staticmethod
     def _preflight(capabilities: object, task: TaskSpec) -> None:
@@ -311,7 +326,7 @@ class RunExecutor:
             index=episode_index,
             source=EpisodeSource.SIMULATOR,
             seed=seed,
-            asset=spec.asset,
+            scene=spec.scene,
             task=spec.task,
             backend=backend.name,
             backend_version=backend.plugin_version,

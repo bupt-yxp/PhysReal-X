@@ -14,16 +14,18 @@ from physrealx.reference import (
     ReferenceDrawerBackend,
     ScriptedDrawerPolicy,
     reference_asset,
+    reference_scene,
     reference_task,
 )
 
 
 def test_reference_reset_is_seed_deterministic() -> None:
     asset = reference_asset()
-    task = reference_task(asset)
+    scene = reference_scene(asset)
+    task = reference_task(scene)
     backend = ReferenceDrawerBackend()
-    first = backend.create_session(asset, task, {})
-    second = backend.create_session(asset, task, {})
+    first = backend.create_session(scene, {"drawer": asset}, task, {})
+    second = backend.create_session(scene, {"drawer": asset}, task, {})
     try:
         assert first.reset(42) == second.reset(42)
     finally:
@@ -33,8 +35,9 @@ def test_reference_reset_is_seed_deterministic() -> None:
 
 def test_reference_session_enforces_lifecycle() -> None:
     asset = reference_asset()
-    task = reference_task(asset)
-    session = ReferenceDrawerBackend().create_session(asset, task, {})
+    scene = reference_scene(asset)
+    task = reference_task(scene)
+    session = ReferenceDrawerBackend().create_session(scene, {"drawer": asset}, task, {})
     policy = ScriptedDrawerPolicy({})
     try:
         with pytest.raises(InvalidStateTransitionError, match="reset"):
@@ -64,8 +67,9 @@ def test_registry_rejects_duplicate_plugins() -> None:
 
 def test_scripted_policy_can_complete_reference_task() -> None:
     asset = reference_asset()
-    task = reference_task(asset)
-    session = ReferenceDrawerBackend().create_session(asset, task, {})
+    scene = reference_scene(asset)
+    task = reference_task(scene)
+    session = ReferenceDrawerBackend().create_session(scene, {"drawer": asset}, task, {})
     policy = ScriptedDrawerPolicy({})
     frame = session.reset(5)
     policy.reset(5)
@@ -112,8 +116,9 @@ def test_policy_factory_identity_must_match_descriptor() -> None:
 
 def test_reference_plugins_reject_unknown_configuration() -> None:
     asset = reference_asset()
-    task = reference_task(asset)
+    scene = reference_scene(asset)
+    task = reference_task(scene)
     with pytest.raises(DomainValidationError, match="unknown reference_drawer"):
-        ReferenceDrawerBackend().create_session(asset, task, {"dt_second": 0.1})
+        ReferenceDrawerBackend().create_session(scene, {"drawer": asset}, task, {"dt_second": 0.1})
     with pytest.raises(DomainValidationError, match="unknown scripted_drawer"):
         ScriptedDrawerPolicy({"step_sizes": 0.1})

@@ -10,7 +10,7 @@ from physrealx import cli
 from physrealx.diagnostics import DoctorReport
 from physrealx.domain import ResourceType, TrainingSpec, VersionedRef
 from physrealx.platform import PhysRealX
-from physrealx.reference import reference_asset, reference_run, reference_task
+from physrealx.reference import reference_asset, reference_run, reference_scene, reference_task
 
 
 def _invoke(
@@ -40,12 +40,15 @@ def test_cli_runs_complete_local_workspace_workflow(
 ) -> None:
     workspace = tmp_path / "workspace"
     asset = reference_asset()
-    task = reference_task(asset)
-    run = reference_run(asset, task, episode_count=2, base_seed=19)
+    scene = reference_scene(asset)
+    task = reference_task(scene)
+    run = reference_run(scene, task, episode_count=2, base_seed=19)
     asset_path = tmp_path / "asset.json"
+    scene_path = tmp_path / "scene.json"
     task_path = tmp_path / "task.yaml"
     run_path = tmp_path / "run.json"
     _write_json(asset_path, asset)
+    _write_json(scene_path, scene)
     _write_yaml(task_path, task)
     _write_json(run_path, run)
 
@@ -80,6 +83,15 @@ def test_cli_runs_complete_local_workspace_workflow(
 
     status, output, error = _invoke(
         capsys,
+        ["add", "scene", str(scene_path), "--workspace", str(workspace)],
+    )
+    assert status == 0
+    assert not error
+    scene_ref = json.loads(output)
+    assert scene_ref["resource_type"] == "scene"
+
+    status, output, error = _invoke(
+        capsys,
         ["add", "task", str(task_path), "--workspace", str(workspace)],
     )
     assert status == 0
@@ -89,6 +101,7 @@ def test_cli_runs_complete_local_workspace_workflow(
 
     for resource_type, expected_id in (
         ("asset", asset.resource_id),
+        ("scene", scene.resource_id),
         ("task", task.resource_id),
     ):
         status, output, error = _invoke(
@@ -119,17 +132,20 @@ def test_cli_runs_complete_local_workspace_workflow(
     assert json.loads(output) == record
 
 
-@pytest.mark.parametrize("kind", ["asset", "task", "run", "training"])
+@pytest.mark.parametrize("kind", ["asset", "scene", "task", "run", "training"])
 def test_cli_validates_every_supported_contract_kind(
     kind: str,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     asset = reference_asset()
+    scene = reference_scene(asset)
+    task = reference_task(scene)
     values = {
         "asset": asset,
-        "task": reference_task(asset),
-        "run": reference_run(asset, reference_task(asset), episode_count=1),
+        "scene": scene,
+        "task": task,
+        "run": reference_run(scene, task, episode_count=1),
         "training": TrainingSpec(
             resource_id="drawer.validation",
             version="1.0.0",
@@ -255,11 +271,13 @@ def test_cli_trains_and_evaluates_registered_model(
     workspace = tmp_path / "learning"
     platform = PhysRealX.open(workspace, discover_plugins=False)
     asset = reference_asset()
-    task = reference_task(asset)
-    platform.register_asset(asset)
-    platform.register_task(task)
-    run = reference_run(asset, task, episode_count=4, base_seed=73)
-    record = platform.execute(run)
+    scene = reference_scene(asset)
+    task = reference_task(scene)
+    platform.assets.register(asset)
+    platform.scenes.register(scene)
+    platform.tasks.register(task)
+    run = reference_run(scene, task, episode_count=4, base_seed=73)
+    record = platform.runs.submit(run)
     assert record.result is not None and record.result.dataset is not None
 
     training_path = tmp_path / "training.json"
@@ -305,4 +323,4 @@ def test_cli_trains_and_evaluates_registered_model(
     assert not error
     evaluation = VersionedRef.model_validate_json(output)
     assert evaluation.resource_type is ResourceType.EVALUATION
-    assert platform.load_evaluation(evaluation).metrics["episode_count"] == 1.0
+    assert platform.evaluations.get_report(evaluation).metrics["episode_count"] == 1.0

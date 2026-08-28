@@ -17,12 +17,13 @@ from physrealx.domain import (
     AssetSpec,
     ResourceType,
     RunSpec,
+    SceneSpec,
     TaskSpec,
     TrainingSpec,
 )
 from physrealx.errors import PhysRealXError
 from physrealx.platform import PhysRealX
-from physrealx.reference import reference_asset, reference_run, reference_task
+from physrealx.reference import reference_asset, reference_run, reference_scene, reference_task
 
 
 def _workspace(parser: argparse.ArgumentParser) -> None:
@@ -49,11 +50,11 @@ def _parser() -> argparse.ArgumentParser:
     _workspace(plugins)
 
     validate = commands.add_parser("validate", help="validate a JSON/YAML specification")
-    validate.add_argument("kind", choices=("asset", "task", "run", "training"))
+    validate.add_argument("kind", choices=("asset", "scene", "task", "run", "training"))
     validate.add_argument("path", type=Path)
 
-    add = commands.add_parser("add", help="register an immutable asset or task")
-    add.add_argument("kind", choices=("asset", "task"))
+    add = commands.add_parser("add", help="register an immutable asset, scene, or task")
+    add.add_argument("kind", choices=("asset", "scene", "task"))
     add.add_argument("path", type=Path)
     _workspace(add)
 
@@ -131,6 +132,7 @@ def _run(args: argparse.Namespace) -> int:
     if command == "validate":
         models: dict[str, type[BaseModel]] = {
             "asset": AssetSpec,
+            "scene": SceneSpec,
             "task": TaskSpec,
             "run": RunSpec,
             "training": TrainingSpec,
@@ -141,18 +143,22 @@ def _run(args: argparse.Namespace) -> int:
     if command == "add":
         platform = _platform(args.workspace)
         if args.kind == "asset":
-            reference = platform.register_asset(AssetSpec.model_validate(load_mapping(args.path)))
+            reference = platform.assets.register(AssetSpec.model_validate(load_mapping(args.path)))
+        elif args.kind == "scene":
+            reference = platform.scenes.register(SceneSpec.model_validate(load_mapping(args.path)))
         else:
-            reference = platform.register_task(TaskSpec.model_validate(load_mapping(args.path)))
+            reference = platform.tasks.register(TaskSpec.model_validate(load_mapping(args.path)))
         _print_model(reference)
         return 0
     if command == "list":
         platform = _platform(args.workspace)
-        references = platform.list_resources(ResourceType(args.kind))
+        references = platform.repository.list_resources(resource_type=ResourceType(args.kind).value)
         _print_model([item.model_dump(mode="json") for item in references])
         return 0
     if command == "run":
-        record = _platform(args.workspace).execute(RunSpec.model_validate(load_mapping(args.path)))
+        record = _platform(args.workspace).runs.submit(
+            RunSpec.model_validate(load_mapping(args.path))
+        )
         _print_model(record)
         return 0
     if command == "status":
@@ -160,12 +166,12 @@ def _run(args: argparse.Namespace) -> int:
         return 0
     if command == "train":
         spec = TrainingSpec.model_validate(load_mapping(args.path))
-        _print_model(_platform(args.workspace).train(spec))
+        _print_model(_platform(args.workspace).training.submit(spec))
         return 0
     if command == "evaluate":
         platform = _platform(args.workspace)
         model = platform.repository.get_model(args.model_id, args.model_version)
-        reference = platform.evaluate(
+        reference = platform.evaluations.submit(
             resource_id=args.evaluation_id,
             version=args.version,
             model=model,
@@ -183,12 +189,14 @@ def _run(args: argparse.Namespace) -> int:
 def _demo(args: argparse.Namespace) -> int:
     platform = _platform(args.workspace)
     asset = reference_asset()
-    task = reference_task(asset)
-    platform.register_asset(asset)
-    platform.register_task(task)
-    record = platform.execute(
+    scene = reference_scene(asset)
+    task = reference_task(scene)
+    platform.assets.register(asset)
+    platform.scenes.register(scene)
+    platform.tasks.register(task)
+    record = platform.runs.submit(
         reference_run(
-            asset,
+            scene,
             task,
             episode_count=args.episodes,
             base_seed=args.base_seed,
@@ -208,16 +216,16 @@ def _demo(args: argparse.Namespace) -> int:
             trainer="torch_bc",
             config={"device": args.device},
         )
-        model = platform.train(training)
-        evaluation = platform.evaluate(
+        model = platform.training.submit(training)
+        evaluation = platform.evaluations.submit(
             resource_id="drawer.bc.eval",
             version="1.0.0",
             model=model,
-            run=reference_run(asset, task, episode_count=args.episodes, base_seed=args.base_seed),
+            run=reference_run(scene, task, episode_count=args.episodes, base_seed=args.base_seed),
             episode_count=max(4, args.episodes),
         )
         output["model"] = model.model_dump(mode="json")
-        output["evaluation"] = platform.load_evaluation(evaluation).model_dump(mode="json")
+        output["evaluation"] = platform.evaluations.get_report(evaluation).model_dump(mode="json")
     _print_model(output)
     return 0
 

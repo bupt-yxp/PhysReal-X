@@ -19,6 +19,7 @@ from physrealx.domain import (
     RunResult,
     RunSpec,
     RunStatus,
+    SceneSpec,
     TaskSpec,
     TrainingSpec,
     VersionedRef,
@@ -76,7 +77,8 @@ class SimulationBackend(Protocol):
 
     def create_session(
         self,
-        asset: AssetSpec,
+        scene: SceneSpec,
+        assets: Mapping[str, AssetSpec],
         task: TaskSpec,
         config: Mapping[str, JSONValue],
     ) -> SimulationSession: ...

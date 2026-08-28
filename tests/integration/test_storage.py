@@ -40,7 +40,7 @@ def _reference(resource_type: str, resource_id: str, digest: str) -> VersionedRe
 def _run_spec(digest: str, *, seed: int = 7) -> RunSpec:
     return RunSpec(
         run_id=_RUN_ID,
-        asset=_reference("asset", "drawer", digest),
+        scene=_reference("scene", "drawer_lab", digest),
         task=_reference("task", "open_drawer", digest),
         backend="reference",
         policy="scripted",

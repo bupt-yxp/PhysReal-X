@@ -11,7 +11,6 @@
 | `digest` | `str` | `sha256:` 开头的内容摘要 |
 | `size_bytes` | `int` | 非负字节数 |
 | `media_type` | `str` | IANA 媒体类型或平台扩展类型 |
-| `uri` | `str | None` | 可选位置提示，不作为身份 |
 
 ### `VersionedRef[T]`
 
@@ -44,7 +43,6 @@ PoseSpec(
 | `unit` | SI 或明确机器符号，标量无单位使用 `1` |
 | `frame` | 逻辑坐标系；图像信号使用相机 frame |
 | `frequency_hz` | 期望采样频率 |
-| `tolerance_seconds` | 跨模态同步容差 |
 
 ### `DataValue`
 
@@ -83,7 +81,16 @@ ScalarParameter(
 
 ### `SceneSpec`
 
-包含实体实例、资产引用、位姿、传感器、灯光、环境、时间步、碰撞过滤、安全边界和随机化规格。
+场景是独立版本化资源，不把某个资产隐式当作完整环境。核心字段包括：
+
+| 字段 | 说明 |
+| --- | --- |
+| `resource_id` / `version` | 场景身份与语义版本 |
+| `display_name` | 展示名称 |
+| `entities` | 具有稳定名称、角色、资产精确引用和位姿的实体实例 |
+| `metadata` | 有限的结构化扩展信息 |
+
+`SceneEntitySpec.role` 为 `robot`、`object` 或 `environment`；实体名在场景内唯一。注册场景时，平台会把每个资产解析为带摘要的精确引用。
 
 ### `RandomVariableSpec`
 
@@ -91,7 +98,7 @@ ScalarParameter(
 
 ### `TaskSpec`
 
-包含场景引用、语言指令、任务图、实体绑定、初始/成功/终止条件、观测模式、动作空间、最大步数、奖励、评测指标和安全条件。
+包含场景精确引用、主体实体、语言指令、初始/成功/终止条件、观测模式、动作空间、最大步数和奖励折扣。`subject_entity` 必须对应场景中的稳定实体名。
 
 ### `Predicate`
 
@@ -124,7 +131,7 @@ Predicate(
 
 ### `Episode`
 
-包含来源、种子、资产/场景/任务、后端/策略、步骤、成功、失败原因和随机化实值。
+包含来源、种子、场景/任务精确引用、后端/策略版本、步骤、成功状态、失败原因和运行元数据。Episode 不再重复保存单资产引用，全部资产均由场景清单确定。
 
 ### `DatasetManifest`
 

@@ -11,15 +11,13 @@ from pydantic import BaseModel
 from physrealx.contracts import ArtifactStore, Repository
 from physrealx.domain import (
     AssetSpec,
-    DatasetManifest,
-    Episode,
     EvaluationReport,
     FailureCase,
     FailureCategory,
-    ModelManifest,
     ResourceType,
-    RunRecord,
     RunSpec,
+    SceneEntitySpec,
+    SceneSpec,
     TaskSpec,
     TrainingSpec,
     VersionedRef,
@@ -29,6 +27,15 @@ from physrealx.errors import DomainValidationError, ResourceConflictError
 from physrealx.plugins import PluginDescriptor, PluginRegistry
 from physrealx.reference import ReferenceDrawerBackend, ScriptedDrawerPolicy
 from physrealx.runtime import RunExecutor
+from physrealx.services import (
+    AssetsService,
+    DatasetsService,
+    EvaluationsService,
+    RunsService,
+    ScenesService,
+    TasksService,
+    TrainingService,
+)
 from physrealx.storage import LocalArtifactStore, SQLiteRepository
 from physrealx.training import TorchBehaviorCloningPolicy, TorchBehaviorCloningTrainer
 
@@ -49,7 +56,14 @@ class PhysRealX:
         self.repository = repository
         self.artifacts = artifacts
         self.plugins = plugins
-        self.runs = RunExecutor(repository, artifacts, plugins)
+        self._executor = RunExecutor(repository, artifacts, plugins)
+        self.assets = AssetsService(self)
+        self.scenes = ScenesService(self)
+        self.tasks = TasksService(self)
+        self.runs = RunsService(self)
+        self.datasets = DatasetsService(self)
+        self.training = TrainingService(self)
+        self.evaluations = EvaluationsService(self)
 
     @classmethod
     def open(cls, workspace: str | Path, *, discover_plugins: bool = True) -> PhysRealX:
@@ -87,33 +101,53 @@ class PhysRealX:
         )
         return plugins
 
-    def register_asset(self, spec: AssetSpec) -> VersionedRef:
+    def _register_asset(self, spec: AssetSpec) -> VersionedRef:
         return self._register(spec, spec.reference(), "application/vnd.physrealx.asset+json")
 
-    def register_task(self, spec: TaskSpec) -> VersionedRef:
-        asset_ref = self.repository.get_resource(
-            ResourceType.ASSET.value,
-            spec.asset.resource_id,
-            spec.asset.version,
+    def _register_scene(self, spec: SceneSpec) -> VersionedRef:
+        resolved_entities: list[SceneEntitySpec] = []
+        for entity in spec.entities:
+            asset_ref = self.repository.get_resource(
+                ResourceType.ASSET.value,
+                entity.asset.resource_id,
+                entity.asset.version,
+            )
+            if entity.asset.digest is not None and entity.asset.digest != asset_ref.digest:
+                raise ResourceConflictError(
+                    f"scene entity {entity.name!r} asset digest does not match the registry"
+                )
+            resolved_entities.append(entity.model_copy(update={"asset": asset_ref}))
+        resolved = spec.model_copy(update={"entities": tuple(resolved_entities)})
+        return self._register(
+            resolved,
+            resolved.reference(),
+            "application/vnd.physrealx.scene+json",
         )
-        if spec.asset.digest is not None and spec.asset.digest != asset_ref.digest:
-            raise ResourceConflictError("task asset digest does not match the registered asset")
-        resolved = spec.model_copy(update={"asset": asset_ref})
+
+    def _register_task(self, spec: TaskSpec) -> VersionedRef:
+        scene_ref = self.repository.get_resource(
+            ResourceType.SCENE.value,
+            spec.scene.resource_id,
+            spec.scene.version,
+        )
+        if spec.scene.digest is not None and spec.scene.digest != scene_ref.digest:
+            raise ResourceConflictError("task scene digest does not match the registered scene")
+        scene = self._load_registered(scene_ref, SceneSpec)
+        if spec.subject_entity not in {entity.name for entity in scene.entities}:
+            raise DomainValidationError("task subject_entity does not exist in the scene")
+        resolved = spec.model_copy(update={"scene": scene_ref})
         return self._register(
             resolved,
             resolved.reference(),
             "application/vnd.physrealx.task+json",
         )
 
-    def execute(self, spec: RunSpec) -> RunRecord:
-        return self.runs.execute(spec)
-
-    def train(self, spec: TrainingSpec) -> VersionedRef:
+    def _train(self, spec: TrainingSpec) -> VersionedRef:
         registered = self.repository.get_dataset(spec.dataset.resource_id, spec.dataset.version)
         if registered.digest != spec.dataset.digest:
             raise ResourceConflictError("training dataset digest does not match the registry")
-        dataset = self.load_dataset(registered)
-        episodes = (self.runs.load_episode(summary) for summary in dataset.episodes)
+        dataset = self.datasets.get(registered)
+        episodes = (self._executor.load_episode(summary) for summary in dataset.episodes)
         trainer = self.plugins.trainer(spec.trainer)
         manifest = trainer.train(spec, dataset, episodes, self.artifacts)
         if (
@@ -138,7 +172,7 @@ class PhysRealX:
             specialized="model",
         )
 
-    def evaluate(
+    def _evaluate(
         self,
         *,
         resource_id: str,
@@ -153,8 +187,8 @@ class PhysRealX:
         registered_model = self.repository.get_model(model.resource_id, model.version)
         if model.digest != registered_model.digest:
             raise ResourceConflictError("evaluation model digest does not match the registry")
-        model_manifest = self.load_model(registered_model)
-        task = self.load_task(run.task)
+        model_manifest = self.training.get_model(registered_model)
+        task = self.tasks.get(run.task)
         task_observations = {item.name: item for item in task.observations}
         incompatible = {
             item.name
@@ -181,10 +215,10 @@ class PhysRealX:
         evaluation_key = sha256_digest(evaluation_payload)
         evaluation_payload["run_id"] = str(uuid.uuid5(uuid.NAMESPACE_URL, evaluation_key))
         evaluation_run = RunSpec.model_validate(evaluation_payload)
-        record = self.execute(evaluation_run)
+        record = self.runs.submit(evaluation_run)
         if record.result is None or record.result.dataset is None:
             raise DomainValidationError("evaluation run completed without a dataset")
-        dataset = self.load_dataset(record.result.dataset)
+        dataset = self.datasets.get(record.result.dataset)
         failures = tuple(
             FailureCase(
                 episode_id=item.episode_id,
@@ -219,28 +253,8 @@ class PhysRealX:
             specialized="evaluation",
         )
 
-    def load_asset(self, reference: VersionedRef) -> AssetSpec:
-        return self._load_registered(reference, AssetSpec)
-
-    def load_task(self, reference: VersionedRef) -> TaskSpec:
-        return self._load_registered(reference, TaskSpec)
-
-    def load_dataset(self, reference: VersionedRef) -> DatasetManifest:
-        return self._load_registered(reference, DatasetManifest)
-
-    def load_model(self, reference: VersionedRef) -> ModelManifest:
-        return self._load_registered(reference, ModelManifest)
-
-    def load_evaluation(self, reference: VersionedRef) -> EvaluationReport:
-        return self._load_registered(reference, EvaluationReport)
-
-    def list_resources(self, resource_type: ResourceType) -> list[VersionedRef]:
+    def _list_resources(self, resource_type: ResourceType) -> list[VersionedRef]:
         return self.repository.list_resources(resource_type=resource_type.value)
-
-    def episodes(self, run_id: str) -> tuple[Episode, ...]:
-        return tuple(
-            self.runs.load_episode(summary) for summary in self.repository.list_episodes(run_id)
-        )
 
     def _register(
         self,
