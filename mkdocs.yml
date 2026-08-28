@@ -66,6 +66,7 @@ nav:
   - API 文档:
       - API 总览: api/index.md
       - 客户端与公共约定: api/client.md
+      - 技术能力与方法 API: api/capability-methods.md
       - 资产 API: api/assets.md
       - 场景与任务 API: api/scenes-and-tasks.md
       - 运行与数据生成 API: api/runs.md

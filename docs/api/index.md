@@ -13,6 +13,7 @@ PhysReal-X 提供统一的平台客户端和按领域拆分的服务命名空间
 
 [客户端与公共约定](client.md){ .md-button .md-button--primary }
 [查看领域模型](models.md){ .md-button }
+[技术能力与方法 API](capability-methods.md){ .md-button }
 
 </div>
 
@@ -30,6 +31,7 @@ px = PhysRealX.from_profile("default")
 
 | 命名空间 | 职责 |
 | --- | --- |
+| `px.captures` | 管理多模态采集、同步、标定和质量检查 |
 | `px.assets` | 导入、构建、注册、校准和验证数字资产 |
 | `px.scenes` | 组合、注册、验证和物化场景 |
 | `px.tasks` | 编译、注册和验证任务 |
