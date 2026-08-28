@@ -86,6 +86,21 @@ def test_artifacts_are_content_addressed_and_json_is_canonical(tmp_path: Path) -
 
 
 @pytest.mark.integration
+def test_artifact_files_are_streamed_and_symbolic_links_are_rejected(tmp_path: Path) -> None:
+    store = LocalArtifactStore(tmp_path / "artifacts")
+    source = tmp_path / "capture.bin"
+    source.write_bytes(b"captured-observations")
+
+    reference = store.put_file(source, media_type="application/octet-stream")
+
+    assert store.get_bytes(reference) == b"captured-observations"
+    link = tmp_path / "capture-link.bin"
+    link.symlink_to(source)
+    with pytest.raises(DomainValidationError, match="symbolic link"):
+        store.put_file(link)
+
+
+@pytest.mark.integration
 def test_artifact_reads_reject_bad_references_and_corruption(tmp_path: Path) -> None:
     store = LocalArtifactStore(tmp_path / "artifacts")
     reference = store.put_bytes(b"immutable")
@@ -169,6 +184,20 @@ def test_versioned_registration_is_idempotent_and_conflict_safe(tmp_path: Path) 
     unresolved = reference.model_copy(update={"resource_id": "unresolved", "digest": None})
     with pytest.raises(DomainValidationError):
         repository.register_resource(unresolved)
+
+
+@pytest.mark.integration
+def test_group_registration_is_atomic_on_conflict(tmp_path: Path) -> None:
+    repository = SQLiteRepository(tmp_path / "metadata.sqlite3")
+    existing = _reference("asset", "cabinet", f"sha256:{'a' * 64}")
+    repository.register_resource(existing)
+    new_build = _reference("asset_build", "cabinet", f"sha256:{'b' * 64}")
+    conflict = existing.model_copy(update={"digest": f"sha256:{'c' * 64}"})
+
+    with pytest.raises(ResourceConflictError):
+        repository.register_resources((new_build, conflict))
+
+    assert repository.list_resources(resource_type="asset_build") == []
 
 
 @pytest.mark.integration

@@ -11,7 +11,7 @@ PhysReal-X 使用统一后端协议执行仿真，但不会强行抹平后端能
 | 可变形体、材料或多物理研究 | Genesis |
 | 轻量控制、经典动力学和快速 CI | MuJoCo |
 | 领域契约与测试 | Reference backend |
-| 真实采集与部署 | ROS 2 / robot backend |
+| 真实机器人部署与回放 | ROS 2 / robot backend |
 
 选择依据必须来自能力声明和基准结果，不应在业务代码里判断后端名称。
 

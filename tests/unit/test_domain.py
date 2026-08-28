@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 
 import pytest
-from pydantic import ValidationError
+from pydantic import JsonValue, ValidationError
 
 from physrealx.domain import (
     ActionSpec,
@@ -23,8 +23,8 @@ from physrealx.reference import reference_asset, reference_scene, reference_task
 
 
 def test_canonical_digest_is_mapping_order_independent() -> None:
-    left = {"b": [2, 3], "a": 1}
-    right = {"a": 1, "b": [2, 3]}
+    left: dict[str, JsonValue] = {"b": [2, 3], "a": 1}
+    right: dict[str, JsonValue] = {"a": 1, "b": [2, 3]}
 
     assert canonical_json_bytes(left) == canonical_json_bytes(right)
     assert sha256_digest(left) == sha256_digest(right)
@@ -155,12 +155,14 @@ def test_contracts_are_deeply_frozen_and_round_trip_json() -> None:
 
     assert isinstance(asset.metadata, dict)
     with pytest.raises(TypeError):
-        asset.metadata["mutable"] = True  # type: ignore[index]
+        asset.metadata["mutable"] = True
     assert type(asset).model_validate_json(asset.model_dump_json()) == asset
 
     updated = asset.model_copy(update={"metadata": {"nested": [1, 2]}})
+    nested = updated.metadata["nested"]
+    assert isinstance(nested, list)
     with pytest.raises(TypeError):
-        updated.metadata["nested"].append(3)  # type: ignore[union-attr]
+        nested.append(3)
 
 
 def test_nested_non_finite_metadata_is_rejected() -> None:

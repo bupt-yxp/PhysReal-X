@@ -4,6 +4,7 @@ import json
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -18,9 +19,10 @@ def _fake_torch(
     devices: tuple[str, ...] = (),
 ) -> ModuleType:
     module = ModuleType("torch")
-    module.__version__ = "2.5.1+cu121"
-    module.version = SimpleNamespace(cuda=cuda_runtime)
-    module.cuda = SimpleNamespace(
+    dynamic_module = cast(Any, module)
+    dynamic_module.__version__ = "2.5.1+cu121"
+    dynamic_module.version = SimpleNamespace(cuda=cuda_runtime)
+    dynamic_module.cuda = SimpleNamespace(
         is_available=lambda: available,
         device_count=lambda: len(devices),
         get_device_name=lambda index: devices[index],
@@ -132,7 +134,7 @@ def test_runtime_diagnostics_can_skip_cuda_probe(monkeypatch: pytest.MonkeyPatch
             raise AssertionError("CUDA must not be probed")
 
     torch = _fake_torch(cuda_runtime="12.1", available=False)
-    torch.cuda = UnprobeableCuda()
+    cast(Any, torch).cuda = UnprobeableCuda()
     monkeypatch.setitem(sys.modules, "torch", torch)
     monkeypatch.setenv("CONDA_DEFAULT_ENV", "PhysReal-X")
 

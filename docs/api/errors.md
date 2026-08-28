@@ -1,60 +1,36 @@
 # 错误、状态与幂等
 
-所有预期错误继承 `PhysRealXError`，包含稳定 `code`、可读 `message`、结构化 `details` 和可选 `request_id`。调用方根据异常类型或 `code` 处理，不解析消息文本。
+所有预期错误继承 `PhysRealXError`，包含稳定 `code`、可读 `message` 和结构化 `details`。调用方根据异常类型或 `code` 处理，不解析消息文本。
 
 ## 错误层级
 
 ```text
 PhysRealXError
-├── ClientError
-│   ├── ConfigurationError
-│   └── ClientClosedError
-├── ValidationError
-│   ├── AssetGraphError
-│   ├── CoordinateFrameError
-│   ├── SignalSchemaError
-│   ├── TaskCompilationError
-│   └── DatasetQualityError
-├── ResourceError
-│   ├── ResourceNotFoundError
-│   ├── ResourceConflictError
-│   └── IdempotencyConflictError
-├── IntegrityError
-│   └── ArtifactIntegrityError
-├── CompatibilityError
-│   ├── PluginCompatibilityError
-│   ├── CapabilityMismatchError
-│   └── BackendCompatibilityError
-├── JobError
-│   ├── RunFailedError
-│   ├── TrainingFailedError
-│   ├── EvaluationFailedError
-│   ├── JobTimeoutError
-│   └── InvalidStateTransitionError
-├── DeploymentError
-│   ├── DeploymentGateError
-│   ├── RobotUnavailableError
-│   └── SafetyViolationError
-└── TransportError
-    ├── AuthenticationError
-    ├── AuthorizationError
-    ├── RateLimitError
-    └── ServiceUnavailableError
+├── DomainValidationError
+├── SourcePackageError
+├── AssetBuildError
+├── ResourceNotFoundError
+├── ResourceConflictError
+├── ArtifactIntegrityError
+├── InvalidStateTransitionError
+└── PluginError
+    └── PluginCompatibilityError
 ```
 
-Pydantic 字段校验错误转换为平台 `ValidationError` 时保留字段路径、输入位置和原始错误类型。
+Pydantic 模型构造失败直接抛出 `pydantic.ValidationError`；多个已合法领域对象组合失败时抛出 `DomainValidationError`。
 
 ## 捕获错误
 
 ```python
-from physrealx.errors import CapabilityMismatchError, RunFailedError
+from physrealx.errors import AssetBuildError, SourcePackageError
 
 try:
-    result = px.runs.wait(run)
-except CapabilityMismatchError as exc:
-    print(exc.details["required"], exc.details["available"])
-except RunFailedError as exc:
-    print(exc.record.status, exc.record.result.error_code)
+    source = px.assets.ingest(path, **options)
+    result = px.assets.build(spec)
+except SourcePackageError as exc:
+    print(exc.code, exc.details.get("issue_codes"))
+except AssetBuildError as exc:
+    print(exc.code, exc.details.get("issue_codes"))
 ```
 
 ## 重试规则
@@ -62,10 +38,7 @@ except RunFailedError as exc:
 | 错误 | 默认是否重试 |
 | --- | --- |
 | 校验、冲突、能力不匹配 | 否；修改输入 |
-| 认证、授权、安全事件 | 否；人工处理 |
-| 限流 | 按 `retry_after` 退避 |
-| 服务暂不可用 | 仅安全读或带幂等键写入 |
-| 工作节点失联 | 由调度器按 Episode/检查点边界恢复 |
+| 源包、构建契约或插件错误 | 否；修复输入或插件 |
 | 制品摘要错误 | 否；隔离制品并调查来源 |
 
 ## 幂等语义

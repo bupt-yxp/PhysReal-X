@@ -214,6 +214,8 @@ class DomainModel(BaseModel):
 
 class ResourceType(StrEnum):
     ASSET = "asset"
+    ASSET_BUILD = "asset_build"
+    OBSERVATION_SET = "observation_set"
     SCENE = "scene"
     TASK = "task"
     DATASET = "dataset"

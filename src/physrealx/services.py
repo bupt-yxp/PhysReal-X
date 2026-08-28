@@ -2,13 +2,26 @@
 
 from __future__ import annotations
 
+import builtins
+from collections.abc import Mapping
+from pathlib import Path
 from typing import TYPE_CHECKING
 
+from physrealx.digital_twin import (
+    AssetValidationProfile,
+    AssetValidationReport,
+    DigitalTwinBuildManifest,
+    DigitalTwinBuildResult,
+    DigitalTwinBuildSpec,
+    ObservationSetManifest,
+    SourceInspection,
+)
 from physrealx.domain import (
     AssetSpec,
     DatasetManifest,
     Episode,
     EvaluationReport,
+    JSONValue,
     ModelManifest,
     ResourceType,
     RunRecord,
@@ -37,6 +50,57 @@ class AssetsService:
 
     def list(self) -> list[VersionedRef]:
         return self._platform._list_resources(ResourceType.ASSET)
+
+    def inspect_source(
+        self,
+        source: str | Path,
+        *,
+        importer: str = "artmodeling",
+    ) -> SourceInspection:
+        return self._platform._inspect_asset_source(Path(source), importer)
+
+    def ingest(
+        self,
+        source: str | Path,
+        *,
+        resource_id: str,
+        version: str,
+        display_name: str,
+        importer: str = "artmodeling",
+        config: Mapping[str, JSONValue] | None = None,
+    ) -> VersionedRef:
+        return self._platform._ingest_asset_source(
+            Path(source),
+            importer=importer,
+            resource_id=resource_id,
+            version=version,
+            display_name=display_name,
+            config=config or {},
+        )
+
+    def get_observations(self, reference: VersionedRef) -> ObservationSetManifest:
+        return self._platform._load_registered(reference, ObservationSetManifest)
+
+    def list_observations(self) -> builtins.list[VersionedRef]:
+        return self._platform._list_resources(ResourceType.OBSERVATION_SET)
+
+    def build(self, spec: DigitalTwinBuildSpec) -> DigitalTwinBuildResult:
+        return self._platform._build_digital_twin(spec)
+
+    def get_build(self, reference: VersionedRef) -> DigitalTwinBuildManifest:
+        return self._platform._load_registered(reference, DigitalTwinBuildManifest)
+
+    def list_builds(self) -> builtins.list[VersionedRef]:
+        return self._platform._list_resources(ResourceType.ASSET_BUILD)
+
+    def validate(
+        self,
+        asset: AssetSpec | VersionedRef,
+        *,
+        profile: AssetValidationProfile = AssetValidationProfile.DIGITAL_TWIN,
+    ) -> AssetValidationReport:
+        target = asset if isinstance(asset, AssetSpec) else self.get(asset)
+        return self._platform._validate_asset(target, profile)
 
 
 class ScenesService:

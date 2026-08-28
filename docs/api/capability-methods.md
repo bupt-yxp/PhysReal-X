@@ -1,6 +1,6 @@
 ---
 title: 技术能力与方法 API
-description: 从真实采集、数字孪生到训练和真机反馈的能力接口与开源实现选型
+description: 从已采集观测、数字孪生到训练和真机反馈的能力接口与开源实现选型
 ---
 
 # 技术能力与方法 API
@@ -11,7 +11,7 @@ description: 从真实采集、数字孪生到训练和真机反馈的能力接�
 
 | 功能模块 | 原版来源 | v3 来源 | 平台结果 |
 | --- | --- | --- | --- |
-| 真实资产接入与数字孪生 | P12–13、P28–34 | P5–6 | 标定采集、数字孪生资产与多模态数据 |
+| 真实资产接入与数字孪生 | P12–13、P28–34 | P5–6 | 已采集观测、数字孪生资产与多模态数据 |
 | 物理可信资产库 | P13、P15、P35–42 | P7–8 | 可交互、可校准、可版本化资产 |
 | 场景与任务生成 | P18 | P9 | 场景、任务、轨迹与随机化规格 |
 | 物理仿真与多模态渲染 | P14–16、P19、P35–36 | P10–11 | Episode 与质量合格的数据集 |
@@ -23,9 +23,11 @@ description: 从真实采集、数字孪生到训练和真机反馈的能力接�
 
 | 技术 | 接入结论 |
 | --- | --- |
-| [RDFC-GAN](https://github.com/midea-ai/RDFC-GAN) | 已有官方 Apache-2.0 实现，可直接封装为深度补全适配器。 |
+| [RDFC-GAN](https://github.com/midea-ai/RDFC-GAN) | 官方已开源训练/测试代码，但未提供可直接下载的预训练权重，不作默认运行方法。 |
 | [DTF-Net](https://arxiv.org/abs/2308.02239) | 采用论文方法定义插件能力，未确认官方代码前使用 Self-DPDN 等开源基线。 |
-| [PD²GS](https://pd2gs-iclr.github.io/pd2gs-iclr/) | 项目页当前标注代码待发布，先以 gsplat、FreeArtGS 和 PyTorch3D 实现基线。 |
+| [OMNI-DC](https://github.com/princeton-vl/OMNI-DC) | 官方代码、自定义数据示例和预训练权重均可用，作为默认跨数据深度补全插件。 |
+| [CompletionFormer](https://github.com/youmi-zym/CompletionFormer) | 官方提供 NYUv2/KITTI 权重，作为有明确数据域的基线。 |
+| [VideoArtGS](https://videoartgs.github.io/) / [FreeArtGS](https://github.com/FreeArtGS/FreeArtGS) | 已发布代码，分别覆盖单目视频和自由运动铰接重建。 |
 | [ArtGen](https://arxiv.org/abs/2512.12395) | 采用论文方法定义生成器能力，未确认官方代码前使用 Articulate Anything 与 Arti-PG。 |
 | [CAPE](https://arxiv.org/abs/2606.07304) | 采用论文方法定义世界模型训练器，未确认官方代码前使用 DINOv2、PyTorch 与 OpenDW。 |
 | VQ-VAE + Diffusion/FM | 这是策略技术组合，分别使用开源量化器、Diffusion Policy 和 Flow Matching 组件实现。 |
@@ -33,36 +35,32 @@ description: 从真实采集、数字孪生到训练和真机反馈的能力接�
 最终链路：
 
 ```text
-多模态采集 → 数字孪生 → 物理资产库 → 场景任务 → 仿真数据 → 世界模型/策略训练 → 真机评测 → 定向再生成
+已采集观测 → 数字孪生 → 物理资产库 → 场景任务 → 仿真数据 → 世界模型/策略训练 → 真机评测 → 定向再生成
 ```
 
 ## 1. 真实资产接入与数字孪生
 
 | API | 用途 | 推荐开源实现 |
 | --- | --- | --- |
-| `captures.create(spec)` | 创建带设备、信号、时钟和坐标系约定的采集会话。 | ROS 2、rosbag2、MCAP |
-| `captures.append(capture, batch)` | 原子写入 RGB-D、Event、点云、力觉、位姿和机器人状态批次。 | ROS 2 messages、Apache Arrow、Zarr |
-| `captures.finalize(capture)` | 完成完整性检查后将采集会话发布为不可变采集版本。 | MCAP、Apache Arrow、MinIO |
-| `captures.synchronize(capture, config)` | 按硬件时间戳和同步容差生成对齐后的多模态采集版本。 | ROS 2 `message_filters`、rosbag2、MCAP |
-| `captures.calibrate(capture, profile)` | 求解相机内外参、传感器外参和统一坐标系并发布标定报告。 | Kalibr、OpenCV `calib3d`、Ceres Solver |
-| `captures.validate(capture, checks)` | 检查丢帧、时间漂移、深度空洞、标定残差和信号完整性。 | evo、Open3D、Polars |
-| `assets.build(capture, pipeline=...)` | 编排深度补全、位姿形状恢复、Mesh/Gaussian 重建和 USD 资产发布。 | RDFC-GAN、Self-DPDN、COLMAP、OpenMVS、Nerfstudio/gsplat、OpenUSD |
-| `assets.export(asset, format=...)` | 将资产的几何、纹理、语义、关节和物性导出为目标后端可读取的制品。 | OpenUSD、trimesh、assimp、URDF/MJCF |
+| `assets.inspect_source(path, importer=...)` | 只读检查已采集数据包的结构、帧对齐、标定缺失和安全性。 | ArtModeling importer、NPY 头解析 |
+| `assets.ingest(path, importer=...)` | 规范化模态语义并将原始文件发布为不可变观测集。 | Pydantic、SHA-256 内容寻址存储 |
+| `assets.build(DigitalTwinBuildSpec(...))` | 按逐阶段方法配方生成几何、部件、关节、物性和 USD 资产。 | COLMAP/VGGT、OMNI-DC、ArtGS/VideoArtGS、CoACD、OpenUSD |
+| `assets.validate(asset, profile="digital_twin")` | 在发布前检查制品、link/joint、碰撞表示、物性来源和限制。 | PhysReal-X validator、MuJoCo |
 
-实现约定：RDFC-GAN 直接作为深度补全适配器；DTF-Net 作为方案指定的位姿与形状插件，在官方实现可用前以 Self-DPDN、PyTorch3D 和 Open3D 组成可执行基线。
+实现约定：平台不控制采集设备；深度、相机、铰接、物性和封装方法分阶段声明。ArtGS 类方法只实现 `articulated_reconstruction`，不冒充整体 pipeline。
 
 ## 2. 物理可信资产库
 
 | API | 用途 | 推荐开源实现 |
 | --- | --- | --- |
 | `assets.analyze_articulation(asset, analyzer=...)` | 识别部件层级、关节类型、运动轴、原点和运动范围。 | Articulate Anything、PartNet-Mobility、Open3D |
-| `assets.reconstruct_states(capture, pipeline=...)` | 从多状态观测恢复部件解耦、连续形变和运动学关系。 | gsplat、PyTorch3D、CoTracker、FreeArtGS |
+| `assets.build(spec)` 的铰接重建阶段 | 从多状态观测恢复部件解耦、连续形变和运动学关系。 | ArtGS、VideoArtGS、FreeArtGS、gsplat |
 | `assets.generate(prompt, generator=...)` | 从图像或文本生成带部件、关节和语义标注的铰接资产草案。 | Articulate Anything、Arti-PG、EmbodiedGen |
 | `assets.calibrate(asset, observations=...)` | 用真实观测反演质量、摩擦、刚度、阻尼和接触参数并发布新版本。 | MuJoCo、Genesis、SciPy、Optuna |
-| `assets.validate(asset, profile="production")` | 执行图结构、穿模、碰撞、惯量、全关节运动和接触稳定性检查。 | trimesh、CoACD/V-HACD、MuJoCo、Genesis |
+| `assets.validate(asset, profile="digital_twin")` | 执行图结构、制品、碰撞、惯量、关节限制和物性来源检查。 | trimesh、CoACD/V-HACD、MuJoCo、Genesis |
 | `assets.register(spec)` | 将几何、纹理、语义、关节、碰撞和物性清单发布为不可变资产版本。 | OpenUSD、Pydantic、内容寻址存储 |
 
-实现约定：PD²GS 和 ArtGen 保留为方案算法插件；在其官方代码未公开或未完成工程化时，分别使用 gsplat/FreeArtGS 与 Articulate Anything/Arti-PG 提供可运行基线。
+实现约定：铰接重建优先选用已发布代码的 ArtGS 系方法；ArtGen 保留为生成类插件，无可复现实现时使用 Articulate Anything/Arti-PG。
 
 ## 3. 场景与任务生成
 
@@ -140,8 +138,8 @@ description: 从真实采集、数字孪生到训练和真机反馈的能力接�
 
 ## 关键开源项目
 
-- [RDFC-GAN](https://github.com/midea-ai/RDFC-GAN)、[Self-DPDN](https://github.com/JiehongLin/Self-DPDN)、[Open3D](https://github.com/isl-org/Open3D)、[OpenUSD](https://github.com/PixarAnimationStudios/OpenUSD)
-- [gsplat](https://github.com/nerfstudio-project/gsplat)、[FreeArtGS](https://github.com/FreeArtGS/FreeArtGS)、[Articulate Anything](https://github.com/vlongle/articulate-anything)、[Arti-PG](https://github.com/Analytic-Concept-Group/ArtiPG)
+- [OMNI-DC](https://github.com/princeton-vl/OMNI-DC)、[CompletionFormer](https://github.com/youmi-zym/CompletionFormer)、[Open3D](https://github.com/isl-org/Open3D)、[OpenUSD](https://github.com/PixarAnimationStudios/OpenUSD)
+- [gsplat](https://github.com/nerfstudio-project/gsplat)、[VideoArtGS](https://videoartgs.github.io/)、[FreeArtGS](https://github.com/FreeArtGS/FreeArtGS)、[Articulate Anything](https://github.com/vlongle/articulate-anything)
 - [BlenderProc](https://github.com/DLR-RM/BlenderProc)、[MimicGen](https://github.com/NVlabs/mimicgen)、[ManiSkill](https://github.com/haosulab/ManiSkill)、[RoboCasa](https://github.com/robocasa/robocasa)
 - [Isaac Lab](https://github.com/isaac-sim/IsaacLab)、[Genesis](https://github.com/Genesis-Embodied-AI/Genesis)、[MuJoCo](https://github.com/google-deepmind/mujoco)、[ESIM](https://github.com/uzh-rpg/rpg_esim)
 - [LeRobot](https://github.com/huggingface/lerobot)、[robomimic](https://github.com/ARISE-Initiative/robomimic)、[Diffusion Policy](https://github.com/real-stanford/diffusion_policy)、[OpenDW](https://github.com/dexmal/opendw)

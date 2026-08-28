@@ -72,8 +72,21 @@ class PluginCompatibilityError(PluginError):
     code = "plugin_compatibility_error"
 
 
+class SourcePackageError(PhysRealXError):
+    """An offline source package is unsafe, incomplete or inconsistent."""
+
+    code = "source_package_error"
+
+
+class AssetBuildError(PhysRealXError):
+    """A digital-twin pipeline failed its contract or quality gate."""
+
+    code = "asset_build_error"
+
+
 __all__ = [
     "ArtifactIntegrityError",
+    "AssetBuildError",
     "DomainValidationError",
     "InvalidStateTransitionError",
     "PhysRealXError",
@@ -81,4 +94,5 @@ __all__ = [
     "PluginError",
     "ResourceConflictError",
     "ResourceNotFoundError",
+    "SourcePackageError",
 ]

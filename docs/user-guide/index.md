@@ -30,7 +30,7 @@ hide:
 ## 使用教程
 
 <div class="prx-route-grid">
-  <a class="prx-route-link" href="assets/"><strong>资产与数字孪生</strong><span>把 Mesh、USD、Gaussian 或真实采集转换为可训练资产。</span></a>
+  <a class="prx-route-link" href="assets/"><strong>资产与数字孪生</strong><span>把已采集 RGB-D、多状态观测和几何制品转换为可训练资产。</span></a>
   <a class="prx-route-link" href="scenes-and-tasks/"><strong>场景与任务</strong><span>构建环境、编译任务并定义可判定的目标与约束。</span></a>
   <a class="prx-route-link" href="simulation/"><strong>仿真运行与后端</strong><span>选择后端、配置并行执行并管理完整运行生命周期。</span></a>
   <a class="prx-route-link" href="data-generation/"><strong>多模态数据生成</strong><span>生成包含图像、深度、状态、动作、接触和力觉的 Episode。</span></a>

@@ -1,127 +1,62 @@
 # 命令行
 
-命令行与 Python 服务一一对应，适合项目初始化、CI 校验、批量提交和运维诊断。所有命令支持 `--output {table,json,yaml}`；预期错误默认不打印回溯。
-
-## 全局形式
-
-```bash
-physrealx [--profile PROFILE] [--project PROJECT] [--debug] COMMAND
-```
+命令行用于本地工作区初始化、运行时诊断、领域规格校验和可复现演示。数字孪生构建的阶段配方使用 Python API，不维护第二套 CLI 语义。
 
 ## 命令树
 
 ```text
-physrealx
-├── profile     add / list / show / use / delete
-├── auth        login / status / logout
-├── project     init / validate / apply
-├── doctor
-├── validate    asset / scene / task / run / training
-├── workers     list / inspect
-├── artifacts   upload / download / verify / usage
-├── assets      register / import / build / get / list / calibrate / diff
-├── scenes      register / compose / get / list
-├── tasks       register / compile / get / list
-├── runs        submit / get / list / watch / wait / cancel / resume / episodes
-├── datasets    get / list / query / split / merge / validate / stats / export / diff
-├── training    submit / get / list / watch / wait / cancel / resume
-├── models      get / list / compare
-├── evaluations submit / get / list / watch / wait / cancel / compare
-├── deployments deploy / get / list / watch / stop / episodes
-└── feedback    ingest / analyze / plan / execute
+physrealx [--debug] COMMAND
+├── init [WORKSPACE]
+├── doctor [--json] [--no-cuda] [--strict]
+├── plugins [--workspace PATH]
+├── validate {asset,scene,task,run,training} FILE
+├── add {asset,scene,task} FILE [--workspace PATH]
+├── list RESOURCE_TYPE [--workspace PATH]
+├── run FILE [--workspace PATH]
+├── status RUN_ID [--workspace PATH]
+├── train FILE [--workspace PATH]
+├── evaluate MODEL_ID MODEL_VERSION RUN_FILE --id ID --version VERSION
+└── demo [--episodes N] [--base-seed N] [--train] [--device DEVICE]
 ```
 
-## 配置档案与身份
+`RESOURCE_TYPE` 包含 `observation_set`、`asset_build`、`asset`、`scene`、`task`、`dataset`、`model` 和 `evaluation`。
+
+## 工作区与诊断
 
 ```bash
-physrealx profile add default \
-  --server https://<平台地址> \
-  --project embodied-manipulation
-physrealx auth login --profile default
-physrealx profile use default
-physrealx auth status
+physrealx init .physrealx
+physrealx doctor --strict
+physrealx plugins --workspace .physrealx
 ```
 
-配置档案保存非敏感连接配置和凭据来源；凭据保存在系统密钥环或环境变量中。业务命令默认使用当前配置档案，也可以通过 `--profile` 显式选择。
+`doctor --strict` 在发现 Python、Torch 或 CUDA 环境问题时返回非零退出码；`--no-cuda` 用于不应初始化 CUDA 的 CI。
 
-## 项目
-
-```bash
-physrealx project init open-drawer
-physrealx project validate .
-physrealx project apply .
-```
-
-`project apply` 按依赖顺序注册资产、场景、任务和配置；任何冲突会停止，不覆盖不可变版本。
-
-## 资源校验
+## 规格校验与发布
 
 ```bash
 physrealx validate asset assets/drawer.asset.yaml
-physrealx validate scene scenes/drawer.scene.yaml
-physrealx validate task tasks/open_drawer.task.yaml
-physrealx validate run runs/generate.run.yaml
-physrealx validate training training/dp.training.yaml
+physrealx add asset assets/drawer.asset.yaml --workspace .physrealx
+physrealx list asset --workspace .physrealx
 ```
 
-## 数据生成
+`validate` 只解析和校验文件；`add` 将规范化清单写入内容寻址存储，并发布带摘要的不可变引用。
+
+## 运行、训练与评测
 
 ```bash
-physrealx runs submit runs/generate.run.yaml --wait
-physrealx runs watch RUN_ID
-physrealx runs cancel RUN_ID --reason "invalid camera calibration"
-physrealx runs resume RUN_ID
-physrealx runs episodes RUN_ID --success false --output json
+physrealx run runs/generate.run.yaml --workspace .physrealx
+physrealx status RUN_ID --workspace .physrealx
+physrealx train training/bc.training.yaml --workspace .physrealx
+physrealx evaluate drawer.bc 1.0.0 runs/evaluate.run.yaml \
+  --id drawer.heldout --version 1.0.0 --workspace .physrealx
 ```
 
-## 数据集
+命令成功时输出结构化 JSON。预期的 `PhysRealXError`、Pydantic 校验错误和文件错误默认仅输出稳定错误码与消息；使用 `--debug` 时保留回溯。
+
+## 可执行演示
 
 ```bash
-physrealx datasets inspect dataset.open-drawer@1.0.0
-physrealx datasets validate dataset.open-drawer@1.0.0 --level deep
-physrealx datasets stats dataset.open-drawer@1.0.0 --group-by asset_instance
-physrealx datasets export dataset.open-drawer@1.0.0 \
-  --format lerobot-v3 \
-  --destination s3://robot-data/open-drawer-v1
+physrealx demo --workspace .physrealx-demo --episodes 8 --train --device cpu
 ```
 
-## 训练与评测
-
-```bash
-physrealx training submit training/dp.training.yaml --wait
-physrealx evaluations submit evaluation/heldout.evaluation.yaml --wait
-physrealx evaluations compare REPORT_A REPORT_B --baseline REPORT_A
-```
-
-## 部署与反馈
-
-```bash
-physrealx deployments deploy deployment/franka.shadow.yaml
-physrealx deployments watch DEPLOYMENT_ID
-physrealx deployments stop DEPLOYMENT_ID --reason "evaluation complete"
-physrealx feedback analyze --deployment DEPLOYMENT_ID --failures-only
-physrealx feedback plan ANALYSIS_ID --budget episodes=20000,gpu_hours=100
-```
-
-## 输出与脚本
-
-```bash
-run_id=$(physrealx runs submit run.yaml --output json | jq -r '.run_id')
-physrealx runs wait "$run_id" --output json
-```
-
-结构化输出字段与 Python 模型一致。人类表格可能调整列宽和颜色，不应被脚本解析。
-
-## 退出码
-
-| 退出码 | 含义 |
-| --- | --- |
-| `0` | 成功 |
-| `2` | 参数或规格校验错误 |
-| `3` | 资源不存在 |
-| `4` | 不可变版本或幂等冲突 |
-| `5` | 能力或兼容性错误 |
-| `6` | 任务失败终态 |
-| `7` | 连接、超时或工作节点不可用 |
-| `8` | 制品完整性错误 |
-| `130` | 用户中断 |
+演示使用内置抽屉资产、确定性参考后端和脚本策略，验证资产→场景→任务→运行→数据集，可选继续训练和评测。

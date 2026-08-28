@@ -81,8 +81,8 @@ px.close() -> None
 
 | 服务 | 主要操作 |
 | --- | --- |
-| `captures` | 创建、同步、标定和验证多模态真实采集 |
-| `assets`、`scenes`、`tasks` | 注册、校验、解析版本和编译任务 |
+| `assets` | 预检/导入已采集数据包，构建、注册和验证数字孪生 |
+| `scenes`、`tasks` | 注册、校验、解析版本和编译任务 |
 | `runs`、`training`、`evaluations` | 提交、观察、等待、取消和恢复任务 |
 | `datasets`、`artifacts` | 查询、验证、流式读取和导出结果 |
 | `deployments`、`feedback` | 管理真机运行、反馈与定向补充数据计划 |

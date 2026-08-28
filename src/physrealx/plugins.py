@@ -12,7 +12,14 @@ from typing import Mapping as TypingMapping
 
 from typing_extensions import TypeAlias
 
-from physrealx.contracts import API_VERSION, Policy, SimulationBackend, Trainer
+from physrealx.contracts import (
+    API_VERSION,
+    DigitalTwinPipeline,
+    ObservationImporter,
+    Policy,
+    SimulationBackend,
+    Trainer,
+)
 from physrealx.domain import JSONValue
 from physrealx.errors import PluginError, ResourceConflictError, ResourceNotFoundError
 
@@ -27,13 +34,25 @@ _PLUGIN_VERSION = re.compile(
 
 @dataclass(frozen=True)
 class PluginDescriptor:
-    kind: Literal["simulation_backend", "policy", "trainer"]
+    kind: Literal[
+        "asset_pipeline",
+        "observation_importer",
+        "simulation_backend",
+        "policy",
+        "trainer",
+    ]
     name: str
     version: str
     api_version: str
 
     def __post_init__(self) -> None:
-        if self.kind not in {"simulation_backend", "policy", "trainer"}:
+        if self.kind not in {
+            "asset_pipeline",
+            "observation_importer",
+            "simulation_backend",
+            "policy",
+            "trainer",
+        }:
             raise PluginError(f"unsupported plugin kind {self.kind!r}")
         if _PLUGIN_NAME.fullmatch(self.name) is None:
             raise PluginError(f"invalid plugin name {self.name!r}")
@@ -46,6 +65,8 @@ class PluginRegistry:
 
     def __init__(self) -> None:
         self._backends: dict[str, SimulationBackend] = {}
+        self._importers: dict[str, ObservationImporter] = {}
+        self._asset_pipelines: dict[str, DigitalTwinPipeline] = {}
         self._policies: dict[str, tuple[PluginDescriptor, PolicyFactory]] = {}
         self._trainers: dict[str, Trainer] = {}
 
@@ -72,6 +93,24 @@ class PluginRegistry:
                 f"simulation backend {backend.name!r} is already registered"
             )
         self._backends[backend.name] = backend
+
+    def register_importer(self, importer: ObservationImporter) -> None:
+        if not isinstance(importer, ObservationImporter):
+            raise PluginError("observation importer does not implement the required protocol")
+        self._validate(importer)
+        if importer.name in self._importers:
+            raise ResourceConflictError(
+                f"observation importer {importer.name!r} is already registered"
+            )
+        self._importers[importer.name] = importer
+
+    def register_asset_pipeline(self, pipeline: DigitalTwinPipeline) -> None:
+        if not isinstance(pipeline, DigitalTwinPipeline):
+            raise PluginError("asset pipeline does not implement the required protocol")
+        self._validate(pipeline)
+        if pipeline.name in self._asset_pipelines:
+            raise ResourceConflictError(f"asset pipeline {pipeline.name!r} is already registered")
+        self._asset_pipelines[pipeline.name] = pipeline
 
     def register_policy(
         self,
@@ -100,6 +139,20 @@ class PluginRegistry:
             return self._backends[name]
         except KeyError as error:
             raise ResourceNotFoundError(f"simulation backend {name!r} is not registered") from error
+
+    def importer(self, name: str) -> ObservationImporter:
+        try:
+            return self._importers[name]
+        except KeyError as error:
+            raise ResourceNotFoundError(
+                f"observation importer {name!r} is not registered"
+            ) from error
+
+    def asset_pipeline(self, name: str) -> DigitalTwinPipeline:
+        try:
+            return self._asset_pipelines[name]
+        except KeyError as error:
+            raise ResourceNotFoundError(f"asset pipeline {name!r} is not registered") from error
 
     def policy(self, name: str, config: Mapping[str, JSONValue]) -> Policy:
         try:
@@ -137,6 +190,24 @@ class PluginRegistry:
             )
             for item in self._backends.values()
         ]
+        descriptors.extend(
+            PluginDescriptor(
+                kind="observation_importer",
+                name=item.name,
+                version=item.plugin_version,
+                api_version=item.api_version,
+            )
+            for item in self._importers.values()
+        )
+        descriptors.extend(
+            PluginDescriptor(
+                kind="asset_pipeline",
+                name=item.name,
+                version=item.plugin_version,
+                api_version=item.api_version,
+            )
+            for item in self._asset_pipelines.values()
+        )
         descriptors.extend(descriptor for descriptor, _ in self._policies.values())
         descriptors.extend(
             PluginDescriptor(

@@ -66,6 +66,7 @@ def test_cli_runs_complete_local_workspace_workflow(
     assert not error
     plugins = json.loads(output)
     assert {item["name"] for item in plugins} == {
+        "artmodeling",
         "reference_drawer",
         "scripted_drawer",
         "torch_bc",

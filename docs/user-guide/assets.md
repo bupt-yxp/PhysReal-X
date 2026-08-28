@@ -1,160 +1,144 @@
 # 资产与数字孪生
 
-资产描述“世界中有什么以及它如何运动”。一个视觉上逼真的模型如果缺少碰撞体、关节、惯量或坐标语义，仍然不是可训练资产。
+本模块从**已采集数据包**开始，将 RGB-D、多状态观测和候选重建结果转换为可仿真、可训练、可追溯的铰接资产。数据采集设备和驱动不属于该 API 边界。
 
-## 资产最小组成
+## 标准流程
 
-| 组成 | 必须表达的内容 |
-| --- | --- |
-| 标识 | 资源 ID、语义版本、显示名称和类别 |
-| 坐标 | 单位、原点、up axis、handedness 和逻辑 frame |
-| 结构 | link、父子关系、可动部件和语义标签 |
-| 视觉 | Mesh、USD、Gaussian、纹理、材质和 LOD |
-| 碰撞 | primitive、凸分解、低模 Mesh 或 SDF |
-| 运动学 | joint type、axis、limits、初始状态、damping 和 drive |
-| 动力学 | mass、center of mass、inertia、friction、restitution、stiffness |
-| 来源与版本 | 原始采集、构建管线、算法版本、校准数据和摘要 |
-| 质量 | 几何、穿模、碰撞、稳定性、运动范围和物理一致性报告 |
-
-## 三种接入方式
-
-### 导入已有资产
-
-适合已有 USD、URDF、MJCF、Mesh 或规范化 Gaussian 资产：
-
-```python
-asset = px.assets.import_asset(
-    source="assets/drawer.usd",
-    importer="usd",
-    profile="articulated_object",
-)
+```text
+源包预检 → 不可变观测集 → 标准化/相机 → 可选深度补全
+          → 铰接重建 → 碰撞与物性 → USD 封装 → 质量验收
 ```
 
-导入器只负责格式转换。转换后仍需执行结构、碰撞和物理验证。
+不要用一个 `method` 同时表示整条流水线。整体 pipeline 负责调度和隔离运行环境，每个阶段的 `AlgorithmSpec` 单独固定方法、版本、权重和配置。
 
-### 从真实采集构建数字孪生
+## 1. 预检 ArtModeling 数据包
 
 ```python
-job = px.assets.build(
-    source="capture://drawer-session-001",
-    pipeline="articulated_digital_twin",
+from physrealx import PhysRealX
+
+px = PhysRealX.open(".physrealx")
+inspection = px.assets.inspect_source(
+    "/data/ArtModeling/cabinet2",
+    importer="artmodeling",
+)
+
+for issue in inspection.issues:
+    print(issue.severity, issue.code, issue.path)
+
+if not inspection.ingestible:
+    raise RuntimeError("数据包未通过预检")
+```
+
+预检要求：
+
+- `real/can/start` 和 `real/can/end` 至少各有一对 `img/<take>/` 与 `depth/<take>_depth.npy`；
+- 每个 take 的 RGB 帧从 `0.png` 开始连续编号，数量与对应 NPY 首维一致；
+- 可选 `real/cmp/start`、`real/video`、`real/recon`和 `sim`；
+- 整个源包不能含符号链接，避免越界导入；
+- 缺少标定或深度单位时必须给出明确诊断。
+
+## 2. 发布观测集
+
+```python
+source = px.assets.ingest(
+    "/data/ArtModeling/cabinet2",
+    resource_id="cabinet2.observations",
+    version="1.0.0",
+    display_name="Cabinet 2 observations",
+    importer="artmodeling",
     config={
-        "reconstruction": "pd2gs",
-        "collision": "mesh_decomposition",
-        "estimate_joints": True,
-        "estimate_physics": True,
+        "depth_unit": "mm",
+        "coordinate_frame": "camera",
+        "include_candidates": True,
     },
 )
-asset = px.jobs.wait(job).result
 ```
 
-标准流水线为：
+导入不修改源目录。每个 RGB 帧、打包深度、PLY、USD 和元数据文件都在流式计算 SHA-256 后写入对象存储；文件在复制期间变化则整次导入失败。
 
-```text
-采集与标定
-  → 深度补全 / 几何重建
-  → 部件分解与层级恢复
-  → 关节类型、轴和范围估计
-  → 碰撞代理生成
-  → 物理参数测量或反演
-  → USD / 资产清单发布
-  → 仿真重播与质量验收
-```
+`real/recon` 和 `sim` 中的内容只是**候选制品**，不会因为存在就被视为正确资产。
 
-### 直接注册结构化规格
+## 3. 选择阶段方法
 
-适合程序生成资产或已有完备元数据：
+| 输入条件 | 建议方法 | 输出 |
+| --- | --- | --- |
+| 已有可信内外参 | `provided_calibration` | 标准相机模型 |
+| 多视角 RGB 但缺相机位姿 | COLMAP | 相机位姿和稀疏点云 |
+| RGB + 稀疏/缺损深度 | OMNI-DC | 鲁棒稠密深度 |
+| NYUv2 类室内 RGB-D | CompletionFormer | 已有权重的基线深度 |
+| 多视角、多铰接状态 | ArtGS 方案 / FreeArtGS 开源基线 | 部件、3D Gaussian 和关节参数 |
+| 单目连续视频 | VideoArtGS | 可交互铰接数字孪生 |
+| 已有 Mesh 部件 | CoACD + trimesh | 碰撞代理、质量属性 |
+
+RDFC-GAN 保留为论文方法选项，但其官方仓库未提供可直接下载的预训练权重，因此不设为默认深度插件。
+
+## 4. 声明可复现配方
 
 ```python
-from physrealx import AssetSpec
-
-asset = px.assets.register(AssetSpec.from_file("drawer.asset.yaml"))
-```
-
-## 视觉与碰撞表示必须分离
-
-高密 Mesh 或 Gaussian 适合渲染，不适合直接承担稳定碰撞。推荐：
-
-```text
-视觉表示：USD + PBR / Gaussian
-碰撞表示：凸分解 / 简化 Mesh / primitive / SDF
-```
-
-两者通过相同 link 和局部坐标变换对齐，并分别保留摘要。任何重新生成碰撞体的操作都产生新资产版本。
-
-## 铰接物体建模
-
-每个非根 link 必须由唯一父关节连接；关节图不能有环。旋转、平移和固定关节分别声明：
-
-- `revolute`：单位轴、角度范围、阻尼、摩擦和驱动；
-- `prismatic`：单位轴、位移范围、阻尼、摩擦和驱动；
-- `fixed`：上下限均为零。
-
-抽屉示例：
-
-```yaml
-joints:
-  - name: drawer.slide
-    type: prismatic
-    parent: cabinet
-    child: drawer
-    axis: [1.0, 0.0, 0.0]
-    limits: [0.0, 0.4]
-    damping: 2.0
-    friction: 0.3
-```
-
-## 物理参数不是裸数值
-
-每个参数应同时记录来源、不确定度和置信度：
-
-```yaml
-mass_kg:
-  value: 2.0
-  source: measured
-  uncertainty: 0.05
-  confidence: 0.98
-```
-
-来源建议限定为 `measured`、`inferred` 和 `default`。随机化范围应基于测量不确定度或明确先验，不应凭经验任意扩大。
-
-## 校准
-
-物理校准使用真实交互轨迹最小化仿真与真实的可观测差异：
-
-```python
-calibration = px.assets.calibrate(
-    asset=asset,
-    observations="dataset://drawer-real-calibration@1.0.0",
-    parameters=("mass", "friction", "joint.damping"),
-    objective=("joint_trajectory", "contact_force"),
+from physrealx import (
+    AlgorithmSpec,
+    DigitalTwinBuildSpec,
+    DigitalTwinRecipe,
+    DigitalTwinStage,
+    DigitalTwinStep,
 )
-calibrated_asset = px.jobs.wait(calibration).result
+
+def step(stage, method, *, checkpoint=None, config=None):
+    return DigitalTwinStep(
+        stage=stage,
+        algorithm=AlgorithmSpec(
+            name=method,
+            version="1.0.0",
+            checkpoint=checkpoint,
+            config=config or {},
+        ),
+    )
+
+recipe = DigitalTwinRecipe(
+    name="cabinet_twin",
+    version="1.0.0",
+    pipeline="artgs_openusd",
+    pipeline_version="1.0.0",
+    steps=(
+        step(DigitalTwinStage.NORMALIZATION, "artmodeling_rgbd"),
+        step(DigitalTwinStage.CAMERA_RECOVERY, "colmap"),
+        step(DigitalTwinStage.DEPTH_ENHANCEMENT, "omni_dc"),
+        step(DigitalTwinStage.ARTICULATED_RECONSTRUCTION, "artgs"),
+        step(DigitalTwinStage.PHYSICS_ENRICHMENT, "coacd_mujoco"),
+        step(DigitalTwinStage.SIMULATION_PACKAGING, "openusd"),
+        step(DigitalTwinStage.QUALITY_VALIDATION, "physrealx_validator"),
+    ),
+)
 ```
 
-训练集与校准集必须分离；校准结果保存搜索范围、目标函数、随机种子、最优值和残差。
+权重应先写入制品存储，然后以 `ArtifactRef` 放入 `AlgorithmSpec.checkpoint`；不要在配方中写可变的文件路径或 `latest`。
 
-## 质量检查
+## 5. 构建与验收
 
 ```python
-report = px.assets.validate(asset, profile="production")
-report.raise_for_errors()
+result = px.assets.build(
+    DigitalTwinBuildSpec(
+        resource_id="cabinet2",
+        version="1.0.0",
+        source=source,
+        recipe=recipe,
+    )
+)
+
+asset = px.assets.get(result.asset)
+manifest = px.assets.get_build(result.build)
 ```
 
-生产验收至少包括：
+构建 pipeline 必须返回与请求一致的资产身份、与配方完全对齐的阶段记录和 `digital_twin` 质量报告。未发布制品、缺失视觉/碰撞表示、无效摩擦关系或错误级质量问题都会阻止发布。
 
-- 外部制品摘要与媒体类型正确；
-- link/joint 图完整、无环且限位合法；
-- 视觉与碰撞对齐，碰撞复杂度受控；
-- 惯量矩阵对称正定，质量和摩擦在合理范围；
-- 静态放置稳定，无初始穿模和爆炸；
-- 关节在全范围内可执行，接触响应无异常；
-- 真实重播误差在任务定义的容差内。
+## 资产语义
 
-## 版本规则
+最终 `AssetSpec` 至少包含：
 
-- 修正文档或不影响行为的元数据：补丁版本；
-- 修改碰撞、物性、关节或视觉制品：次版本；
-- 改变坐标、link 命名或公共语义：主版本。
+- 稳定的 link/joint 树，每个非根 link 只有一个父关节；
+- 分离的视觉和碰撞表示，且全部几何有精确内容摘要；
+- 单位化关节轴、合法限位、阻尼、摩擦及可选力/速度限制；
+- 每个 link 的质量、质心、正定惯量、摩擦和恢复系数；
+- 每个物性值的 `measured` / `inferred` / `default` 来源、不确定度和置信度。
 
-下游场景与任务引用精确摘要，因此新版本不会悄悄改变历史实验。
+修改几何、关节、碰撞或物性时必须发布新版本；历史场景和运行通过摘要继续引用原资产。

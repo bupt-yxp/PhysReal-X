@@ -1,5 +1,17 @@
 """Public PhysReal-X API."""
 
+from physrealx.digital_twin import (
+    AlgorithmSpec,
+    AssetValidationProfile,
+    AssetValidationReport,
+    DigitalTwinBuildResult,
+    DigitalTwinBuildSpec,
+    DigitalTwinRecipe,
+    DigitalTwinStage,
+    DigitalTwinStep,
+    ObservationSetManifest,
+    SourceInspection,
+)
 from physrealx.domain import (
     ActionSpec,
     ArtifactRef,
@@ -26,14 +38,23 @@ __version__ = "0.1.0"
 
 __all__ = [
     "ActionSpec",
+    "AlgorithmSpec",
     "ArtifactRef",
     "AssetSpec",
+    "AssetValidationProfile",
+    "AssetValidationReport",
     "DataValue",
     "DatasetManifest",
+    "DigitalTwinBuildResult",
+    "DigitalTwinBuildSpec",
+    "DigitalTwinRecipe",
+    "DigitalTwinStage",
+    "DigitalTwinStep",
     "Episode",
     "EpisodeStep",
     "EvaluationReport",
     "ModelManifest",
+    "ObservationSetManifest",
     "PhysRealX",
     "RunRecord",
     "RunSpec",
@@ -41,6 +62,7 @@ __all__ = [
     "SceneEntitySpec",
     "SceneSpec",
     "SignalSpec",
+    "SourceInspection",
     "TaskSpec",
     "TrainingSpec",
     "VersionedRef",

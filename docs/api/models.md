@@ -12,7 +12,7 @@
 | `size_bytes` | `int` | 非负字节数 |
 | `media_type` | `str` | IANA 媒体类型或平台扩展类型 |
 
-### `VersionedRef[T]`
+### `VersionedRef`
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -20,6 +20,8 @@
 | `resource_id` | `str` | 稳定逻辑标识 |
 | `version` | `str` | 显式语义版本 |
 | `digest` | `str | None` | 解析后必须存在 |
+
+`ResourceType` 包含 `observation_set`、`asset_build`、`asset`、`scene`、`task`、`dataset`、`model` 和 `evaluation`。
 
 ## 空间与信号
 
@@ -54,12 +56,12 @@ PoseSpec(
 
 | 字段组 | 主要类型 |
 | --- | --- |
-| 身份 | `resource_id`, `version`, `display_name`, `category`, `tags` |
-| 坐标 | `FrameSpec`, `root_pose` |
-| 结构 | `tuple[LinkSpec, ...]`, `tuple[JointSpec, ...]` |
-| 表示 | `tuple[GeometrySpec, ...]`, `MaterialSpec`, `CollisionSpec` |
+| 身份 | `resource_id`, `version`, `display_name` |
+| 坐标 | `coordinate_frame`, `up_axis`, `handedness`, `root_pose` |
+| 结构 | `root_link`, `links`, `joints` |
+| 表示 | `geometries`，每项明确 `visual` 或 `collision` 角色 |
 | 物理 | `tuple[BodyPhysicsSpec, ...]` |
-| 来源与验证 | `ProvenanceSpec`, `CalibrationRef`, `ValidationReportRef` |
+| 扩展 | 有限的结构化 `metadata` |
 
 ### `JointSpec`
 
@@ -70,12 +72,50 @@ PoseSpec(
 ```python
 ScalarParameter(
     value: float,
-    unit: str,
     uncertainty: float,
     source: Literal["measured", "inferred", "default"],
     confidence: float,
 )
 ```
+
+物理量单位由字段名固定，例如 `mass_kg` 和 `inertia_kg_m2`，不接受隐式或自由文本单位。
+
+## 观测集与数字孪生
+
+### `ObservationSetManifest`
+
+| 字段 | 说明 |
+| --- | --- |
+| `resource_id` / `version` | 不可变观测集身份 |
+| `importer` / `importer_version` | 解析源包的插件及版本 |
+| `source_uri` | 源包位置，用于审计而非制品读取 |
+| `streams` | 模态、状态、角色、编码、帧数、单位、frame 和制品 |
+| `attachments` | 标定、元数据、候选重建或候选仿真制品 |
+| `issues` | 预检中保留的结构化警告 |
+
+`ObservationStream.artifacts` 只允许一个打包制品，或与 `frame_count` 一致的逐帧制品。
+
+### `DigitalTwinRecipe`
+
+```python
+DigitalTwinRecipe(
+    name: str,
+    version: str,
+    pipeline: str,
+    pipeline_version: str,
+    steps: tuple[DigitalTwinStep, ...],
+)
+```
+
+`DigitalTwinStep` 将一个有序 `DigitalTwinStage` 绑定到 `AlgorithmSpec`；后者记录算法名、语义版本、可选权重 `ArtifactRef` 和冻结配置。
+
+### `DigitalTwinBuildSpec` / `DigitalTwinBuildManifest`
+
+`DigitalTwinBuildSpec` 需要带摘要的 `observation_set` 引用、目标资产身份和完整配方；发布后的 manifest 增加逐阶段方法、时间、指标、制品、最终资产和验证报告。
+
+### `AssetValidationReport`
+
+`profile` 可为 `schema`、`simulation` 或 `digital_twin`；任一 `error` 使 `passed=False`，`warning` 不阻止发布但会进入构建清单。
 
 ## 场景与任务模型
 

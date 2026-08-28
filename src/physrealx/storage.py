@@ -13,7 +13,7 @@ import os
 import re
 import sqlite3
 import tempfile
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager, suppress
 from datetime import datetime, timezone
 from enum import Enum
@@ -162,6 +162,69 @@ class LocalArtifactStore:
         encoded = _canonical_json(value).encode("utf-8")
         return self.put_bytes(encoded, media_type=media_type)
 
+    def put_file(
+        self,
+        source: Path,
+        *,
+        media_type: str = "application/octet-stream",
+    ) -> ArtifactRef:
+        """Stream a regular file into the content-addressed store.
+
+        The source is checked before and after the copy so a concurrently
+        modified source file cannot be published under an ambiguous snapshot.
+        """
+
+        if not isinstance(source, Path):
+            raise TypeError("source must be a pathlib.Path")
+        if not isinstance(media_type, str) or not media_type.strip():
+            raise DomainValidationError("media_type must be a non-empty string")
+        expanded = source.expanduser()
+        if expanded.is_symlink():
+            raise DomainValidationError(f"artifact source cannot be a symbolic link: {expanded}")
+        source_path = expanded.resolve(strict=True)
+        if not source_path.is_file():
+            raise DomainValidationError(f"artifact source is not a regular file: {source_path}")
+
+        before = source_path.stat()
+        descriptor, temporary_name = tempfile.mkstemp(
+            dir=self._objects,
+            prefix=".ingest.",
+            suffix=".tmp",
+        )
+        temporary = Path(temporary_name)
+        hasher = hashlib.sha256()
+        size = 0
+        try:
+            with source_path.open("rb") as source_stream, os.fdopen(descriptor, "wb") as output:
+                for chunk in iter(lambda: source_stream.read(_HASH_CHUNK_SIZE), b""):
+                    hasher.update(chunk)
+                    size += len(chunk)
+                    output.write(chunk)
+                output.flush()
+                os.fsync(output.fileno())
+
+            after = source_path.stat()
+            identity_before = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+            identity_after = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+            if identity_before != identity_after or size != before.st_size:
+                raise ArtifactIntegrityError(
+                    f"artifact source changed during ingestion: {source_path}"
+                )
+
+            digest = f"sha256:{hasher.hexdigest()}"
+            destination = self._path_for_digest(digest)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if destination.exists():
+                self._assert_valid_file(destination, digest, size)
+            else:
+                os.replace(temporary, destination)
+                self._fsync_directory(destination.parent)
+                self._assert_valid_file(destination, digest, size)
+            return ArtifactRef(digest=digest, size_bytes=size, media_type=media_type)
+        finally:
+            with suppress(FileNotFoundError):
+                temporary.unlink()
+
     def get_bytes(self, reference: ArtifactRef | str) -> bytes:
         """Read an object, verifying its digest and declared size first."""
 
@@ -291,6 +354,25 @@ class SQLiteRepository:
                 digest=digest,
             )
         return reference
+
+    def register_resources(
+        self,
+        references: Iterable[VersionedRef],
+    ) -> tuple[VersionedRef, ...]:
+        """Atomically register a group of immutable versioned resources."""
+
+        items = tuple(references)
+        parts = tuple(self._versioned_parts(reference) for reference in items)
+        with self._transaction() as connection:
+            for resource_type, resource_id, version, digest in parts:
+                self._insert_versioned(
+                    connection,
+                    resource_type=resource_type,
+                    resource_id=resource_id,
+                    version=version,
+                    digest=digest,
+                )
+        return items
 
     def get_resource(self, resource_type: str, resource_id: str, version: str) -> VersionedRef:
         with self._connect() as connection:

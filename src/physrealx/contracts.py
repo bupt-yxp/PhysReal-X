@@ -4,8 +4,16 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from physrealx.digital_twin import (
+    AssetValidationReport,
+    DigitalTwinBuildSpec,
+    ObservationSetManifest,
+    SourceInspection,
+    StageExecutionRecord,
+)
 from physrealx.domain import (
     ArtifactRef,
     AssetSpec,
@@ -113,8 +121,55 @@ class Trainer(Protocol):
 
 
 @runtime_checkable
+class ObservationImporter(Protocol):
+    """Adapter for one immutable, already captured source-package format."""
+
+    name: str
+    plugin_version: str
+    api_version: str
+
+    def inspect(self, source: Path) -> SourceInspection: ...
+
+    def ingest(
+        self,
+        source: Path,
+        *,
+        resource_id: str,
+        version: str,
+        display_name: str,
+        config: Mapping[str, JSONValue],
+        artifacts: ArtifactWriter,
+    ) -> ObservationSetManifest: ...
+
+
+@dataclass(frozen=True)
+class DigitalTwinPipelineOutput:
+    asset: AssetSpec
+    stages: tuple[StageExecutionRecord, ...]
+    validation: AssetValidationReport
+
+
+@runtime_checkable
+class DigitalTwinPipeline(Protocol):
+    """Composite worker adapter executing one versioned digital-twin recipe."""
+
+    name: str
+    plugin_version: str
+    api_version: str
+
+    def build(
+        self,
+        spec: DigitalTwinBuildSpec,
+        source: ObservationSetManifest,
+        artifacts: ArtifactStore,
+    ) -> DigitalTwinPipelineOutput: ...
+
+
+@runtime_checkable
 class ArtifactWriter(Protocol):
     def put_bytes(self, payload: bytes, *, media_type: str) -> ArtifactRef: ...
+
+    def put_file(self, source: Path, *, media_type: str) -> ArtifactRef: ...
 
 
 @runtime_checkable
@@ -132,6 +187,11 @@ class ArtifactStore(ArtifactWriter, ArtifactReader, Protocol):
 @runtime_checkable
 class Repository(Protocol):
     def register_resource(self, reference: VersionedRef) -> VersionedRef: ...
+
+    def register_resources(
+        self,
+        references: Iterable[VersionedRef],
+    ) -> tuple[VersionedRef, ...]: ...
 
     def get_resource(self, resource_type: str, resource_id: str, version: str) -> VersionedRef: ...
 

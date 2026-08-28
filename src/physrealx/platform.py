@@ -3,17 +3,31 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TypeVar
 
 from pydantic import BaseModel
 
+from physrealx.asset_ingestion import ArtModelingImporter
+from physrealx.asset_validation import merge_validation_reports, validate_asset
 from physrealx.contracts import ArtifactStore, Repository
+from physrealx.digital_twin import (
+    AssetValidationProfile,
+    AssetValidationReport,
+    DigitalTwinBuildManifest,
+    DigitalTwinBuildResult,
+    DigitalTwinBuildSpec,
+    ObservationSetManifest,
+    SourceInspection,
+    ensure_pipeline_output_identity,
+)
 from physrealx.domain import (
     AssetSpec,
     EvaluationReport,
     FailureCase,
     FailureCategory,
+    JSONValue,
     ResourceType,
     RunSpec,
     SceneEntitySpec,
@@ -23,7 +37,14 @@ from physrealx.domain import (
     VersionedRef,
     sha256_digest,
 )
-from physrealx.errors import DomainValidationError, ResourceConflictError
+from physrealx.errors import (
+    AssetBuildError,
+    DomainValidationError,
+    PhysRealXError,
+    ResourceConflictError,
+    ResourceNotFoundError,
+    SourcePackageError,
+)
 from physrealx.plugins import PluginDescriptor, PluginRegistry
 from physrealx.reference import ReferenceDrawerBackend, ScriptedDrawerPolicy
 from physrealx.runtime import RunExecutor
@@ -79,6 +100,7 @@ class PhysRealX:
     @staticmethod
     def _default_plugins(artifacts: ArtifactStore) -> PluginRegistry:
         plugins = PluginRegistry()
+        plugins.register_importer(ArtModelingImporter())
         plugins.register_backend(ReferenceDrawerBackend())
         plugins.register_policy(
             PluginDescriptor(
@@ -103,6 +125,177 @@ class PhysRealX:
 
     def _register_asset(self, spec: AssetSpec) -> VersionedRef:
         return self._register(spec, spec.reference(), "application/vnd.physrealx.asset+json")
+
+    def _inspect_asset_source(self, source: Path, importer: str) -> SourceInspection:
+        adapter = self.plugins.importer(importer)
+        try:
+            return adapter.inspect(source)
+        except PhysRealXError:
+            raise
+        except Exception as error:
+            raise SourcePackageError(
+                f"observation importer {adapter.name!r} failed during inspection"
+            ) from error
+
+    def _ingest_asset_source(
+        self,
+        source: Path,
+        *,
+        importer: str,
+        resource_id: str,
+        version: str,
+        display_name: str,
+        config: Mapping[str, JSONValue],
+    ) -> VersionedRef:
+        adapter = self.plugins.importer(importer)
+        try:
+            manifest = adapter.ingest(
+                source,
+                resource_id=resource_id,
+                version=version,
+                display_name=display_name,
+                config=config,
+                artifacts=self.artifacts,
+            )
+        except PhysRealXError:
+            raise
+        except Exception as error:
+            raise SourcePackageError(
+                f"observation importer {adapter.name!r} failed during ingestion"
+            ) from error
+        if (
+            manifest.resource_id != resource_id
+            or manifest.version != version
+            or manifest.importer != adapter.name
+            or manifest.importer_version != adapter.plugin_version
+        ):
+            raise DomainValidationError("observation importer returned mismatched identity")
+        referenced = tuple(
+            artifact for stream in manifest.streams for artifact in stream.artifacts
+        ) + tuple(item.artifact for item in manifest.attachments)
+        if any(not self.artifacts.verify(item) for item in referenced):
+            raise DomainValidationError("observation importer returned an unpublished artifact")
+        return self._register(
+            manifest,
+            manifest.reference(),
+            "application/vnd.physrealx.observation-set+json",
+        )
+
+    def _build_digital_twin(self, spec: DigitalTwinBuildSpec) -> DigitalTwinBuildResult:
+        registered_source = self.repository.get_resource(
+            ResourceType.OBSERVATION_SET.value,
+            spec.source.resource_id,
+            spec.source.version,
+        )
+        if registered_source.digest != spec.source.digest:
+            raise ResourceConflictError("build source digest does not match the registry")
+        try:
+            existing_ref = self.repository.get_resource(
+                ResourceType.ASSET_BUILD.value,
+                spec.resource_id,
+                spec.version,
+            )
+        except ResourceNotFoundError:
+            pass
+        else:
+            existing = self._load_registered(existing_ref, DigitalTwinBuildManifest)
+            if existing.source != registered_source or existing.recipe != spec.recipe:
+                raise ResourceConflictError(
+                    "asset build identity already exists for a different source or recipe"
+                )
+            return DigitalTwinBuildResult(
+                asset=existing.asset,
+                build=existing_ref,
+                validation=existing.validation,
+            )
+        source = self._load_registered(registered_source, ObservationSetManifest)
+        pipeline = self.plugins.asset_pipeline(spec.recipe.pipeline)
+        if pipeline.plugin_version != spec.recipe.pipeline_version:
+            raise AssetBuildError(
+                "digital-twin pipeline version does not match the recipe",
+                details={
+                    "expected": spec.recipe.pipeline_version,
+                    "actual": pipeline.plugin_version,
+                },
+            )
+        for step in spec.recipe.steps:
+            checkpoint = step.algorithm.checkpoint
+            if checkpoint is not None and not self.artifacts.verify(checkpoint):
+                raise AssetBuildError(
+                    f"algorithm checkpoint is unavailable for stage {step.stage.value!r}"
+                )
+
+        try:
+            output = pipeline.build(spec, source, self.artifacts)
+        except PhysRealXError:
+            raise
+        except Exception as error:
+            raise AssetBuildError(
+                f"digital-twin pipeline {pipeline.name!r} failed during execution"
+            ) from error
+        try:
+            ensure_pipeline_output_identity(spec, output.asset)
+        except ValueError as error:
+            raise AssetBuildError(str(error)) from error
+        if output.validation.profile is not AssetValidationProfile.DIGITAL_TWIN:
+            raise AssetBuildError("pipeline must return a digital_twin validation report")
+        expected_steps = tuple(item.stage for item in spec.recipe.steps)
+        if tuple(item.stage for item in output.stages) != expected_steps:
+            raise AssetBuildError("pipeline stage records do not exactly match the recipe")
+        for recipe_step, record in zip(spec.recipe.steps, output.stages):
+            if record.algorithm != recipe_step.algorithm:
+                raise AssetBuildError("pipeline stage algorithm does not match the recipe")
+            if any(not self.artifacts.verify(item) for item in record.outputs):
+                raise AssetBuildError("pipeline returned an unpublished stage artifact")
+
+        platform_report = validate_asset(
+            output.asset,
+            AssetValidationProfile.DIGITAL_TWIN,
+            self.artifacts,
+        )
+        validation = merge_validation_reports(output.validation, platform_report)
+        if not validation.passed:
+            raise AssetBuildError(
+                "digital-twin candidate failed validation",
+                details={
+                    "issue_codes": [
+                        item.code for item in validation.issues if item.severity.value == "error"
+                    ]
+                },
+            )
+
+        asset_ref = self._store_resource(
+            output.asset,
+            output.asset.reference(),
+            "application/vnd.physrealx.asset+json",
+        )
+        manifest = DigitalTwinBuildManifest(
+            resource_id=spec.resource_id,
+            version=spec.version,
+            source=registered_source,
+            recipe=spec.recipe,
+            asset=asset_ref,
+            stages=output.stages,
+            validation=validation,
+        )
+        build_ref = self._store_resource(
+            manifest,
+            manifest.reference(),
+            "application/vnd.physrealx.asset-build+json",
+        )
+        self.repository.register_resources((asset_ref, build_ref))
+        return DigitalTwinBuildResult(
+            asset=asset_ref,
+            build=build_ref,
+            validation=validation,
+        )
+
+    def _validate_asset(
+        self,
+        asset: AssetSpec,
+        profile: AssetValidationProfile,
+    ) -> AssetValidationReport:
+        return validate_asset(asset, profile, self.artifacts)
 
     def _register_scene(self, spec: SceneSpec) -> VersionedRef:
         resolved_entities: list[SceneEntitySpec] = []
@@ -264,15 +457,25 @@ class PhysRealX:
         *,
         specialized: str | None = None,
     ) -> VersionedRef:
-        artifact = self.artifacts.put_json(model, media_type=media_type)
-        if artifact.digest != sha256_digest(model):
-            raise DomainValidationError("artifact store changed canonical resource bytes")
-        reference = unresolved.model_copy(update={"digest": artifact.digest})
+        reference = self._store_resource(model, unresolved, media_type)
         if specialized == "model":
             return self.repository.register_model(reference)
         if specialized == "evaluation":
             return self.repository.register_evaluation(reference)
         return self.repository.register_resource(reference)
+
+    def _store_resource(
+        self,
+        model: _ModelT,
+        unresolved: VersionedRef,
+        media_type: str,
+    ) -> VersionedRef:
+        """Store canonical resource bytes without making the resource visible."""
+
+        artifact = self.artifacts.put_json(model, media_type=media_type)
+        if artifact.digest != sha256_digest(model):
+            raise DomainValidationError("artifact store changed canonical resource bytes")
+        return unresolved.model_copy(update={"digest": artifact.digest})
 
     def _load_registered(self, reference: VersionedRef, model: type[_ModelT]) -> _ModelT:
         registered = self.repository.get_resource(
