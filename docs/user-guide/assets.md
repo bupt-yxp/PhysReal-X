@@ -83,6 +83,7 @@ from physrealx import (
     DigitalTwinStep,
 )
 
+
 def step(stage, method, *, checkpoint=None, config=None):
     return DigitalTwinStep(
         stage=stage,
@@ -93,6 +94,7 @@ def step(stage, method, *, checkpoint=None, config=None):
             config=config or {},
         ),
     )
+
 
 recipe = DigitalTwinRecipe(
     name="cabinet_twin",

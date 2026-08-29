@@ -86,11 +86,13 @@ from physrealx import (
     DigitalTwinStep,
 )
 
+
 def step(stage, name):
     return DigitalTwinStep(
         stage=stage,
         algorithm=AlgorithmSpec(name=name, version="1.0.0"),
     )
+
 
 recipe = DigitalTwinRecipe(
     name="cabinet_twin",
