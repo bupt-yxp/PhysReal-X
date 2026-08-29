@@ -165,6 +165,27 @@ result = px.assets.build(
 
 相同资源、版本、源摘要和配方重复提交时返回原结果；相同身份对应不同输入时拒绝覆盖。
 
+## 独立资产处理 API
+
+需要单独运行或比较某个阶段时，使用与能力一一对应的服务：
+
+```python
+articulation = px.assets.articulate(source, method="ditto")
+collision = px.assets.build_collision(asset_ref, method="coacd")
+identified = px.assets.calibrate_physics(
+    asset_ref,
+    trajectory_evidence,
+    method="mujoco_sysid",
+)
+package = px.assets.package(asset_ref, method="openusd")
+```
+
+这些方法返回 `OperationManifest`，而不是未校验的文件路径。每份 manifest 包含精确
+`MethodSpec`、输入摘要、输出制品、指标与时间证据，可通过 `px.operations.get(...)` 重新读取。
+
+`AssetSpec.evidence_state` 明确区分 `prior → identified → validated`；`identified` 和 `validated`
+必须携带内容寻址证据。估计参数不能写成实测，训练变体也不能覆盖特定实物的数字孪生。
+
 ### `assets.get_build` / `assets.list_builds`
 
 ```python
@@ -181,7 +202,7 @@ px.assets.list() -> list[VersionedRef]
 px.assets.validate(
     asset: AssetSpec | VersionedRef,
     *,
-    profile: AssetValidationProfile = AssetValidationProfile.DIGITAL_TWIN,
+    profile: AssetValidationProfile | str = AssetValidationProfile.DIGITAL_TWIN,
 ) -> AssetValidationReport
 ```
 
@@ -190,6 +211,7 @@ px.assets.validate(
 | `schema` | 标识、坐标、link/joint 图和参数范围 |
 | `simulation` | 增加制品完整性、视觉/碰撞表示和摩擦约束 |
 | `digital_twin` | 增加物性来源、置信度和关节执行限制 |
+| `trainable` | 将默认物性、零置信度、不完整关节限制和缺少留出验证证据升级为错误 |
 
 只有无 `error` 的候选资产才能发布；`warning` 保留在构建清单中。
 

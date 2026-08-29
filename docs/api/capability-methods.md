@@ -31,6 +31,87 @@ ditto = px.methods.bind(
 容器方法必须登记镜像 SHA-256；带权重的方法必须先将权重写入制品存储。`main`、`latest`
 或本地可变路径不能作为来源版本。配方中记录完整描述符，运行前再与当前已安装描述符精确比对。
 
+## 独立 worker 运行时
+
+Ditto、CoACD、MuJoCo、BlenderProc、LeRobot 等不进入核心依赖。每个扩展包安装自己的算法环境，
+并通过 `physrealx.workers` 入口登记一个可执行 worker；只登记描述符不会变成可运行能力。
+
+运行模式只有三种：
+
+| 模式 | 用途 | 隔离要求 |
+| --- | --- | --- |
+| `in_process` | 平台内置、轻量且可信的参考实现 | 不得引入 GPU/仿真框架依赖 |
+| `process` | 独立 Conda/venv 中的开发与受控部署 | 使用绝对可执行文件、无 shell、超时和有限日志 |
+| `container` | 生产算法 worker | OCI 镜像必须使用 digest 固定，默认无网络、只读根目录、移除 capabilities |
+
+进程 worker 的扩展注册入口：
+
+```python
+from pathlib import Path
+
+from physrealx.external_workers import ExternalMethodWorker, ProcessLaunch
+
+
+def register(registry):
+    registry.register_worker(
+        ExternalMethodWorker(
+            coacd_descriptor,
+            ProcessLaunch(
+                command=("/opt/physrealx-coacd/bin/physrealx-coacd",),
+                environment_manifest=Path("/opt/physrealx-coacd/environment.lock.json"),
+            ),
+        )
+    )
+```
+
+扩展包在自己的 `pyproject.toml` 中声明：
+
+```toml
+[project.entry-points."physrealx.workers"]
+coacd = "physrealx_coacd:register"
+```
+
+worker 可使用 `run_worker(handler)` 实现统一命令入口。handler 读取已校验的请求与只读输入，
+只把输出写入指定目录：
+
+```python
+from physrealx.external_workers import WorkerProducedFile, WorkerResponse, run_worker
+
+
+def handler(request, output_dir):
+    source = output_dir.parent / request.inputs[0].path
+    output = run_coacd(source, output_dir / "collision.glb")
+    return WorkerResponse(
+        outputs=(
+            WorkerProducedFile(
+                name="collision_geometry",
+                contract="CollisionGeometry",
+                path=output.name,
+                media_type="model/gltf-binary",
+            ),
+        ),
+        metrics={"part_count": 12.0},
+    )
+
+
+raise SystemExit(run_worker(handler))
+```
+
+`process` 描述符的 `environment_digest` 必须等于 `environment_manifest` 文件的
+SHA-256；该文件应固定 Python、CUDA、系统库、算法包和权重版本。生产部署优先使用
+`container`，因为镜像 digest 能够完整固定文件系统。
+
+平台在执行前验证 worker 就绪状态、方法身份、输入与权重摘要；执行后验证协议版本、输出名称、
+语义契约、相对路径、文件类型、大小和摘要，再原子发布 `OperationManifest`。同一精确请求重复调用
+返回原证据；超时、非零退出、缺失镜像、路径越界或契约不符均失败，不发布伪结果。
+
+```python
+installed = px.methods.installations(MethodCapability.COLLISION_BUILD)
+assert installed[0].ready
+```
+
+外部方法没有 SDK 默认值：调用必须显式传入已安装的 `method`，避免把推荐名称误解为可执行能力。
+
 ## 1. 已采集数据到物理资产
 
 默认流程：

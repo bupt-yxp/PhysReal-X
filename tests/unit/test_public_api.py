@@ -10,6 +10,7 @@ def test_public_api_is_explicit_and_stable() -> None:
     assert physrealx.__all__ == [
         "ActionSpec",
         "ArtifactRef",
+        "AssetEvidenceState",
         "AssetSpec",
         "AssetValidationProfile",
         "AssetValidationReport",
@@ -32,6 +33,11 @@ def test_public_api_is_explicit_and_stable() -> None:
         "MethodSpec",
         "ModelManifest",
         "ObservationSetManifest",
+        "OperationInput",
+        "OperationManifest",
+        "OperationOutput",
+        "OperationOutputRequirement",
+        "OperationSpec",
         "PhysRealX",
         "RunRecord",
         "RunSpec",
@@ -57,7 +63,28 @@ def test_facade_exposes_domain_services_without_flat_legacy_methods(tmp_path: Pa
 
     assert all(
         hasattr(platform, name)
-        for name in ("assets", "scenes", "tasks", "runs", "datasets", "training", "evaluations")
+        for name in (
+            "assets",
+            "datasets",
+            "deployments",
+            "episodes",
+            "evaluations",
+            "events",
+            "failures",
+            "feedback",
+            "models",
+            "operations",
+            "pointclouds",
+            "renders",
+            "runs",
+            "scenes",
+            "simulations",
+            "tasks",
+            "telemetry",
+            "training",
+            "trajectories",
+            "world_models",
+        )
     )
     assert not any(
         hasattr(platform, name)

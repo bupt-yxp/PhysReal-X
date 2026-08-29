@@ -223,6 +223,7 @@ class ResourceType(StrEnum):
     DATASET = "dataset"
     MODEL = "model"
     EVALUATION = "evaluation"
+    OPERATION = "operation"
 
 
 class MethodCapability(StrEnum):
@@ -275,6 +276,7 @@ class MethodMaturity(StrEnum):
 
 class MethodExecutionMode(StrEnum):
     IN_PROCESS = "in_process"
+    PROCESS = "process"
     CONTAINER = "container"
 
 
@@ -291,19 +293,26 @@ class MethodRuntime(DomainModel):
     accelerator: MethodAccelerator = MethodAccelerator.ANY
     python: str = Field(min_length=1, max_length=127)
     image_digest: str | None = None
+    environment_digest: str | None = None
     minimum_vram_gb: NonNegativeFloat | None = None
 
-    @field_validator("image_digest")
+    @field_validator("image_digest", "environment_digest")
     @classmethod
-    def validate_image_digest(cls, value: str | None) -> str | None:
+    def validate_runtime_digest(cls, value: str | None) -> str | None:
         if value is not None and _DIGEST.fullmatch(value) is None:
-            raise ValueError("method image_digest must be a SHA-256 digest")
+            raise ValueError("method runtime digests must be SHA-256 digests")
         return value
 
     @model_validator(mode="after")
     def validate_execution_mode(self) -> MethodRuntime:
         if self.mode is MethodExecutionMode.CONTAINER and self.image_digest is None:
             raise ValueError("container methods require an immutable image_digest")
+        if self.mode is not MethodExecutionMode.CONTAINER and self.image_digest is not None:
+            raise ValueError("image_digest is only valid for container methods")
+        if self.mode is MethodExecutionMode.PROCESS and self.environment_digest is None:
+            raise ValueError("process methods require an immutable environment_digest")
+        if self.mode is not MethodExecutionMode.PROCESS and self.environment_digest is not None:
+            raise ValueError("environment_digest is only valid for process methods")
         if self.accelerator is not MethodAccelerator.CUDA and self.minimum_vram_gb is not None:
             raise ValueError("minimum_vram_gb is only valid for CUDA methods")
         return self
@@ -443,6 +452,150 @@ class VersionedRef(DomainModel):
         return self.digest is not None
 
 
+class OperationInput(DomainModel):
+    """One named, immutable resource or artifact consumed by a method worker."""
+
+    name: str
+    resource: VersionedRef | None = None
+    artifact: ArtifactRef | None = None
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        return _identifier(value, "operation input name")
+
+    @model_validator(mode="after")
+    def validate_reference(self) -> OperationInput:
+        if (self.resource is None) == (self.artifact is None):
+            raise ValueError("an operation input requires exactly one resource or artifact")
+        if self.resource is not None and not self.resource.resolved:
+            raise ValueError("operation resource inputs must be resolved")
+        return self
+
+
+class OperationOutput(DomainModel):
+    """One named artifact published by a completed method invocation."""
+
+    name: str
+    contract: str = Field(min_length=1, max_length=127)
+    artifact: ArtifactRef
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        return _identifier(value, "operation output name")
+
+
+class OperationOutputRequirement(DomainModel):
+    """One exact output name and semantic contract required from a worker."""
+
+    name: str
+    contract: str = Field(min_length=1, max_length=127)
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        return _identifier(value, "operation output requirement name")
+
+
+class OperationSpec(DomainModel):
+    """Immutable execution request shared by all capability-specific services."""
+
+    schema_version: Literal[1] = SCHEMA_VERSION
+    resource_id: str
+    version: str
+    method: MethodSpec
+    inputs: tuple[OperationInput, ...] = ()
+    arguments: dict[str, JsonValue] = Field(default_factory=dict)
+    outputs: tuple[OperationOutputRequirement, ...]
+
+    @field_validator("resource_id")
+    @classmethod
+    def validate_resource_id(cls, value: str) -> str:
+        return _identifier(value, "resource_id")
+
+    @field_validator("version")
+    @classmethod
+    def validate_version(cls, value: str) -> str:
+        return _semver(value)
+
+    @field_validator("outputs")
+    @classmethod
+    def validate_outputs(
+        cls,
+        values: tuple[OperationOutputRequirement, ...],
+    ) -> tuple[OperationOutputRequirement, ...]:
+        if not values:
+            raise ValueError("an operation requires at least one expected output")
+        if len(values) != len({item.name for item in values}):
+            raise ValueError("expected output names must be unique")
+        return values
+
+    @model_validator(mode="after")
+    def validate_inputs(self) -> OperationSpec:
+        names = [item.name for item in self.inputs]
+        if len(names) != len(set(names)):
+            raise ValueError("operation input names must be unique")
+        return self
+
+    def reference(self, digest: str | None = None) -> VersionedRef:
+        return VersionedRef(
+            resource_type=ResourceType.OPERATION,
+            resource_id=self.resource_id,
+            version=self.version,
+            digest=digest,
+        )
+
+
+class OperationManifest(DomainModel):
+    """Auditable evidence for one successfully completed method invocation."""
+
+    schema_version: Literal[1] = SCHEMA_VERSION
+    resource_id: str
+    version: str
+    spec: OperationSpec
+    outputs: tuple[OperationOutput, ...]
+    metrics: dict[str, float] = Field(default_factory=dict)
+    started_at: datetime
+    completed_at: datetime
+
+    @field_validator("resource_id")
+    @classmethod
+    def validate_resource_id(cls, value: str) -> str:
+        return _identifier(value, "resource_id")
+
+    @field_validator("version")
+    @classmethod
+    def validate_version(cls, value: str) -> str:
+        return _semver(value)
+
+    @model_validator(mode="after")
+    def validate_manifest(self) -> OperationManifest:
+        if (self.resource_id, self.version) != (self.spec.resource_id, self.spec.version):
+            raise ValueError("operation manifest identity must match its specification")
+        if self.started_at.tzinfo is None or self.completed_at.tzinfo is None:
+            raise ValueError("operation timestamps must include a UTC offset")
+        if self.completed_at < self.started_at:
+            raise ValueError("operation completion cannot precede its start")
+        actual = tuple((item.name, item.contract) for item in self.outputs)
+        required = tuple((item.name, item.contract) for item in self.spec.outputs)
+        if actual != required:
+            raise ValueError("operation outputs must exactly match required names and contracts")
+        if len({item.artifact.digest for item in self.outputs}) != len(self.outputs):
+            raise ValueError("operation outputs must reference distinct artifacts")
+        if any(not math.isfinite(value) for value in self.metrics.values()):
+            raise ValueError("operation metrics must be finite")
+        return self
+
+    def reference(self, digest: str | None = None) -> VersionedRef:
+        return VersionedRef(
+            resource_type=ResourceType.OPERATION,
+            resource_id=self.resource_id,
+            version=self.version,
+            digest=digest,
+        )
+
+
 class GeometryRepresentation(StrEnum):
     MESH = "mesh"
     GAUSSIAN = "gaussian"
@@ -570,6 +723,14 @@ class ParameterSource(StrEnum):
     DEFAULT = "default"
 
 
+class AssetEvidenceState(StrEnum):
+    """Strength of physical evidence attached to an asset revision."""
+
+    PRIOR = "prior"
+    IDENTIFIED = "identified"
+    VALIDATED = "validated"
+
+
 class ScalarParameter(DomainModel):
     value: float = Field(allow_inf_nan=False)
     uncertainty: NonNegativeFloat = 0.0
@@ -640,6 +801,8 @@ class AssetSpec(DomainModel):
     geometries: tuple[GeometrySpec, ...]
     joints: tuple[JointSpec, ...] = ()
     physics: tuple[BodyPhysicsSpec, ...]
+    evidence_state: AssetEvidenceState = AssetEvidenceState.PRIOR
+    evidence: tuple[ArtifactRef, ...] = ()
     metadata: dict[str, JsonValue] = Field(default_factory=dict)
 
     @field_validator("resource_id", "root_link")
@@ -710,6 +873,10 @@ class AssetSpec(DomainModel):
             raise ValueError("all physics links must exist in the asset")
         if {item.link for item in self.physics} != links:
             raise ValueError("every asset link requires an explicit physics entry")
+        if self.evidence_state is not AssetEvidenceState.PRIOR and not self.evidence:
+            raise ValueError("identified and validated assets require immutable evidence")
+        if len({item.digest for item in self.evidence}) != len(self.evidence):
+            raise ValueError("asset evidence artifacts must be unique")
         return self
 
     def reference(self, digest: str | None = None) -> VersionedRef:
@@ -1567,6 +1734,7 @@ class RunRecord(DomainModel):
 __all__ = [
     "ActionSpec",
     "ArtifactRef",
+    "AssetEvidenceState",
     "AssetSpec",
     "BodyPhysicsSpec",
     "DataValue",
@@ -1592,6 +1760,11 @@ __all__ = [
     "MethodRuntime",
     "MethodSpec",
     "ModelManifest",
+    "OperationInput",
+    "OperationManifest",
+    "OperationOutput",
+    "OperationOutputRequirement",
+    "OperationSpec",
     "ParameterSource",
     "PoseSpec",
     "Predicate",

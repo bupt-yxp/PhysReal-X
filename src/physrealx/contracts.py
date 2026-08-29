@@ -24,6 +24,8 @@ from physrealx.domain import (
     JSONValue,
     MethodDescriptor,
     ModelManifest,
+    OperationOutput,
+    OperationSpec,
     RunRecord,
     RunResult,
     RunSpec,
@@ -156,6 +158,35 @@ class DigitalTwinPipeline(Protocol):
     ) -> DigitalTwinPipelineOutput: ...
 
 
+@dataclass(frozen=True)
+class MethodExecutionOutput:
+    """Unpublished outputs returned by one capability worker."""
+
+    outputs: tuple[OperationOutput, ...]
+    metrics: Mapping[str, float]
+
+
+@dataclass(frozen=True)
+class WorkerProbe:
+    """Side-effect-free local readiness result for one installed worker."""
+
+    ready: bool
+    detail: str
+
+
+@runtime_checkable
+class MethodWorker(Protocol):
+    """Executable adapter for one and only one ``MethodCapability``."""
+
+    descriptor: MethodDescriptor
+
+    def execute(
+        self,
+        spec: OperationSpec,
+        artifacts: ArtifactStore,
+    ) -> MethodExecutionOutput: ...
+
+
 @runtime_checkable
 class ArtifactWriter(Protocol):
     def put_bytes(self, payload: bytes, *, media_type: str) -> ArtifactRef: ...
@@ -166,6 +197,8 @@ class ArtifactWriter(Protocol):
 @runtime_checkable
 class ArtifactReader(Protocol):
     def get_bytes(self, reference: ArtifactRef | str) -> bytes: ...
+
+    def materialize(self, reference: ArtifactRef | str, destination: Path) -> None: ...
 
 
 @runtime_checkable

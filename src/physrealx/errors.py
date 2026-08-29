@@ -84,15 +84,29 @@ class AssetBuildError(PhysRealXError):
     code = "asset_build_error"
 
 
+class MethodExecutionError(PhysRealXError):
+    """A capability worker failed or returned invalid execution evidence."""
+
+    code = "method_execution_error"
+
+
+class WorkerUnavailableError(MethodExecutionError):
+    """An installed worker cannot run in the current host environment."""
+
+    code = "worker_unavailable"
+
+
 __all__ = [
     "ArtifactIntegrityError",
     "AssetBuildError",
     "DomainValidationError",
     "InvalidStateTransitionError",
+    "MethodExecutionError",
     "PhysRealXError",
     "PluginCompatibilityError",
     "PluginError",
     "ResourceConflictError",
     "ResourceNotFoundError",
     "SourcePackageError",
+    "WorkerUnavailableError",
 ]

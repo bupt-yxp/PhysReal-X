@@ -61,6 +61,31 @@ px.runs.episodes(run: str | RunRecord) -> tuple[Episode, ...]
 平台从制品存储读取 Episode，重新验证清单摘要及全部领域约束。每条 Episode 保留精确场景、任务、
 后端与策略方法、种子、时间线、信号 Schema、动作、结果和失败原因。
 
+## 物理轨迹与离线渲染
+
+`runs.submit` 用于策略在环仿真闭环；需要先生成物理状态轨迹、再离线生成多模态时，使用：
+
+```python
+simulation = px.simulations.run(scene_ref, task_ref, method="mujoco")
+trajectory = simulation.outputs[0].artifact
+
+render = px.renders.generate(trajectory, method="blenderproc")
+events = px.events.synthesize(render.outputs[0].artifact, method="v2e")
+points = px.pointclouds.project(depth_artifact, method="open3d")
+episode = px.episodes.pack(trajectory, method="lerobot_v3")
+```
+
+| API | 输出 |
+| --- | --- |
+| `simulations.run` | `state_trajectory` + `simulation_report` |
+| `renders.generate` | `render_streams` + `camera_metadata` |
+| `events.synthesize` | `event_stream` |
+| `pointclouds.project` | `point_cloud` |
+| `episodes.pack` | `episode_bundle` + `episode_manifest` |
+
+渲染 worker 必须消费 `state_trajectory`，不得重新执行物理。时间戳、相机参数和轨迹摘要必须进入
+模态清单，否则 RGB、深度、接触和关节状态不具备同步证据。
+
 ## 发布语义
 
 1. 每条 Episode 先写入内容寻址制品，再写摘要记录；

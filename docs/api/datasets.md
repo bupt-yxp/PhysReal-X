@@ -27,9 +27,18 @@ episodes = px.runs.episodes(run)
 每个摘要必须包含与 Episode JSON 相同的 SHA-256 和制品引用。读取时平台重算领域摘要，并重新
 验证时间线、信号模式、动作和终止语义。
 
-## 外部格式与快照方法
+## 外部格式与快照
 
-数据转换通过独立能力方法实现，不修改 `DatasetManifest`：
+```python
+normalized = px.datasets.ingest(raw_mcap, method="lerobot_v3")
+snapshot = px.datasets.snapshot(
+    normalized.outputs[0].artifact,
+    method="dvc",
+)
+```
+
+`datasets.ingest` 固定输出 `dataset` 和 `quality_report`；`datasets.snapshot` 固定输出
+`snapshot` 和 `snapshot_manifest`。两者都发布 `OperationManifest`，不原地修改 `DatasetManifest`。
 
 | 能力 | 推荐方法 |
 | --- | --- |

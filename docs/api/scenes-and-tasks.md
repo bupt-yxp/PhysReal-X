@@ -65,19 +65,40 @@ px.tasks.list() -> list[VersionedRef]
 - 观测 `SignalSpec` 和带上下界的 `ActionSpec`；
 - 最大步数与折扣。
 
-## 生成与编译方法
-
-场景生成、任务编译和轨迹规划通过方法能力注册，不向 `SceneSpec` / `TaskSpec` 添加算法专属字段：
+## 生成、编译与轨迹
 
 ```python
-px.methods.list(MethodCapability.SCENE_GENERATE)
-px.methods.list(MethodCapability.TASK_COMPILE)
-px.methods.list(MethodCapability.TASK_PLAN)
-px.methods.list(MethodCapability.TASK_VALIDATE)
+draft = px.scenes.generate(
+    {"domain": "kitchen", "seed": 2026, "asset_ids": ["cabinet2"]},
+    method="robocasa365",
+)
+scene_result = px.scenes.compose(
+    draft.outputs[0].artifact,
+    method="constraint_solver",
+)
+task_result = px.tasks.compile(
+    "打开柜门并把杯子放入柜体",
+    scene_ref,
+    method="bddl",
+)
+trajectory = px.trajectories.generate(
+    task_result.outputs[0].artifact,
+    method="curobo",
+)
+validation = px.tasks.validate(task_ref, method="task_probe")
 ```
 
-生成结果必须先转换为公共模型，再经过实体解析、Schema、约束、可达性、碰撞和冻结种子仿真检查。
-模型生成的 Python 代码不能直接进入工作节点。
+| API | 能力 | 强制输出 |
+| --- | --- | --- |
+| `scenes.generate` | `scene.generate` | `scene_draft` |
+| `scenes.compose` | `scene.compose` | `scene_spec` + `constraint_report` |
+| `tasks.compile` | `task.compile` | `task_spec` |
+| `trajectories.generate` | `trajectory.generate` | `trajectory` + `planning_report` |
+| `tasks.validate` | `task.validate` | `validation_report` |
+
+生成结果是待发布制品；只有将其反序列化为公共 `SceneSpec` / `TaskSpec` 并通过
+`register` 后，才能被运行引用。LLM 只能生成结构化草案；平台仍会执行实体解析、Schema、
+可满足性、可达性、碰撞和冻结种子仿真检查。生成的 Python 代码不允许直接执行。
 
 ## 主要错误
 

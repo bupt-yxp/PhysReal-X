@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Mapping
+from datetime import datetime, timezone
+from importlib.util import find_spec
 from pathlib import Path
 from typing import TypeVar
 
@@ -11,7 +13,7 @@ from pydantic import BaseModel
 
 from physrealx.asset_ingestion import ArtModelingImporter
 from physrealx.asset_validation import merge_validation_reports, validate_asset
-from physrealx.contracts import ArtifactStore, Repository
+from physrealx.contracts import ArtifactStore, MethodExecutionOutput, Repository
 from physrealx.digital_twin import (
     AssetValidationProfile,
     AssetValidationReport,
@@ -28,6 +30,9 @@ from physrealx.domain import (
     FailureCase,
     FailureCategory,
     JSONValue,
+    OperationManifest,
+    OperationOutput,
+    OperationSpec,
     ResourceType,
     RunSpec,
     SceneEntitySpec,
@@ -40,6 +45,7 @@ from physrealx.domain import (
 from physrealx.errors import (
     AssetBuildError,
     DomainValidationError,
+    MethodExecutionError,
     PhysRealXError,
     ResourceConflictError,
     ResourceNotFoundError,
@@ -51,12 +57,25 @@ from physrealx.runtime import RunExecutor
 from physrealx.services import (
     AssetsService,
     DatasetsService,
+    DeploymentsService,
+    EpisodesService,
     EvaluationsService,
+    EventsService,
+    FailuresService,
+    FeedbackService,
     MethodsService,
+    ModelsService,
+    OperationsService,
+    PointCloudsService,
+    RendersService,
     RunsService,
     ScenesService,
+    SimulationsService,
     TasksService,
+    TelemetryService,
     TrainingService,
+    TrajectoriesService,
+    WorldModelsService,
 )
 from physrealx.storage import LocalArtifactStore, SQLiteRepository
 from physrealx.training import TorchBehaviorCloningPolicy, TorchBehaviorCloningTrainer
@@ -80,13 +99,26 @@ class PhysRealX:
         self.plugins = plugins
         self._executor = RunExecutor(repository, artifacts, plugins)
         self.methods = MethodsService(self)
+        self.operations = OperationsService(self)
         self.assets = AssetsService(self)
         self.scenes = ScenesService(self)
         self.tasks = TasksService(self)
+        self.trajectories = TrajectoriesService(self)
+        self.simulations = SimulationsService(self)
+        self.renders = RendersService(self)
+        self.events = EventsService(self)
+        self.pointclouds = PointCloudsService(self)
+        self.episodes = EpisodesService(self)
         self.runs = RunsService(self)
         self.datasets = DatasetsService(self)
         self.training = TrainingService(self)
+        self.models = ModelsService(self)
+        self.world_models = WorldModelsService(self)
         self.evaluations = EvaluationsService(self)
+        self.deployments = DeploymentsService(self)
+        self.telemetry = TelemetryService(self)
+        self.failures = FailuresService(self)
+        self.feedback = FeedbackService(self)
 
     @classmethod
     def open(cls, workspace: str | Path, *, discover_plugins: bool = True) -> PhysRealX:
@@ -108,11 +140,12 @@ class PhysRealX:
             ScriptedDrawerPolicy.descriptor,
             ScriptedDrawerPolicy,
         )
-        plugins.register_trainer(TorchBehaviorCloningTrainer())
-        plugins.register_policy(
-            TorchBehaviorCloningPolicy.descriptor,
-            lambda config: TorchBehaviorCloningPolicy(config, artifacts),
-        )
+        if find_spec("torch") is not None and find_spec("safetensors") is not None:
+            plugins.register_trainer(TorchBehaviorCloningTrainer())
+            plugins.register_policy(
+                TorchBehaviorCloningPolicy.descriptor,
+                lambda config: TorchBehaviorCloningPolicy(config, artifacts),
+            )
         return plugins
 
     def _register_asset(self, spec: AssetSpec) -> VersionedRef:
@@ -447,6 +480,89 @@ class PhysRealX:
             "application/vnd.physrealx.evaluation+json",
             specialized="evaluation",
         )
+
+    def _execute_operation(self, spec: OperationSpec) -> OperationManifest:
+        """Execute and atomically publish one capability-worker invocation."""
+
+        try:
+            existing_ref = self.repository.get_resource(
+                ResourceType.OPERATION.value,
+                spec.resource_id,
+                spec.version,
+            )
+        except ResourceNotFoundError:
+            pass
+        else:
+            existing = self._load_registered(existing_ref, OperationManifest)
+            if existing.spec != spec:
+                raise ResourceConflictError(
+                    "operation identity already exists for a different specification"
+                )
+            return existing
+
+        resolved_inputs = []
+        for item in spec.inputs:
+            if item.resource is not None:
+                registered = self.repository.get_resource(
+                    item.resource.resource_type.value,
+                    item.resource.resource_id,
+                    item.resource.version,
+                )
+                if registered.digest != item.resource.digest:
+                    raise ResourceConflictError(
+                        f"operation input {item.name!r} digest does not match the registry"
+                    )
+                resolved_inputs.append(item.model_copy(update={"resource": registered}))
+            else:
+                if item.artifact is None or not self.artifacts.verify(item.artifact):
+                    raise DomainValidationError(
+                        f"operation input artifact {item.name!r} is unavailable or corrupt"
+                    )
+                resolved_inputs.append(item)
+
+        resolved = spec.model_copy(update={"inputs": tuple(resolved_inputs)})
+        worker = self.plugins.worker(resolved.method)
+        checkpoint = resolved.method.checkpoint
+        if checkpoint is not None and not self.artifacts.verify(checkpoint):
+            raise DomainValidationError("method checkpoint is unavailable or corrupt")
+
+        started_at = datetime.now(timezone.utc)
+        try:
+            result = worker.execute(resolved, self.artifacts)
+        except PhysRealXError:
+            raise
+        except Exception as error:
+            raise MethodExecutionError(
+                f"method {resolved.method.capability.value}:{resolved.method.name!r} failed"
+            ) from error
+        completed_at = datetime.now(timezone.utc)
+        if not isinstance(result, MethodExecutionOutput) or any(
+            not isinstance(item, OperationOutput) for item in result.outputs
+        ):
+            raise MethodExecutionError("method worker returned an incompatible result")
+        if any(not self.artifacts.verify(item.artifact) for item in result.outputs):
+            raise MethodExecutionError("method worker returned unpublished or corrupt artifacts")
+
+        try:
+            manifest = OperationManifest(
+                resource_id=resolved.resource_id,
+                version=resolved.version,
+                spec=resolved,
+                outputs=result.outputs,
+                metrics=dict(result.metrics),
+                started_at=started_at,
+                completed_at=completed_at,
+            )
+        except ValueError as error:
+            raise MethodExecutionError(
+                "method worker returned invalid execution evidence"
+            ) from error
+        self._register(
+            manifest,
+            manifest.reference(),
+            "application/vnd.physrealx.operation+json",
+        )
+        return manifest
 
     def _list_resources(self, resource_type: ResourceType) -> list[VersionedRef]:
         return self.repository.list_resources(resource_type=resource_type.value)

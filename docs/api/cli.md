@@ -30,6 +30,7 @@ physrealx methods --workspace .physrealx
 ```
 
 `doctor --strict` 在发现 Python、Torch 或 CUDA 环境问题时返回非零退出码；`--no-cuda` 用于不应初始化 CUDA 的 CI。
+`methods` 逐项输出 `execution_kind`、`executable`、`ready` 和 `detail`；只有描述符或本机缺少可执行文件/镜像时 `ready=false`。
 
 ## 规格校验与发布
 

@@ -15,14 +15,23 @@
 - 碰撞过滤、安全区和工作空间边界。
 
 ```python
-scene = px.scenes.compose(
-    scene_id="scene.drawer-kitchen",
-    robot="franka.standard@1.0.0",
-    assets={"drawer": "drawer.real-001@1.0.0"},
-    template="kitchen.countertop@2.1.0",
-    sensors=("camera.front", "wrist.rgbd", "wrist.force_torque"),
+draft = px.scenes.generate(
+    {
+        "domain": "kitchen",
+        "seed": 2026,
+        "assets": ["drawer.real-001@1.0.0"],
+        "robot": "franka.standard@1.0.0",
+    },
+    method="robocasa365",
+)
+composed = px.scenes.compose(
+    draft.outputs[0].artifact,
+    method="constraint_solver",
 )
 ```
+
+`generate` 产生候选布局，`compose` 产生约束求解后的 `scene_spec` 和报告。调用方只能将
+通过公共模型校验的 `SceneSpec` 再交给 `px.scenes.register(...)` 发布。
 
 ## 随机化不是字段堆积
 
@@ -55,12 +64,11 @@ scene = px.scenes.compose(
 ```
 
 ```python
-task = px.tasks.compile(
+compiled = px.tasks.compile(
     instruction="把杯子放进抽屉",
-    scene=scene,
-    task_id="task.place-cup-in-drawer",
-    robot="robot",
-    targets={"container": "drawer", "object": "cup"},
+    scene=scene_ref,
+    method="bddl",
+    config={"robot": "robot", "container": "drawer", "object": "cup"},
 )
 ```
 

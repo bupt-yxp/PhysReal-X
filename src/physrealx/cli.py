@@ -127,7 +127,7 @@ def _run(args: argparse.Namespace) -> int:
         return 1 if args.strict and report.issues else 0
     if command == "methods":
         platform = _platform(args.workspace)
-        _print_model([descriptor.model_dump(mode="json") for descriptor in platform.methods.list()])
+        _print_model([item.to_dict() for item in platform.methods.installations()])
         return 0
     if command == "validate":
         models: dict[str, type[BaseModel]] = {

@@ -52,6 +52,22 @@ Schema、规范化训练配置和有限指标。推理方法必须已在当前�
 px.training.list_models() -> list[VersionedRef]
 ```
 
+## 外部模型登记与世界模型 rollout
+
+```python
+registration = px.models.register(model_ref, method="mlflow")
+rollout = px.world_models.rollout(
+    world_model_ref,
+    context_artifact,
+    action_sequence,
+    method="dino_wm",
+)
+```
+
+`models.register` 产生与数据、代码、环境、配置、指标和权重摘要绑定的登记证据；
+`world_models.rollout` 产生 `rollout` 和 `uncertainty` 制品。方法只能返回已声明的特征、
+视频、状态或价值输出，平台不伪造缺失模态。
+
 ## 方法选择
 
 | 目标 | 能力方法 |

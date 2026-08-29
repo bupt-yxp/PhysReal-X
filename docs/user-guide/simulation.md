@@ -134,8 +134,9 @@ Episode ID 与种子不依赖实际调度顺序，扩缩容不会改变逻辑身
 ## 监控
 
 ```python
-for event in px.runs.watch(run):
-    print(event.completed, event.failed, event.fps, event.write_mbps)
+record = px.runs.get(run)
+print(record.status, record.started_at, record.completed_at)
 ```
 
-关键指标包括：环境步速、渲染帧率、Episode 成功率、重试率、GPU 利用率、队列延迟、制品写入吞吐和数据质量异常。
+当前本地执行器是同步的，没有 `watch` 流式接口。外部调度扩展可以上报环境步速、渲染帧率、
+Episode 成功率、GPU 利用率、队列延迟和制品写入吞吐，但不得伪造核心客户端方法。

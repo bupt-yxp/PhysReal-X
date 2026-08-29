@@ -54,17 +54,20 @@ source = px.assets.ingest(
 
 ## 3. 安装并选择方法
 
-外部适配器通过 `physrealx.plugins` 入口注册方法。先查询能力，再绑定版本与配置：
+外部算法包通过 `physrealx.workers` 入口注册独立进程或 OCI worker。先确认可执行状态，再绑定版本与配置：
 
 ```python
 from physrealx import MethodCapability
 
-print(px.methods.list(MethodCapability.ARTICULATION_RECOVER))
+print(px.methods.installations(MethodCapability.ARTICULATION_RECOVER))
 
 joint_method = px.methods.bind(
     MethodCapability.ARTICULATION_RECOVER,
     "ditto",
 )
+
+if not px.methods.inspect(MethodCapability.ARTICULATION_RECOVER, "ditto").ready:
+    raise RuntimeError("Ditto worker 未正确安装")
 ```
 
 推荐起点：

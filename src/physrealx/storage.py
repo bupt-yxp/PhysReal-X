@@ -245,6 +245,46 @@ class LocalArtifactStore:
             )
         return content
 
+    def materialize(self, reference: ArtifactRef | str, destination: Path) -> None:
+        """Stream a verified object to a new regular file without loading it in memory."""
+
+        if not isinstance(destination, Path):
+            raise TypeError("destination must be a pathlib.Path")
+        digest, expected_size = self._reference_parts(reference)
+        source = self._path_for_digest(digest)
+        if not source.is_file():
+            raise ResourceNotFoundError(f"artifact not found: {digest}")
+        self._assert_valid_file(source, digest, expected_size)
+        if destination.is_symlink() or destination.exists():
+            raise DomainValidationError(
+                f"artifact materialization destination must not exist: {destination}"
+            )
+        parent = destination.parent.resolve(strict=True)
+        if not parent.is_dir():
+            raise DomainValidationError(
+                f"artifact materialization parent is not a directory: {parent}"
+            )
+
+        hasher = hashlib.sha256()
+        size = 0
+        try:
+            with source.open("rb") as source_stream, destination.open("xb") as output:
+                for chunk in iter(lambda: source_stream.read(_HASH_CHUNK_SIZE), b""):
+                    hasher.update(chunk)
+                    size += len(chunk)
+                    output.write(chunk)
+                output.flush()
+                os.fsync(output.fileno())
+            actual_digest = f"sha256:{hasher.hexdigest()}"
+            if actual_digest != digest or (expected_size is not None and size != expected_size):
+                raise ArtifactIntegrityError(
+                    f"materialized artifact does not match its reference: {digest}"
+                )
+        except Exception:
+            with suppress(FileNotFoundError):
+                destination.unlink()
+            raise
+
     def verify(self, reference: ArtifactRef | str) -> bool:
         """Return whether an object exists and matches its reference.
 

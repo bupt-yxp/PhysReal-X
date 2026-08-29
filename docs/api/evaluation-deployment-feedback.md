@@ -43,7 +43,7 @@ px.evaluations.list_reports() -> list[VersionedRef]
 ## 评测方法
 
 ```python
-px.methods.list(MethodCapability.EVALUATION_RUN)
+benchmark = px.evaluations.run(model_ref, suite_ref, method="libero")
 ```
 
 推荐 `libero`、`robotwin2` 和 `simpler` 扩展；每个基准必须固定官方任务、初态、种子、超时和成功
@@ -51,11 +51,9 @@ px.methods.list(MethodCapability.EVALUATION_RUN)
 
 ## 真机部署边界
 
-部署 worker 注册 `deployment.stage`，遥测 recorder 注册 `telemetry.record`：
-
 ```python
-px.methods.list(MethodCapability.DEPLOYMENT_STAGE)
-px.methods.list(MethodCapability.TELEMETRY_RECORD)
+deployment = px.deployments.stage(model_ref, robot_ref, method="ros2_control")
+telemetry = px.telemetry.record(robot_run_artifact, method="rosbag2_mcap")
 ```
 
 `ros2` 方法使用 ros2_control/MoveIt 2 接入机器人，`rosbag2_mcap` 记录观测、动作、TF、诊断、
@@ -65,8 +63,11 @@ px.methods.list(MethodCapability.TELEMETRY_RECORD)
 ## 失败与反馈边界
 
 ```python
-px.methods.list(MethodCapability.FAILURE_ANALYZE)
-px.methods.list(MethodCapability.FEEDBACK_BUILD_DATASET)
+failure = px.failures.analyze(telemetry.outputs[0].artifact, method="rules_v1")
+targeted = px.feedback.build_dataset(
+    failure.outputs[0].artifact,
+    method="hard_negative",
+)
 ```
 
 默认 `rules` 方法根据任务时间线、命令—状态误差、接触/力、TF/时钟和诊断产生证据；RoboFAC
@@ -75,6 +76,9 @@ px.methods.list(MethodCapability.FEEDBACK_BUILD_DATASET)
 
 `hard_negative` 从确认失败/OOD 切片发布新的 `DatasetRevision`，不得原地修改训练集；提升必须在未
 参与反馈构建的 failure holdout 和旧回归集上同时验证。
+
+上述五个接口都返回可追溯 `OperationManifest`。`deployment.stage` 的 `safety_report` 未通过时，
+扩展 worker 必须拒绝进入 canary；`failure.analyze` 证据不足时必须输出 `unknown`，不得强制归因。
 
 ## 发布门禁
 

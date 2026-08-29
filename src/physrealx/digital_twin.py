@@ -396,6 +396,7 @@ class AssetValidationProfile(StrEnum):
     SCHEMA = "schema"
     SIMULATION = "simulation"
     DIGITAL_TWIN = "digital_twin"
+    TRAINABLE = "trainable"
 
 
 class AssetValidationIssue(DomainModel):

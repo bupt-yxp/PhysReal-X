@@ -7,6 +7,8 @@ from pydantic import JsonValue, ValidationError
 
 from physrealx.domain import (
     ActionSpec,
+    ArtifactRef,
+    AssetEvidenceState,
     DataValue,
     GeometryRole,
     JointSpec,
@@ -41,6 +43,23 @@ def test_reference_asset_has_separate_visual_and_collision_geometry() -> None:
     assert asset.joints[0].joint_type is JointType.PRISMATIC
     assert scene.entities[0].asset.resource_id == asset.resource_id
     assert reference_task(scene).scene.resource_id == scene.resource_id
+
+
+def test_asset_evidence_state_cannot_claim_identification_without_evidence() -> None:
+    payload = reference_asset().model_dump(mode="json")
+    payload["evidence_state"] = AssetEvidenceState.IDENTIFIED.value
+    with pytest.raises(ValidationError, match="require immutable evidence"):
+        type(reference_asset()).model_validate(payload)
+
+    payload["evidence"] = [
+        ArtifactRef(
+            digest=f"sha256:{'e' * 64}",
+            size_bytes=10,
+            media_type="application/vnd.physrealx.identification+json",
+        ).model_dump(mode="json")
+    ]
+    identified = type(reference_asset()).model_validate(payload)
+    assert identified.evidence_state is AssetEvidenceState.IDENTIFIED
 
 
 def test_asset_requires_positive_definite_inertia_and_primitive_dimensions() -> None:

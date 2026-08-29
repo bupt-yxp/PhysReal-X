@@ -108,6 +108,11 @@ def test_artifact_files_are_streamed_and_symbolic_links_are_rejected(tmp_path: P
     reference = store.put_file(source, media_type="application/octet-stream")
 
     assert store.get_bytes(reference) == b"captured-observations"
+    materialized = tmp_path / "worker-input.bin"
+    store.materialize(reference, materialized)
+    assert materialized.read_bytes() == b"captured-observations"
+    with pytest.raises(DomainValidationError, match="must not exist"):
+        store.materialize(reference, materialized)
     link = tmp_path / "capture-link.bin"
     link.symlink_to(source)
     with pytest.raises(DomainValidationError, match="symbolic link"):

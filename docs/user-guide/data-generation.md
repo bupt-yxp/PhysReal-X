@@ -129,8 +129,9 @@ budget:
 result = px.runs.wait(run)
 dataset = px.datasets.get(result.dataset)
 
-quality = px.datasets.validate(dataset, level="deep")
-quality.raise_for_errors()
+normalized = px.datasets.ingest(result.dataset, method="lerobot_v3")
+snapshot = px.datasets.snapshot(normalized.outputs[0].artifact, method="dvc")
 ```
 
-确认质量后再创建训练视图和固定切分。不要让训练脚本直接遍历运行临时目录。
+`datasets.ingest` 的 `quality_report` 通过后再创建快照和固定切分。不要让训练脚本
+直接遍历运行临时目录。

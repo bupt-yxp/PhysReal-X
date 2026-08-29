@@ -11,7 +11,13 @@ from physrealx.digital_twin import (
     AssetValidationReport,
     IssueSeverity,
 )
-from physrealx.domain import AssetSpec, GeometryRepresentation, GeometryRole, ParameterSource
+from physrealx.domain import (
+    AssetEvidenceState,
+    AssetSpec,
+    GeometryRepresentation,
+    GeometryRole,
+    ParameterSource,
+)
 
 
 def validate_asset(
@@ -70,7 +76,11 @@ def validate_asset(
                     )
                 )
 
-    if profile is AssetValidationProfile.DIGITAL_TWIN:
+    if profile in {
+        AssetValidationProfile.DIGITAL_TWIN,
+        AssetValidationProfile.TRAINABLE,
+    }:
+        strict = profile is AssetValidationProfile.TRAINABLE
         for body in asset.physics:
             parameters = {
                 "mass_kg": body.mass_kg,
@@ -82,7 +92,7 @@ def validate_asset(
                 if parameter.source is ParameterSource.DEFAULT:
                     issues.append(
                         AssetValidationIssue(
-                            severity=IssueSeverity.WARNING,
+                            severity=IssueSeverity.ERROR if strict else IssueSeverity.WARNING,
                             code="default_physics_parameter",
                             message="default physical parameters require later calibration",
                             path=f"physics.{body.link}.{name}",
@@ -91,7 +101,7 @@ def validate_asset(
                 if parameter.confidence == 0:
                     issues.append(
                         AssetValidationIssue(
-                            severity=IssueSeverity.WARNING,
+                            severity=IssueSeverity.ERROR if strict else IssueSeverity.WARNING,
                             code="zero_parameter_confidence",
                             message="physical parameter confidence is zero",
                             path=f"physics.{body.link}.{name}",
@@ -101,7 +111,7 @@ def validate_asset(
             if joint.effort_limit is None or joint.velocity_limit is None:
                 issues.append(
                     AssetValidationIssue(
-                        severity=IssueSeverity.WARNING,
+                        severity=IssueSeverity.ERROR if strict else IssueSeverity.WARNING,
                         code="incomplete_joint_limits",
                         message=(
                             "joint effort and velocity limits should be measured before deployment"
@@ -109,6 +119,27 @@ def validate_asset(
                         path=f"joints.{joint.name}",
                     )
                 )
+
+        if strict:
+            if asset.evidence_state is not AssetEvidenceState.VALIDATED:
+                issues.append(
+                    AssetValidationIssue(
+                        severity=IssueSeverity.ERROR,
+                        code="asset_not_validated",
+                        message="a trainable asset requires validated physical evidence",
+                        path="evidence_state",
+                    )
+                )
+            for index, evidence in enumerate(asset.evidence):
+                if not artifacts.verify(evidence):
+                    issues.append(
+                        AssetValidationIssue(
+                            severity=IssueSeverity.ERROR,
+                            code="unavailable_validation_evidence",
+                            message="asset validation evidence is unavailable or corrupt",
+                            path=f"evidence.{index}",
+                        )
+                    )
 
     return AssetValidationReport(
         profile=profile,

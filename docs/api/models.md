@@ -21,7 +21,8 @@
 | `version` | `str` | 显式语义版本 |
 | `digest` | `str | None` | 解析后必须存在 |
 
-`ResourceType` 包含 `observation_set`、`asset_build`、`asset`、`scene`、`task`、`dataset`、`model` 和 `evaluation`。
+`ResourceType` 包含 `observation_set`、`asset_build`、`asset`、`scene`、`task`、`dataset`、`model`、
+`evaluation` 和 `operation`。
 
 ## 空间与信号
 
@@ -61,7 +62,11 @@ PoseSpec(
 | 结构 | `root_link`, `links`, `joints` |
 | 表示 | `geometries`，每项明确 `visual` 或 `collision` 角色 |
 | 物理 | `tuple[BodyPhysicsSpec, ...]` |
+| 证据 | `evidence_state`、`evidence` |
 | 扩展 | 有限的结构化 `metadata` |
+
+`evidence_state` 为 `prior`、`identified` 或 `validated`。后两种状态必须引用不可变证据制品，
+防止将默认值或纯视觉估计冒充实测物性。
 
 ### `JointSpec`
 
@@ -109,7 +114,8 @@ DigitalTwinRecipe(
 
 `DigitalTwinStep` 将有序 `DigitalTwinStage` 绑定到能力匹配的 `MethodSpec`。`MethodSpec`
 包含完整 `MethodDescriptor`、可选权重 `ArtifactRef` 和冻结配置；描述符固定源码 revision、
-许可证、运行环境以及输入输出契约。
+许可证、运行环境以及输入输出契约。独立进程必须固定 `environment_digest`，
+容器必须固定 `image_digest`。
 
 ### `DigitalTwinBuildSpec` / `DigitalTwinBuildManifest`
 
@@ -117,7 +123,8 @@ DigitalTwinRecipe(
 
 ### `AssetValidationReport`
 
-`profile` 可为 `schema`、`simulation` 或 `digital_twin`；任一 `error` 使 `passed=False`，`warning` 不阻止发布但会进入构建清单。
+`profile` 可为 `schema`、`simulation`、`digital_twin` 或 `trainable`；任一 `error` 使
+`passed=False`。`trainable` 要求已校验证据，并将默认物性与不完整关节限制升级为错误。
 
 ## 场景与任务模型
 
@@ -134,10 +141,6 @@ DigitalTwinRecipe(
 
 `SceneEntitySpec.role` 为 `robot`、`object` 或 `environment`；实体名在场景内唯一。注册场景时，平台会把每个资产解析为带摘要的精确引用。
 
-### `RandomVariableSpec`
-
-声明路径、分布、参数、采样时机、相关组、裁剪和物理约束。
-
 ### `TaskSpec`
 
 包含场景精确引用、主体实体、语言指令、初始/成功/终止条件、观测模式、动作空间、最大步数和奖励折扣。`subject_entity` 必须对应场景中的稳定实体名。
@@ -148,11 +151,24 @@ DigitalTwinRecipe(
 Predicate(
     signal: str,
     operator: Literal["ge", "gt", "le", "lt", "eq", "abs_le"],
-    value: float | bool,
-    unit: str = "1",
+    value: float,
     tolerance: float = 0.0,
 )
 ```
+
+## 方法执行证据
+
+### `OperationSpec`
+
+包含输出身份、完整 `MethodSpec`、命名的已解析资源/制品输入、结构化调用参数，以及每个输出的
+精确名称与语义契约。
+方法环境/算法配置属于 `MethodSpec.config`，“本次要生成什么”属于 `OperationSpec.arguments`，
+两者不混用。
+
+### `OperationManifest`
+
+包含原 `OperationSpec`、按契约顺序返回的 `OperationOutput`、有限指标和含时区的起止时间。
+输出必须已进入制品存储；输入摘要、方法身份、输出名称、语义契约或顺序不一致均拒绝发布。
 
 ## 运行与 Episode
 

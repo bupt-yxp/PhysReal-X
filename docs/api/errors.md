@@ -13,8 +13,10 @@ PhysRealXError
 ├── ResourceConflictError
 ├── ArtifactIntegrityError
 ├── InvalidStateTransitionError
-└── PluginError
-    └── PluginCompatibilityError
+├── PluginError
+│   └── PluginCompatibilityError
+└── MethodExecutionError
+    └── WorkerUnavailableError
 ```
 
 Pydantic 模型构造失败直接抛出 `pydantic.ValidationError`；多个已合法领域对象组合失败时抛出 `DomainValidationError`。
@@ -40,22 +42,23 @@ except AssetBuildError as exc:
 | 校验、冲突、能力不匹配 | 否；修改输入 |
 | 源包、构建契约或插件错误 | 否；修复输入或插件 |
 | 制品摘要错误 | 否；隔离制品并调查来源 |
+| worker 未安装、镜像缺失或就绪检查失败 | 否；修复独立 worker 环境 |
+| worker 超时或非零退出 | 仅当任务本身声明可安全重试时 |
 
 ## 幂等语义
 
 所有资源注册天然幂等：相同身份和相同内容返回同一精确引用；不同内容冲突。
 
-长任务提交通过 `idempotency_key` 保证网络重试不重复创建任务：
+运行以 `RunSpec.run_id` 作为幂等身份；能力 worker 操作身份由精确方法、输入以及输出名称/语义契约的摘要生成。
+相同身份对应不同规格时抛出 `ResourceConflictError`。
 
 ```python
-px.training.submit(spec, idempotency_key="drawer-dp-v1")
+record = px.runs.submit(run_spec)
+same_record = px.runs.submit(run_spec)
 ```
 
-取消和关闭也是幂等操作；对已终态任务再次取消返回当前记录，不创建第二个终止事件。
-
-## 资源状态与任务状态
-
-资源只有 `active`、`deprecated`、`retired` 等目录状态，内容始终不可变。异步任务使用明确状态机；非法跳转抛出 `InvalidStateTransitionError`。
+当前公共服务未提供取消、目录废弃或隐式覆盖接口。资源内容始终不可变，运行状态机的非法跳转
+抛出 `InvalidStateTransitionError`。
 
 ## 部分结果
 
@@ -64,26 +67,13 @@ px.training.submit(spec, idempotency_key="drawer-dp-v1")
 - 已原子发布的 Episode 可以查询和诊断；
 - 未完成或摘要未验证的 Episode 不可见；
 - 输出数据集不会发布为成功版本；
-- `RunFailedError.record` 提供完成数、失败阶段和可恢复性。
+- `RunRecord.result` 在终态保存稳定错误码与信息。
 
 训练、评测、导出和资产构建遵循相同原则：部分制品只有在终态清单引用后才成为正式结果。
 
-## 超时
-
-客户端 `wait(timeout=...)` 超时只停止等待，不取消平台任务：
-
-```python
-try:
-    px.runs.wait(run, timeout=60)
-except JobTimeoutError:
-    current = px.runs.get(run)
-```
-
-需要取消时显式调用 `cancel()`。
-
 ## 安全错误
 
-`SafetyViolationError` 具有最高优先级：
+部署 worker 必须把安全门失败作为结构化错误：
 
 - 不自动重试动作；
 - 部署进入受控停止或急停状态；

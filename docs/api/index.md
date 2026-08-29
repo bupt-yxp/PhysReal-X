@@ -30,13 +30,16 @@ px = PhysRealX.open(".physrealx")
 
 | 命名空间 | 主要操作 |
 | --- | --- |
-| `px.methods` | `list`、`get`、`bind`、注册外部方法描述符 |
-| `px.assets` | 观测预检/导入、数字孪生构建、资产注册与校验 |
-| `px.scenes`、`px.tasks` | 注册、读取和列出场景/任务 |
+| `px.methods` | `list`、`inspect`、`installations`、`bind`；查询方法身份与真实就绪状态 |
+| `px.operations` | 读取和列出能力 worker 的不可变执行证据 |
+| `px.assets` | 观测导入、数字孪生、关节、碰撞、物性、封装与验收 |
+| `px.scenes`、`px.tasks`、`px.trajectories` | 场景生成/组合、任务编译/校验和轨迹生成 |
+| `px.simulations`、`px.renders`、`px.events`、`px.pointclouds` | 物理轨迹与严格同步的多模态派生 |
 | `px.runs` | 提交运行、读取状态、等待结果和加载 Episode |
-| `px.datasets` | 读取和列出已发布数据集 |
-| `px.training` | 提交训练、读取和列出模型 |
-| `px.evaluations` | 独立评测、读取和列出报告 |
+| `px.episodes`、`px.datasets` | Episode 封装、数据归一化、快照与读取 |
+| `px.training`、`px.models`、`px.world_models` | 训练、模型登记和动作条件 rollout |
+| `px.evaluations`、`px.deployments`、`px.telemetry` | 冻结评测、分级部署和 MCAP 留证 |
+| `px.failures`、`px.feedback` | 证据化失败归因与新的定向数据集 |
 | `px.artifacts` | 内容寻址制品写入、读取与完整性验证 |
 
 ## 可执行闭环
