@@ -55,9 +55,19 @@ Python 3.8–3.12 核心
     └── ROS 2 真机 worker
 ```
 
-每个外部方法独立登记 Python/CUDA、镜像摘要、源码 revision、输入输出契约和许可证，并通过
-`physrealx.workers` 包入口发现。生产容器必须预先安装 digest 固定的镜像；平台不会自动拉取镜像或
-下载权重。不要为了接入某个算法而放宽核心包的 Python 或 NumPy 约束。
+每个外部方法独立登记 Python/CUDA、环境摘要、源码 revision、输入输出契约和许可证。
+本机进程 worker 通过工作区 `workers.d/*.json` 加载，发布的扩展包也可使用
+`physrealx.workers` 入口。生产容器必须预安装 digest 固定的镜像；平台不会拉取镜像或权重。
+
+项目附带的参考 worker 可独立安装：
+
+```bash
+python workers/install.py \
+  --root /data/physrealx-workers/envs \
+  --workspace .physrealx \
+  --blender-runtime /data/blender/blender-4.2.1-linux-x64 \
+  coacd mujoco blenderproc lerobot
+```
 
 ## 验证安装
 

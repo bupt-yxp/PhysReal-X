@@ -59,6 +59,7 @@ nav:
       - 资产与数字孪生: user-guide/assets.md
       - 场景与任务: user-guide/scenes-and-tasks.md
       - 仿真运行与后端: user-guide/simulation.md
+      - 外部方法与实验验证: user-guide/external-workers.md
       - 多模态数据生成: user-guide/data-generation.md
       - 数据集管理: user-guide/datasets.md
       - 策略训练: user-guide/training.md

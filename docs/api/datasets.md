@@ -30,7 +30,7 @@ episodes = px.runs.episodes(run)
 ## 外部格式与快照
 
 ```python
-normalized = px.datasets.ingest(raw_mcap, method="lerobot_v3")
+normalized = px.datasets.ingest(raw_mcap, method="lerobot_v2_1")
 snapshot = px.datasets.snapshot(
     normalized.outputs[0].artifact,
     method="dvc",
@@ -42,7 +42,7 @@ snapshot = px.datasets.snapshot(
 
 | 能力 | 推荐方法 |
 | --- | --- |
-| `dataset.ingest` | `lerobot_v3`、`rlds`、`rosbag2_mcap` |
+| `dataset.ingest` | `lerobot_v2_1`、`rlds`、`rosbag2_mcap` |
 | `dataset.validate` | `episode_contract` |
 | `dataset.snapshot` | `dvc` |
 

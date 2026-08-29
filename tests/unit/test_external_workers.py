@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -15,7 +16,12 @@ from physrealx.domain import (
     sha256_digest,
 )
 from physrealx.errors import MethodExecutionError, PluginError, WorkerUnavailableError
-from physrealx.external_workers import ContainerLaunch, ExternalMethodWorker, ProcessLaunch
+from physrealx.external_workers import (
+    ContainerLaunch,
+    ExternalMethodWorker,
+    ProcessLaunch,
+    WorkerDeploymentFile,
+)
 from physrealx.platform import PhysRealX
 from physrealx.plugins import PluginRegistry
 
@@ -54,7 +60,21 @@ def _process_worker(
     timeout_seconds: float = 3_600.0,
 ) -> tuple[MethodDescriptor, ExternalMethodWorker]:
     manifest = tmp_path / f"{name}.environment.lock"
-    payload = f"{name}=1.0.0\n".encode()
+    runtime_paths = [Path(sys.executable).resolve()] + [
+        Path(value).resolve() for value in command[1:] if Path(value).is_file()
+    ]
+    payload = json.dumps(
+        {
+            "schema": "physrealx.worker-environment/1",
+            "runtime_files": [
+                {
+                    "path": str(path),
+                    "sha256": sha256_digest(path.read_bytes()),
+                }
+                for path in runtime_paths
+            ],
+        }
+    ).encode()
     manifest.write_bytes(payload)
     descriptor = _descriptor(name, environment_digest=sha256_digest(payload))
     return descriptor, ExternalMethodWorker(
@@ -317,3 +337,90 @@ def test_non_in_process_descriptor_cannot_use_an_in_process_worker() -> None:
 
     with pytest.raises(PluginError, match="require ExternalMethodWorker"):
         PluginRegistry().register_worker(MisrepresentedWorker())
+
+
+def test_workspace_deployment_discovers_and_probes_process_worker(tmp_path: Path) -> None:
+    executable = tmp_path / "worker"
+    executable.write_text("#!/bin/sh\necho ready\n", encoding="utf-8")
+    executable.chmod(0o755)
+    environment = tmp_path / "environment-lock.json"
+    environment.write_text(
+        json.dumps(
+            {
+                "schema": "physrealx.worker-environment/1",
+                "runtime_files": [
+                    {
+                        "path": str(executable),
+                        "sha256": sha256_digest(executable.read_bytes()),
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    descriptor = _descriptor(
+        "deployed_coacd",
+        environment_digest=sha256_digest(environment.read_bytes()),
+    )
+    deployment = WorkerDeploymentFile.model_validate(
+        {
+            "worker": {
+                "kind": "process",
+                "descriptor": descriptor,
+                "command": [str(executable)],
+                "probe_command": [str(executable)],
+                "environment_manifest": str(environment),
+            }
+        }
+    )
+    workspace = tmp_path / "workspace"
+    deployment_directory = workspace / "workers.d"
+    deployment_directory.mkdir(parents=True)
+    (deployment_directory / "coacd.json").write_text(
+        deployment.model_dump_json(indent=2), encoding="utf-8"
+    )
+
+    platform = PhysRealX.open(workspace)
+
+    installation = platform.methods.inspect(MethodCapability.COLLISION_BUILD, descriptor.name)
+    assert installation.ready is True
+    assert installation.detail == "ready"
+
+
+def test_process_probe_rejects_mutated_runtime_file(tmp_path: Path) -> None:
+    executable = tmp_path / "worker"
+    executable.write_text("#!/bin/sh\necho ready\n", encoding="utf-8")
+    executable.chmod(0o755)
+    environment = tmp_path / "environment-lock.json"
+    environment.write_text(
+        json.dumps(
+            {
+                "schema": "physrealx.worker-environment/1",
+                "runtime_files": [
+                    {
+                        "path": str(executable),
+                        "sha256": sha256_digest(executable.read_bytes()),
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    descriptor = _descriptor(
+        "integrity_coacd",
+        environment_digest=sha256_digest(environment.read_bytes()),
+    )
+    worker = ExternalMethodWorker(
+        descriptor,
+        ProcessLaunch(
+            command=(str(executable),),
+            probe_command=(str(executable),),
+            environment_manifest=environment,
+        ),
+    )
+
+    executable.write_text("#!/bin/sh\necho changed\n", encoding="utf-8")
+
+    probe = worker.probe()
+    assert probe.ready is False
+    assert "changed after installation" in probe.detail

@@ -54,7 +54,8 @@ source = px.assets.ingest(
 
 ## 3. 安装并选择方法
 
-外部算法包通过 `physrealx.workers` 入口注册独立进程或 OCI worker。先确认可执行状态，再绑定版本与配置：
+外部算法通过工作区 `workers.d` 清单或 `physrealx.workers` 包入口注册独立进程/OCI
+worker。先确认可执行状态，再绑定版本与配置：
 
 ```python
 from physrealx import MethodCapability

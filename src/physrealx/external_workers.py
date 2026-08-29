@@ -22,7 +22,7 @@ from collections.abc import Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Final, Literal, Union
+from typing import Annotated, Callable, Final, Literal, Union
 
 from pydantic import Field, field_validator, model_validator
 
@@ -141,6 +141,7 @@ class ProcessLaunch:
 
     command: tuple[str, ...]
     environment_manifest: Path
+    probe_command: tuple[str, ...] = ()
     timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS
     max_output_bytes: int = _DEFAULT_MAX_OUTPUT_BYTES
     max_log_bytes: int = _DEFAULT_MAX_LOG_BYTES
@@ -155,9 +156,13 @@ class ProcessLaunch:
         if not manifest.is_absolute():
             raise PluginError("process worker environment_manifest must use an absolute path")
         _validate_limits(self.timeout_seconds, self.max_output_bytes, self.max_log_bytes)
+        _validate_command(self.probe_command, allow_empty=True)
+        if self.probe_command and not Path(self.probe_command[0]).expanduser().is_absolute():
+            raise PluginError("process worker probe executable must use an absolute path")
         _validate_environment_names(self.inherit_environment)
         object.__setattr__(self, "command", tuple(self.command))
         object.__setattr__(self, "environment_manifest", manifest)
+        object.__setattr__(self, "probe_command", tuple(self.probe_command))
         object.__setattr__(self, "inherit_environment", tuple(self.inherit_environment))
 
 
@@ -193,6 +198,81 @@ class ContainerLaunch:
 
 ExternalLaunch = Union[ProcessLaunch, ContainerLaunch]
 WorkerHandler = Callable[[WorkerRequest, Path], WorkerResponse]
+
+
+class ProcessWorkerDeployment(DomainModel):
+    """Machine-local binding from an immutable descriptor to one process environment."""
+
+    kind: Literal["process"]
+    descriptor: MethodDescriptor
+    command: tuple[str, ...]
+    environment_manifest: Path
+    probe_command: tuple[str, ...] = ()
+    inherit_environment: tuple[str, ...] = _INHERITED_ENVIRONMENT
+    timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS
+    max_output_bytes: int = _DEFAULT_MAX_OUTPUT_BYTES
+    max_log_bytes: int = _DEFAULT_MAX_LOG_BYTES
+
+
+class ContainerWorkerDeployment(DomainModel):
+    """Machine-local binding from an immutable descriptor to one pinned OCI image."""
+
+    kind: Literal["container"]
+    descriptor: MethodDescriptor
+    image: str
+    runtime: str = "docker"
+    command: tuple[str, ...] = ()
+    timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS
+    max_output_bytes: int = _DEFAULT_MAX_OUTPUT_BYTES
+    max_log_bytes: int = _DEFAULT_MAX_LOG_BYTES
+    runtime_arguments: tuple[str, ...] = ()
+
+
+WorkerDeployment = Annotated[
+    Union[ProcessWorkerDeployment, ContainerWorkerDeployment],
+    Field(discriminator="kind"),
+]
+
+
+class WorkerDeploymentFile(DomainModel):
+    """Versioned deployment file loaded from a workspace ``workers.d`` directory."""
+
+    schema_version: Literal["1"] = "1"
+    worker: WorkerDeployment
+
+
+def load_worker_deployment(path: Path) -> ExternalMethodWorker:
+    """Load one deployment without importing its algorithm environment."""
+
+    candidate = path.expanduser()
+    if candidate.is_symlink() or not candidate.is_file():
+        raise PluginError(f"worker deployment must be a regular file: {candidate}")
+    try:
+        deployment = WorkerDeploymentFile.model_validate_json(candidate.read_bytes()).worker
+    except (OSError, ValueError) as error:
+        raise PluginError(f"invalid worker deployment: {candidate}") from error
+    launch: ExternalLaunch
+    if isinstance(deployment, ProcessWorkerDeployment):
+        launch = ProcessLaunch(
+            command=deployment.command,
+            environment_manifest=deployment.environment_manifest,
+            probe_command=deployment.probe_command,
+            inherit_environment=deployment.inherit_environment,
+            timeout_seconds=deployment.timeout_seconds,
+            max_output_bytes=deployment.max_output_bytes,
+            max_log_bytes=deployment.max_log_bytes,
+        )
+    else:
+        launch = ContainerLaunch(
+            image=deployment.image,
+            runtime=deployment.runtime,
+            command=deployment.command,
+            timeout_seconds=deployment.timeout_seconds,
+            max_output_bytes=deployment.max_output_bytes,
+            max_log_bytes=deployment.max_log_bytes,
+            runtime_arguments=deployment.runtime_arguments,
+        )
+    return ExternalMethodWorker(deployment.descriptor, launch)
 
 
 def run_worker(handler: WorkerHandler, argv: Sequence[str] | None = None) -> int:
@@ -312,17 +392,40 @@ class ExternalMethodWorker:
         """Check only local installation state; never download images or dependencies."""
 
         if isinstance(self._launch, ProcessLaunch):
-            manifest = self._launch.environment_manifest
-            if manifest.is_symlink() or not manifest.is_file():
-                return WorkerProbe(False, f"environment manifest is unavailable: {manifest}")
-            digest, _ = _digest_file(manifest)
-            if digest != self.descriptor.runtime.environment_digest:
-                return WorkerProbe(False, "environment manifest digest changed after installation")
+            integrity = _probe_process_environment(
+                self._launch.environment_manifest,
+                self.descriptor.runtime.environment_digest,
+            )
+            if integrity is not None:
+                return WorkerProbe(False, integrity)
             executable = Path(self._launch.command[0]).expanduser()
             if not executable.is_file():
                 return WorkerProbe(False, f"executable is not installed: {executable}")
             if not os.access(executable, os.X_OK):
                 return WorkerProbe(False, f"executable is not runnable: {executable}")
+            if self._launch.probe_command:
+                environment = {
+                    name: os.environ[name]
+                    for name in self._launch.inherit_environment
+                    if name in os.environ
+                }
+                try:
+                    completed = subprocess.run(
+                        self._launch.probe_command,
+                        check=False,
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        env=environment,
+                        timeout=30,
+                    )
+                except (OSError, subprocess.TimeoutExpired) as error:
+                    return WorkerProbe(False, f"worker probe failed: {error}")
+                detail = completed.stdout[-4_096:].decode("utf-8", errors="replace").strip()
+                if completed.returncode != 0:
+                    return WorkerProbe(False, detail or "worker probe returned a failure")
+                if detail:
+                    return WorkerProbe(True, detail)
             return WorkerProbe(True, f"process executable: {executable}")
 
         runtime = shutil.which(self._launch.runtime)
@@ -593,6 +696,37 @@ def _digest_file(path: Path) -> tuple[str, int]:
             hasher.update(chunk)
             size += len(chunk)
     return f"sha256:{hasher.hexdigest()}", size
+
+
+def _probe_process_environment(manifest: Path, expected_digest: str | None) -> str | None:
+    if manifest.is_symlink() or not manifest.is_file():
+        return f"environment manifest is unavailable: {manifest}"
+    digest, _ = _digest_file(manifest)
+    if digest != expected_digest:
+        return "environment manifest digest changed after installation"
+    try:
+        record = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return "environment manifest is not valid UTF-8 JSON"
+    if not isinstance(record, dict) or record.get("schema") != "physrealx.worker-environment/1":
+        return "environment manifest uses an unsupported schema"
+    runtime_files = record.get("runtime_files")
+    if not isinstance(runtime_files, list) or not runtime_files:
+        return "environment manifest has no runtime file integrity records"
+    for item in runtime_files:
+        if not isinstance(item, dict):
+            return "environment manifest contains an invalid runtime file record"
+        raw_path = item.get("path")
+        expected = item.get("sha256")
+        if not isinstance(raw_path, str) or not isinstance(expected, str):
+            return "environment manifest contains an invalid runtime file record"
+        path = Path(raw_path).expanduser()
+        if not path.is_absolute() or path.is_symlink() or not path.is_file():
+            return f"worker runtime file is unavailable: {path}"
+        actual, _ = _digest_file(path)
+        if actual != expected:
+            return f"worker runtime file changed after installation: {path}"
+    return None
 
 
 def _verify_materialized_inputs(request: WorkerRequest, root: Path) -> None:

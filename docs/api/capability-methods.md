@@ -33,8 +33,9 @@ ditto = px.methods.bind(
 
 ## 独立 worker 运行时
 
-Ditto、CoACD、MuJoCo、BlenderProc、LeRobot 等不进入核心依赖。每个扩展包安装自己的算法环境，
-并通过 `physrealx.workers` 入口登记一个可执行 worker；只登记描述符不会变成可运行能力。
+Ditto、CoACD、MuJoCo、BlenderProc、LeRobot 等不进入核心依赖。每个方法安装自己的算法环境；
+本机进程通过工作区 `workers.d` 部署清单绑定，发布扩展也可通过 `physrealx.workers`
+入口登记。只有描述符而无可执行环境的方法不会被标记为就绪。
 
 运行模式只有三种：
 
@@ -181,7 +182,7 @@ assert installed[0].ready
 | `event.synthesize` | `v2e` | [v2e](https://github.com/SensorsINI/v2e) 从强度视频生成事件流。 |
 | `point_cloud.project` | `open3d` | Open3D 依据相机模型生成和检查点云。 |
 | `randomization.apply` | `domain_randomizer` | 平台按已记录随机实值改变材质、光照、相机、噪声和动力学。 |
-| `episode.pack` | `lerobot_v3` | [LeRobot](https://github.com/huggingface/lerobot) v3 组织时序、视频与元数据。 |
+| `episode.pack` | `lerobot_v2_1` | [LeRobot](https://github.com/huggingface/lerobot) v2.1 组织 Parquet、时序与元数据。 |
 
 Isaac Sim/Isaac Lab 可作为受其许可证约束的可选 worker，但不标为严格开源默认后端。每个后端只
 声明自己真实支持的传感器、物理能力和确定性等级，不通过统一接口伪造缺失输出。
@@ -191,13 +192,13 @@ Isaac Sim/Isaac Lab 可作为受其许可证约束的可选 worker，但不标�
 默认流程：
 
 ```text
-MCAP/仿真 Episode → LeRobot v3 规范化 → 校验与防泄漏切分 → 不可变快照
+MCAP/仿真 Episode → LeRobot v2.1 规范化 → 校验与防泄漏切分 → 不可变快照
 → 隔离训练 → 模型登记 → 冻结协议评测
 ```
 
 | 能力 | `method` | 开源实现与用途 |
 | --- | --- | --- |
-| `dataset.ingest` | `lerobot_v3` | 作为平台训练主格式，统一低维时序、视频和元数据。 |
+| `dataset.ingest` | `lerobot_v2_1` | 作为 NumPy 1.26 环境的训练格式，统一低维时序、视频和元数据。 |
 | `dataset.ingest` | `rlds` | [RLDS](https://github.com/google-research/rlds) 只用于外部 Episode 交换。 |
 | `dataset.snapshot` | `dvc` | [DVC](https://github.com/treeverse/dvc) 对大型数据制品做内容寻址快照。 |
 | `model.register` | `mlflow` | [MLflow](https://github.com/mlflow/mlflow) 登记数据、代码、环境、配置、指标和权重。 |

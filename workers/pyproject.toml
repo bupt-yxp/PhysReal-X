@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "physrealx-external-workers"
+version = "0.1.0"
+description = "Isolated reference workers for PhysReal-X external algorithms."
+requires-python = ">=3.10,<3.13"
+dependencies = ["physreal-x==0.1.0"]
+
+[project.scripts]
+physrealx-worker-coacd = "physrealx_workers.coacd_worker:main"
+physrealx-worker-mujoco = "physrealx_workers.mujoco_worker:main"
+physrealx-worker-blenderproc = "physrealx_workers.blenderproc_worker:main"
+physrealx-worker-lerobot = "physrealx_workers.lerobot_worker:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/physrealx_workers"]

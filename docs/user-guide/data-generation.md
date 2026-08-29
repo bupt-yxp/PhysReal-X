@@ -129,7 +129,7 @@ budget:
 result = px.runs.wait(run)
 dataset = px.datasets.get(result.dataset)
 
-normalized = px.datasets.ingest(result.dataset, method="lerobot_v3")
+normalized = px.datasets.ingest(result.dataset, method="lerobot_v2_1")
 snapshot = px.datasets.snapshot(normalized.outputs[0].artifact, method="dvc")
 ```
 

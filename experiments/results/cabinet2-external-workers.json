@@ -1,0 +1,84 @@
+{
+  "schema": "physrealx.external-worker-evidence/1",
+  "captured_on": "2026-08-29",
+  "cache_state": "cold",
+  "source": {
+    "dataset": "ArtModeling/cabinet2",
+    "artifact": "real/recon/artgsvideo_meshes/whole_mesh.ply",
+    "digest": "sha256:eea9dbfb7ad96f661924ea5c22666953442636b8b865016677465b9c33a8b4ac",
+    "size_bytes": 6168862,
+    "watertight": false
+  },
+  "stages": {
+    "coacd": {
+      "version": "1.0.14",
+      "environment_digest": "sha256:13e82ead82b2a7e031f30d7655ab9185d8a58b90b180a626071de851fceae8e6",
+      "duration_seconds": 56.022574799950235,
+      "metrics": {
+        "input_vertices": 117327,
+        "input_faces": 230828,
+        "convex_parts": 24,
+        "output_vertices": 2215,
+        "output_faces": 4334,
+        "collision_volume": 0.03417931529149696
+      },
+      "outputs": {
+        "collision_geometry": "sha256:0055b19ed694cb0d9479af75ede89e087f7f8acfc90a17affbae58c18d0a21b1"
+      }
+    },
+    "mujoco": {
+      "version": "3.12.0",
+      "environment_digest": "sha256:c809c46e4f5c719cc9929e17272c11c24c5632715cace69ea39952f3bdc293b7",
+      "duration_seconds": 1.5724299780558795,
+      "metrics": {
+        "simulated_seconds": 2.002000000000001,
+        "samples": 201,
+        "stable": true,
+        "within_limits": true,
+        "final_joint_error": 0.0010296533043986367,
+        "peak_control": 25.6,
+        "control_energy": 3.141551061041215
+      },
+      "outputs": {
+        "state_trajectory": "sha256:4b09bc9b7d38773dc7cee053892fd9e4a1813c40aedb76f1addf1b3f8dd16da9",
+        "simulation_report": "sha256:2b72a38f98370aad553918f654dd290254cf94baaa59fe736d8ea178c11fd17a"
+      }
+    },
+    "blenderproc": {
+      "version": "2.8.0",
+      "blender": "4.2.1",
+      "embedded_numpy": "1.24.3",
+      "environment_digest": "sha256:c695994c0a03454824c5763a9a2c3e5aed8c3cea9ee41478484d0f0898b5fa3e",
+      "duration_seconds": 17.29491093091201,
+      "metrics": {
+        "frames": 1,
+        "width": 512,
+        "height": 384,
+        "segmentation_labels": 3,
+        "valid_depth_ratio": 0.75885009765625,
+        "depth_min": 1.7334542274475098,
+        "depth_max": 4.953345775604248
+      },
+      "outputs": {
+        "render_streams": "sha256:7c887742f5895cad4f704bb293003c32bcf2bb7c7b73ea6cca16d914c41a9941",
+        "camera_metadata": "sha256:5d33dd6823e93e6067028147ce99c40b0b86de7ee97b6b9500fdfdf78ae47712"
+      }
+    },
+    "lerobot_v2_1": {
+      "version": "0.3.3",
+      "numpy": "1.26.4",
+      "environment_digest": "sha256:f39b3393d00c34277cd6322ba7b96bf86dd5c2421e3f326bbe4c30e00140e244",
+      "duration_seconds": 12.13861453696154,
+      "metrics": {
+        "episodes": 1,
+        "frames": 201,
+        "fps": 100,
+        "round_trip_verified": true
+      },
+      "outputs": {
+        "episode_bundle": "sha256:06356d20843e12c7abff9c8592d925bb9b5a1085e3df2e5fcd6765153c32688a",
+        "episode_manifest": "sha256:303bdc49b55e77d6c9da1428ebea0ba2067041e03d8e101284cd75f62eebf295"
+      }
+    }
+  }
+}

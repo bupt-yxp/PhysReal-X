@@ -18,6 +18,8 @@ dist/
 venv/
 .conda/
 .wheel-smoke/
+.worker-envs/
+.physrealx-experiments/
 
 # Editors and operating systems
 .idea/

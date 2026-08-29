@@ -6,6 +6,7 @@ import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from importlib.metadata import entry_points
+from pathlib import Path
 from typing import Callable
 from typing import Mapping as TypingMapping
 
@@ -426,6 +427,18 @@ class PluginRegistry:
                 raise PluginError(
                     f"entry point {entry_point.name!r} failed during registration"
                 ) from error
+
+    def discover_deployments(self, directory: Path) -> None:
+        """Load machine-local process/container bindings from ``workers.d``."""
+
+        if not directory.exists():
+            return
+        if directory.is_symlink() or not directory.is_dir():
+            raise PluginError(f"worker deployment path is not a safe directory: {directory}")
+        from physrealx.external_workers import load_worker_deployment
+
+        for path in sorted(directory.glob("*.json")):
+            self.register_worker(load_worker_deployment(path))
 
 
 __all__ = ["ENTRY_POINT_GROUP", "MethodInstallation", "PluginRegistry", "PolicyFactory"]

@@ -72,7 +72,7 @@ trajectory = simulation.outputs[0].artifact
 render = px.renders.generate(trajectory, method="blenderproc")
 events = px.events.synthesize(render.outputs[0].artifact, method="v2e")
 points = px.pointclouds.project(depth_artifact, method="open3d")
-episode = px.episodes.pack(trajectory, method="lerobot_v3")
+episode = px.episodes.pack(trajectory, method="lerobot_v2_1")
 ```
 
 | API | 输出 |

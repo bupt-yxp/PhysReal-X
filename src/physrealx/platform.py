@@ -129,6 +129,7 @@ class PhysRealX:
         plugins = cls._default_plugins(artifacts)
         if discover_plugins:
             plugins.discover()
+            plugins.discover_deployments(root / "workers.d")
         return cls(root, repository, artifacts, plugins)
 
     @staticmethod

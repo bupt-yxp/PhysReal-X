@@ -30,7 +30,7 @@ assert dataset.total_steps == sum(len(item.steps) for item in episodes)
 
 ## 训练格式
 
-内部清单保持平台语义，训练视图优先使用 LeRobot v3；RLDS 用于外部 Episode 交换，rosbag2 +
+内部清单保持平台语义，NumPy 1.26 训练视图使用 LeRobot v2.1；RLDS 用于外部 Episode 交换，rosbag2 +
 MCAP 保存真机原始流，DVC 管理大型数据快照。每次转换都产生新制品并保留完整来源。
 
 ## 数据卡
