@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import pytest
 
-from physrealx.domain import DataValue
+from physrealx.domain import DataValue, MethodCapability
 from physrealx.errors import (
     DomainValidationError,
     InvalidStateTransitionError,
     PluginError,
     ResourceConflictError,
 )
-from physrealx.plugins import PluginDescriptor, PluginRegistry
+from physrealx.plugins import PluginRegistry
 from physrealx.reference import (
     ReferenceDrawerBackend,
     ScriptedDrawerPolicy,
@@ -90,27 +90,19 @@ def test_scripted_policy_can_complete_reference_task() -> None:
 
 def test_policy_descriptor_kind_is_checked() -> None:
     registry = PluginRegistry()
-    descriptor = PluginDescriptor(
-        kind="trainer",
-        name="bad",
-        version="1.0.0",
-        api_version="1",
+    descriptor = ScriptedDrawerPolicy.descriptor.model_copy(
+        update={"capability": MethodCapability.POLICY_TRAIN, "name": "bad"}
     )
-    with pytest.raises(PluginError, match="policy descriptor"):
+    with pytest.raises(PluginError, match="requires capability"):
         registry.register_policy(descriptor, ScriptedDrawerPolicy)
 
 
 def test_policy_factory_identity_must_match_descriptor() -> None:
     registry = PluginRegistry()
-    descriptor = PluginDescriptor(
-        kind="policy",
-        name="different_policy",
-        version="1.0.0",
-        api_version="1",
-    )
+    descriptor = ScriptedDrawerPolicy.descriptor.model_copy(update={"name": "different_policy"})
     registry.register_policy(descriptor, ScriptedDrawerPolicy)
 
-    with pytest.raises(PluginError, match="mismatched plugin identity"):
+    with pytest.raises(PluginError, match="mismatched method identity"):
         registry.policy("different_policy", {})
 
 

@@ -9,7 +9,6 @@ import physrealx
 def test_public_api_is_explicit_and_stable() -> None:
     assert physrealx.__all__ == [
         "ActionSpec",
-        "AlgorithmSpec",
         "ArtifactRef",
         "AssetSpec",
         "AssetValidationProfile",
@@ -24,6 +23,13 @@ def test_public_api_is_explicit_and_stable() -> None:
         "Episode",
         "EpisodeStep",
         "EvaluationReport",
+        "MethodAccelerator",
+        "MethodCapability",
+        "MethodDescriptor",
+        "MethodExecutionMode",
+        "MethodMaturity",
+        "MethodRuntime",
+        "MethodSpec",
         "ModelManifest",
         "ObservationSetManifest",
         "PhysRealX",
@@ -57,3 +63,4 @@ def test_facade_exposes_domain_services_without_flat_legacy_methods(tmp_path: Pa
         hasattr(platform, name)
         for name in ("register_asset", "register_task", "execute", "train", "evaluate")
     )
+    assert hasattr(platform, "methods")

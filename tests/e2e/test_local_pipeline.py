@@ -19,6 +19,7 @@ from physrealx.domain import (
 from physrealx.errors import DomainValidationError
 from physrealx.platform import PhysRealX
 from physrealx.reference import reference_asset, reference_run, reference_scene, reference_task
+from physrealx.training import TorchBehaviorCloningTrainer
 
 
 def test_reference_run_publishes_replayable_dataset(
@@ -52,8 +53,8 @@ def test_reference_run_publishes_replayable_dataset(
 
     assert record.status is RunStatus.SUCCEEDED
     assert created_sessions == 1
-    assert record.spec.backend_version == "1.0.0"
-    assert record.spec.policy_version == "1.0.0"
+    assert record.spec.backend.version == "1.0.0"
+    assert record.spec.policy.version == "1.0.0"
     assert record.result is not None
     assert record.result.dataset is not None
     assert record.result.episode_count == 4
@@ -66,8 +67,8 @@ def test_reference_run_publishes_replayable_dataset(
     assert platform.assets.get(asset_ref) == asset
     assert dataset.metadata["scene_digest"] == scene_ref.digest
     assert dataset.metadata["task_digest"] == task_ref.digest
-    assert dataset.metadata["backend_version"] == "1.0.0"
-    assert dataset.metadata["policy_version"] == "1.0.0"
+    assert dataset.metadata["backend_method"]["descriptor"]["version"] == "1.0.0"
+    assert dataset.metadata["policy_method"]["descriptor"]["version"] == "1.0.0"
     episodes = platform.runs.episodes(run.run_id)
     assert tuple(item.digest for item in episodes) == tuple(
         item.digest for item in platform.runs.episodes(run.run_id)
@@ -101,14 +102,15 @@ def test_dataset_trains_and_evaluates_torch_policy(tmp_path: Path) -> None:
             resource_id="drawer.bc.test",
             version="1.0.0",
             dataset=record.result.dataset,
-            trainer="torch_bc",
-            config={"device": "cpu", "epochs": 80, "seed": 3},
+            trainer=TorchBehaviorCloningTrainer.descriptor.bind(
+                config={"device": "cpu", "epochs": 80, "seed": 3}
+            ),
         )
     )
     manifest = platform.training.get_model(model)
     assert manifest.metrics["training_mse"] < 0.01
-    assert manifest.policy == "torch_bc"
-    assert manifest.policy_version == "1.0.0"
+    assert manifest.policy.name == "torch_bc"
+    assert manifest.policy.version == "1.0.0"
     assert platform.artifacts.verify(manifest.weights)
 
     evaluation_ref = platform.evaluations.submit(

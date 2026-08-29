@@ -20,6 +20,8 @@ from physrealx.domain import (
     ArtifactRef,
     AssetSpec,
     DomainModel,
+    MethodCapability,
+    MethodSpec,
     ResourceType,
     VersionedRef,
 )
@@ -285,35 +287,41 @@ class DigitalTwinStage(StrEnum):
     NORMALIZATION = "normalization"
     CAMERA_RECOVERY = "camera_recovery"
     DEPTH_ENHANCEMENT = "depth_enhancement"
-    ARTICULATED_RECONSTRUCTION = "articulated_reconstruction"
-    PHYSICS_ENRICHMENT = "physics_enrichment"
-    SIMULATION_PACKAGING = "simulation_packaging"
+    GEOMETRY_RECONSTRUCTION = "geometry_reconstruction"
+    ARTICULATION_RECOVERY = "articulation_recovery"
+    COLLISION_BUILD = "collision_build"
+    PHYSICS_CALIBRATION = "physics_calibration"
+    ASSET_PACKAGING = "asset_packaging"
     QUALITY_VALIDATION = "quality_validation"
 
 
 _STAGE_ORDER = {stage: index for index, stage in enumerate(DigitalTwinStage)}
 
-
-class AlgorithmSpec(DomainModel):
-    name: str
-    version: str
-    checkpoint: ArtifactRef | None = None
-    config: dict[str, JsonValue] = Field(default_factory=dict)
-
-    @field_validator("name")
-    @classmethod
-    def validate_name(cls, value: str) -> str:
-        return _identifier(value, "algorithm name")
-
-    @field_validator("version")
-    @classmethod
-    def validate_version(cls, value: str) -> str:
-        return _semver(value)
+_STAGE_CAPABILITY = {
+    DigitalTwinStage.NORMALIZATION: MethodCapability.ASSET_NORMALIZE,
+    DigitalTwinStage.CAMERA_RECOVERY: MethodCapability.CAMERA_RECOVER,
+    DigitalTwinStage.DEPTH_ENHANCEMENT: MethodCapability.DEPTH_ENHANCE,
+    DigitalTwinStage.GEOMETRY_RECONSTRUCTION: MethodCapability.GEOMETRY_RECONSTRUCT,
+    DigitalTwinStage.ARTICULATION_RECOVERY: MethodCapability.ARTICULATION_RECOVER,
+    DigitalTwinStage.COLLISION_BUILD: MethodCapability.COLLISION_BUILD,
+    DigitalTwinStage.PHYSICS_CALIBRATION: MethodCapability.PHYSICS_CALIBRATE,
+    DigitalTwinStage.ASSET_PACKAGING: MethodCapability.ASSET_PACKAGE,
+    DigitalTwinStage.QUALITY_VALIDATION: MethodCapability.ASSET_VALIDATE,
+}
 
 
 class DigitalTwinStep(DomainModel):
     stage: DigitalTwinStage
-    algorithm: AlgorithmSpec
+    method: MethodSpec
+
+    @model_validator(mode="after")
+    def validate_method_capability(self) -> DigitalTwinStep:
+        expected = _STAGE_CAPABILITY[self.stage]
+        if self.method.capability is not expected:
+            raise ValueError(
+                f"stage {self.stage.value!r} requires method capability {expected.value!r}"
+            )
+        return self
 
 
 class DigitalTwinRecipe(DomainModel):
@@ -344,9 +352,11 @@ class DigitalTwinRecipe(DomainModel):
         required = {
             DigitalTwinStage.NORMALIZATION,
             DigitalTwinStage.CAMERA_RECOVERY,
-            DigitalTwinStage.ARTICULATED_RECONSTRUCTION,
-            DigitalTwinStage.PHYSICS_ENRICHMENT,
-            DigitalTwinStage.SIMULATION_PACKAGING,
+            DigitalTwinStage.GEOMETRY_RECONSTRUCTION,
+            DigitalTwinStage.ARTICULATION_RECOVERY,
+            DigitalTwinStage.COLLISION_BUILD,
+            DigitalTwinStage.PHYSICS_CALIBRATION,
+            DigitalTwinStage.ASSET_PACKAGING,
             DigitalTwinStage.QUALITY_VALIDATION,
         }
         missing = sorted(item.value for item in required - set(stages))
@@ -418,7 +428,7 @@ class AssetValidationReport(DomainModel):
 
 class StageExecutionRecord(DomainModel):
     stage: DigitalTwinStage
-    algorithm: AlgorithmSpec
+    method: MethodSpec
     outputs: tuple[ArtifactRef, ...] = ()
     metrics: dict[str, float] = Field(default_factory=dict)
     started_at: datetime
@@ -474,8 +484,8 @@ class DigitalTwinBuildManifest(DomainModel):
         if actual != expected:
             raise ValueError("stage records must exactly match the recipe")
         for step, record in zip(self.recipe.steps, self.stages):
-            if record.algorithm != step.algorithm:
-                raise ValueError("stage record algorithm must match the recipe")
+            if record.method != step.method:
+                raise ValueError("stage record method must match the recipe")
         return self
 
     def reference(self, digest: str | None = None) -> VersionedRef:
@@ -511,7 +521,6 @@ def ensure_pipeline_output_identity(spec: DigitalTwinBuildSpec, asset: AssetSpec
 
 
 __all__ = [
-    "AlgorithmSpec",
     "AssetValidationIssue",
     "AssetValidationProfile",
     "AssetValidationReport",

@@ -6,7 +6,6 @@ import pytest
 from pydantic import ValidationError
 
 from physrealx.digital_twin import (
-    AlgorithmSpec,
     AssetValidationProfile,
     AssetValidationReport,
     DigitalTwinBuildManifest,
@@ -18,38 +17,52 @@ from physrealx.digital_twin import (
     ObservationStream,
     StageExecutionRecord,
 )
-from physrealx.domain import ArtifactRef, ResourceType, VersionedRef
+from physrealx.domain import ArtifactRef, MethodCapability, MethodSpec, ResourceType, VersionedRef
+from physrealx.methods import builtin_method
 
 
-def _algorithm(name: str) -> AlgorithmSpec:
-    return AlgorithmSpec(name=name, version="1.0.0")
+def _method(capability: MethodCapability, name: str) -> MethodSpec:
+    return builtin_method(
+        capability,
+        name,
+        input_contract="TestInput",
+        output_contract="TestOutput",
+    ).bind()
 
 
 def _steps() -> tuple[DigitalTwinStep, ...]:
     return (
         DigitalTwinStep(
             stage=DigitalTwinStage.NORMALIZATION,
-            algorithm=_algorithm("normalize"),
+            method=_method(MethodCapability.ASSET_NORMALIZE, "normalize"),
         ),
         DigitalTwinStep(
             stage=DigitalTwinStage.CAMERA_RECOVERY,
-            algorithm=_algorithm("camera_recovery"),
+            method=_method(MethodCapability.CAMERA_RECOVER, "camera_recovery"),
         ),
         DigitalTwinStep(
-            stage=DigitalTwinStage.ARTICULATED_RECONSTRUCTION,
-            algorithm=_algorithm("artgs"),
+            stage=DigitalTwinStage.GEOMETRY_RECONSTRUCTION,
+            method=_method(MethodCapability.GEOMETRY_RECONSTRUCT, "open3d_fusion"),
         ),
         DigitalTwinStep(
-            stage=DigitalTwinStage.PHYSICS_ENRICHMENT,
-            algorithm=_algorithm("physics_measurement"),
+            stage=DigitalTwinStage.ARTICULATION_RECOVERY,
+            method=_method(MethodCapability.ARTICULATION_RECOVER, "ditto"),
         ),
         DigitalTwinStep(
-            stage=DigitalTwinStage.SIMULATION_PACKAGING,
-            algorithm=_algorithm("openusd"),
+            stage=DigitalTwinStage.COLLISION_BUILD,
+            method=_method(MethodCapability.COLLISION_BUILD, "coacd"),
+        ),
+        DigitalTwinStep(
+            stage=DigitalTwinStage.PHYSICS_CALIBRATION,
+            method=_method(MethodCapability.PHYSICS_CALIBRATE, "mujoco_sysid"),
+        ),
+        DigitalTwinStep(
+            stage=DigitalTwinStage.ASSET_PACKAGING,
+            method=_method(MethodCapability.ASSET_PACKAGE, "openusd"),
         ),
         DigitalTwinStep(
             stage=DigitalTwinStage.QUALITY_VALIDATION,
-            algorithm=_algorithm("physrealx_validator"),
+            method=_method(MethodCapability.ASSET_VALIDATE, "physics_probe"),
         ),
     )
 
@@ -89,7 +102,7 @@ def test_build_manifest_requires_exact_recipe_evidence() -> None:
     records = tuple(
         StageExecutionRecord(
             stage=step.stage,
-            algorithm=step.algorithm,
+            method=step.method,
             started_at=now,
             completed_at=now,
         )

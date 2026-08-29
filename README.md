@@ -42,15 +42,18 @@ physrealx doctor
 公共 SDK 使用按领域划分的服务接口：
 
 ```python
-from physrealx import AssetSpec, PhysRealX, RunSpec, SceneSpec, TaskSpec
+from physrealx import PhysRealX
+from physrealx.reference import reference_asset, reference_run, reference_scene, reference_task
 
-px = PhysRealX.from_profile("default")
+px = PhysRealX.open(".physrealx")
+asset = reference_asset()
+scene = reference_scene(asset)
+task = reference_task(scene)
+px.assets.register(asset)
+px.scenes.register(scene)
+px.tasks.register(task)
 
-px.assets.register(AssetSpec.from_file("assets/drawer.asset.yaml"))
-px.scenes.register(SceneSpec.from_file("scenes/drawer.scene.yaml"))
-px.tasks.register(TaskSpec.from_file("tasks/open_drawer.task.yaml"))
-
-run = px.runs.submit(RunSpec.from_file("runs/generate.run.yaml"))
+run = px.runs.submit(reference_run(scene, task, episode_count=8))
 dataset = px.datasets.get(px.runs.wait(run).dataset)
 ```
 

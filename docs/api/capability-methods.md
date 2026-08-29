@@ -1,146 +1,167 @@
 ---
-title: 技术能力与方法 API
-description: 从已采集观测、数字孪生到训练和真机反馈的能力接口与开源实现选型
+title: 能力与方法
+description: PhysReal-X 的方法契约、开源实现选型和接入边界
 ---
 
-# 技术能力与方法 API
+# 能力与方法
 
-本页把两份方案中的研究技术组织为可实现的平台能力；公共 API 只描述“做什么”，算法、仿真器和训练框架通过 `pipeline`、`backend`、`trainer` 或 `analyzer` 插件选择，不进入领域模型。
-
-## 技术来源
-
-| 功能模块 | 原版来源 | v3 来源 | 平台结果 |
-| --- | --- | --- | --- |
-| 真实资产接入与数字孪生 | P12–13、P28–34 | P5–6 | 已采集观测、数字孪生资产与多模态数据 |
-| 物理可信资产库 | P13、P15、P35–42 | P7–8 | 可交互、可校准、可版本化资产 |
-| 场景与任务生成 | P18 | P9 | 场景、任务、轨迹与随机化规格 |
-| 物理仿真与多模态渲染 | P14–16、P19、P35–36 | P10–11 | Episode 与质量合格的数据集 |
-| 数据管理、世界模型与策略训练 | P20–24、P44–50 | P12–13 | 数据集、世界模型、策略与检查点 |
-| 评测与真机反馈闭环 | P22、P25–26 | P14 | 评测报告、真机记录与再生成计划 |
-| 平台公共底座 | P17、P43 | P4、P16 | 统一契约、调度、存储、追踪与可视化 |
-
-### 方案算法与开源状态
-
-| 技术 | 接入结论 |
-| --- | --- |
-| [RDFC-GAN](https://github.com/midea-ai/RDFC-GAN) | 官方已开源训练/测试代码，但未提供可直接下载的预训练权重，不作默认运行方法。 |
-| [DTF-Net](https://arxiv.org/abs/2308.02239) | 采用论文方法定义插件能力，未确认官方代码前使用 Self-DPDN 等开源基线。 |
-| [OMNI-DC](https://github.com/princeton-vl/OMNI-DC) | 官方代码、自定义数据示例和预训练权重均可用，作为默认跨数据深度补全插件。 |
-| [CompletionFormer](https://github.com/youmi-zym/CompletionFormer) | 官方提供 NYUv2/KITTI 权重，作为有明确数据域的基线。 |
-| [VideoArtGS](https://videoartgs.github.io/) / [FreeArtGS](https://github.com/FreeArtGS/FreeArtGS) | 已发布代码，分别覆盖单目视频和自由运动铰接重建。 |
-| [ArtGen](https://arxiv.org/abs/2512.12395) | 采用论文方法定义生成器能力，未确认官方代码前使用 Articulate Anything 与 Arti-PG。 |
-| [CAPE](https://arxiv.org/abs/2606.07304) | 采用论文方法定义世界模型训练器，未确认官方代码前使用 DINOv2、PyTorch 与 OpenDW。 |
-| VQ-VAE + Diffusion/FM | 这是策略技术组合，分别使用开源量化器、Diffusion Policy 和 Flow Matching 组件实现。 |
-
-最终链路：
+PhysReal-X 固定资源和业务语义，但不把不同算法伪装成同一种实现。一个方法只实现一个
+`MethodCapability`；跨阶段流程由配方组合，方法由独立 worker 或适配器执行。
 
 ```text
-已采集观测 → 数字孪生 → 物理资产库 → 场景任务 → 仿真数据 → 世界模型/策略训练 → 真机评测 → 定向再生成
+能力契约（做什么） → 方法描述符（用什么实现） → 配方（按什么顺序执行）
 ```
 
-## 1. 真实资产接入与数字孪生
+## 方法契约
 
-| API | 用途 | 推荐开源实现 |
+`MethodDescriptor` 固定能力、名称、版本、API 版本、源码地址与不可变 revision、SPDX
+许可证、输入输出契约和运行环境；`MethodSpec` 再绑定权重摘要与冻结配置。
+
+```python
+from physrealx import MethodCapability
+
+available = px.methods.list(MethodCapability.ARTICULATION_RECOVER)
+ditto = px.methods.bind(
+    MethodCapability.ARTICULATION_RECOVER,
+    "ditto",
+    config={"joint_types": ["revolute", "prismatic"]},
+)
+```
+
+容器方法必须登记镜像 SHA-256；带权重的方法必须先将权重写入制品存储。`main`、`latest`
+或本地可变路径不能作为来源版本。配方中记录完整描述符，运行前再与当前已安装描述符精确比对。
+
+## 1. 已采集数据到物理资产
+
+默认流程：
+
+```text
+预检与导入 → 坐标/单位规范化 → 相机恢复 → 可选深度增强 → 几何重建
+→ 部件与关节恢复 → 碰撞构建 → 物性标定 → OpenUSD 封装 → 质量验收
+```
+
+| 能力 | `method` | 开源实现与用途 |
 | --- | --- | --- |
-| `assets.inspect_source(path, importer=...)` | 只读检查已采集数据包的结构、帧对齐、标定缺失和安全性。 | ArtModeling importer、NPY 头解析 |
-| `assets.ingest(path, importer=...)` | 规范化模态语义并将原始文件发布为不可变观测集。 | Pydantic、SHA-256 内容寻址存储 |
-| `assets.build(DigitalTwinBuildSpec(...))` | 按逐阶段方法配方生成几何、部件、关节、物性和 USD 资产。 | COLMAP/VGGT、OMNI-DC、ArtGS/VideoArtGS、CoACD、OpenUSD |
-| `assets.validate(asset, profile="digital_twin")` | 在发布前检查制品、link/joint、碰撞表示、物性来源和限制。 | PhysReal-X validator、MuJoCo |
+| `observation.import` | `artmodeling` | 平台内置导入器；校验 ArtModeling 包并发布不可变观测集。 |
+| `camera.recover` | `colmap` | [COLMAP](https://github.com/colmap/colmap) 恢复多视角相机位姿与稀疏结构。 |
+| `depth.enhance` | `omni_dc` | [OMNI-DC](https://github.com/princeton-vl/OMNI-DC) 使用已发布代码和权重补全跨域深度。 |
+| `depth.enhance` | `completionformer` | [CompletionFormer](https://github.com/youmi-zym/CompletionFormer) 处理匹配 NYUv2/KITTI 数据域的 RGB-D。 |
+| `geometry.reconstruct` | `open3d_fusion` | [Open3D](https://github.com/isl-org/Open3D) 对已标定 RGB-D 执行 TSDF/点云融合。 |
+| `articulation.recover` | `ditto` | [Ditto](https://github.com/UT-Austin-RPL/Ditto) 从交互前后点云恢复部件和关节。 |
+| `articulation.recover` | `screwsplat` | [ScrewSplat](https://github.com/mbanani/screwsplat) 从多状态视觉恢复可动结构；作为实验方法隔离。 |
+| `collision.build` | `coacd` | [CoACD](https://github.com/SarahWeiii/CoACD) 生成近似凸碰撞代理。 |
+| `physics.calibrate` | `mujoco_sysid` | [MuJoCo](https://github.com/google-deepmind/mujoco) 与优化器反演质量、摩擦、阻尼和接触参数。 |
+| `asset.package` | `openusd` | [OpenUSD](https://github.com/PixarAnimationStudios/OpenUSD) 封装几何、关节、碰撞和物性。 |
+| `asset.validate` | `physics_probe` | 平台验证器配合 MuJoCo 回放检查结构、穿模、限位、接触和动力学误差。 |
 
-实现约定：平台不控制采集设备；深度、相机、铰接、物性和封装方法分阶段声明。ArtGS 类方法只实现 `articulated_reconstruction`，不冒充整体 pipeline。
+`RDFC-GAN` 没有可直接复用的官方预训练权重，不作为默认深度方法。生成式资产不得覆盖实测
+数字孪生；[Infinigen](https://github.com/princeton-vl/infinigen) 和 FreeArt3D 一类生成方法只能发布为
+独立资产变体，并保留生成来源。
 
-## 2. 物理可信资产库
+## 2. 场景与任务
 
-| API | 用途 | 推荐开源实现 |
+默认流程：
+
+```text
+资产筛选 → 场景生成/组合 → 约束求解 → 任务编译 → 可达性与碰撞验证
+→ 轨迹生成 → 成功/失败/长尾变体
+```
+
+| 能力 | `method` | 开源实现与用途 |
 | --- | --- | --- |
-| `assets.analyze_articulation(asset, analyzer=...)` | 识别部件层级、关节类型、运动轴、原点和运动范围。 | Articulate Anything、PartNet-Mobility、Open3D |
-| `assets.build(spec)` 的铰接重建阶段 | 从多状态观测恢复部件解耦、连续形变和运动学关系。 | ArtGS、VideoArtGS、FreeArtGS、gsplat |
-| `assets.generate(prompt, generator=...)` | 从图像或文本生成带部件、关节和语义标注的铰接资产草案。 | Articulate Anything、Arti-PG、EmbodiedGen |
-| `assets.calibrate(asset, observations=...)` | 用真实观测反演质量、摩擦、刚度、阻尼和接触参数并发布新版本。 | MuJoCo、Genesis、SciPy、Optuna |
-| `assets.validate(asset, profile="digital_twin")` | 执行图结构、制品、碰撞、惯量、关节限制和物性来源检查。 | trimesh、CoACD/V-HACD、MuJoCo、Genesis |
-| `assets.register(spec)` | 将几何、纹理、语义、关节、碰撞和物性清单发布为不可变资产版本。 | OpenUSD、Pydantic、内容寻址存储 |
+| `scene.generate` | `infinigen_indoor` | Infinigen 生成室内几何、材质和布局变体。 |
+| `scene.generate` | `robocasa365` | [RoboCasa](https://github.com/robocasa/robocasa) 提供操作场景、任务和数据生成基线。 |
+| `scene.compose` | `constraint_solver` | 平台确定性约束求解器完成放置、间距、支撑和可达性检查。 |
+| `task.compile` | `template` | 平台模板把结构化任务转为实体绑定、观测、动作与成功判据。 |
+| `task.compile` | `bddl` | [BDDL](https://github.com/StanfordVL/bddl) 表达长时序活动条件。 |
+| `task.plan` | `curobo` | [cuRobo](https://github.com/NVlabs/curobo) 生成 GPU 运动轨迹。 |
+| `task.plan` | `ompl` | [OMPL](https://github.com/ompl/ompl) 提供便携运动规划基线。 |
+| `trajectory.generate` | `robotwin2` | [RoboTwin 2.0](https://github.com/RoboTwin-Platform/RoboTwin) 生成多任务、双臂示范。 |
+| `task.validate` | `task_probe` | 平台在冻结初态、种子和超时下验证成功判据及轨迹可执行性。 |
 
-实现约定：铰接重建优先选用已发布代码的 ArtGS 系方法；ArtGen 保留为生成类插件，无可复现实现时使用 Articulate Anything/Arti-PG。
+自然语言模型只能生成结构化任务草案，不得直接执行任意代码；草案必须通过 Schema、实体解析、
+约束求解、沙箱和仿真验证后才能发布。许可证限制为非商业用途的项目不进入默认方法集。
 
-## 3. 场景与任务生成
+## 3. 仿真与多模态数据
 
-| API | 用途 | 推荐开源实现 |
+默认流程：
+
+```text
+场景编译 → 确定性 reset → 策略/规划执行 → 物理与渲染采样
+→ 模态时间对齐 → Episode 校验 → 数据集原子发布
+```
+
+| 能力 | `method` | 开源实现与用途 |
 | --- | --- | --- |
-| `scenes.compose(template=..., assets=...)` | 按确定模板组合机器人、物体、传感器、环境和随机化约束。 | OpenUSD、BlenderProc、RoboCasa |
-| `scenes.generate(prompt, generator=...)` | 根据场景描述批量生成布局、初始状态、扰动条件和长尾变体。 | ProcTHOR、BlenderProc、EmbodiedGen |
-| `tasks.compile(draft, scene=...)` | 把自然语言或结构化草案编译为实体绑定、动作空间和可判定成功条件。 | PDDL、Fast Downward、BehaviorTree.CPP |
-| `tasks.generate_demonstrations(task, planner=...)` | 为任务生成运动规划、遥操作或策略回放得到的成功与失败轨迹。 | MoveIt 2/OMPL、MimicGen、ManiSkill |
-| `tasks.validate(task, scene=..., backend=...)` | 检查实体引用、信号模式、可达性、碰撞和后端能力是否一致。 | MoveIt 2、MuJoCo、Genesis、Isaac Lab |
+| `simulation.run` | `mujoco` | MuJoCo 作为轻量、可复现的刚体与接触默认后端。 |
+| `simulation.run` | `genesis` | [Genesis](https://github.com/Genesis-Embodied-AI/Genesis) 用于 GPU 并行与多物理实验。 |
+| `simulation.run` | `gazebo` | [Gazebo](https://github.com/gazebosim/gz-sim) 用于 ROS 2 系统仿真。 |
+| `render.generate` | `blenderproc` | [BlenderProc](https://github.com/DLR-RM/BlenderProc) 离线生成 RGB、Depth、Mask；GPL worker 必须隔离。 |
+| `event.synthesize` | `v2e` | [v2e](https://github.com/SensorsINI/v2e) 从强度视频生成事件流。 |
+| `point_cloud.project` | `open3d` | Open3D 依据相机模型生成和检查点云。 |
+| `randomization.apply` | `domain_randomizer` | 平台按已记录随机实值改变材质、光照、相机、噪声和动力学。 |
+| `episode.pack` | `lerobot_v3` | [LeRobot](https://github.com/huggingface/lerobot) v3 组织时序、视频与元数据。 |
 
-## 4. 物理仿真与多模态渲染
+Isaac Sim/Isaac Lab 可作为受其许可证约束的可选 worker，但不标为严格开源默认后端。每个后端只
+声明自己真实支持的传感器、物理能力和确定性等级，不通过统一接口伪造缺失输出。
 
-| API | 用途 | 推荐开源实现 |
+## 4. 数据、世界模型与策略训练
+
+默认流程：
+
+```text
+MCAP/仿真 Episode → LeRobot v3 规范化 → 校验与防泄漏切分 → 不可变快照
+→ 隔离训练 → 模型登记 → 冻结协议评测
+```
+
+| 能力 | `method` | 开源实现与用途 |
 | --- | --- | --- |
-| `runs.submit(spec)` | 固定场景、任务、后端、策略、种子和记录信号后提交仿真运行。 | Isaac Lab、Genesis、MuJoCo、ManiSkill |
-| `runs.watch(run)` | 连续读取运行状态、进度、质量事件和资源指标。 | OpenTelemetry、Temporal/Ray event stream |
-| `runs.wait(run)` | 等待运行完成并返回原子发布的数据集精确引用。 | Temporal、PostgreSQL、MinIO |
-| `runs.episodes(run, filters=...)` | 按成功状态、失败类别和随机化实值检索 Episode。 | Apache Arrow、Parquet、DuckDB |
-| `datasets.get(ref)` | 读取包含 RGB、Depth、Mask、Event、Pose、点云、关节、接触和力觉模式的数据集清单。 | LeRobot dataset、RLDS、Zarr、MCAP |
+| `dataset.ingest` | `lerobot_v3` | 作为平台训练主格式，统一低维时序、视频和元数据。 |
+| `dataset.ingest` | `rlds` | [RLDS](https://github.com/google-research/rlds) 只用于外部 Episode 交换。 |
+| `dataset.snapshot` | `dvc` | [DVC](https://github.com/treeverse/dvc) 对大型数据制品做内容寻址快照。 |
+| `model.register` | `mlflow` | [MLflow](https://github.com/mlflow/mlflow) 登记数据、代码、环境、配置、指标和权重。 |
+| `world_model.train` | `dino_wm` | [DINO-WM](https://github.com/gaoyuezhou/dino_wm) 学习动作条件特征动力学与 CEM 规划。 |
+| `world_model.train` | `irasim` | [IRASim](https://github.com/bytedance/IRASim) 根据首帧与动作生成未来机器人视频。 |
+| `world_model.train` | `dreamerv3` | [DreamerV3](https://github.com/danijar/dreamerv3) 执行潜在动力学、想象 rollout 与 actor-critic。 |
+| `world_model.train` | `tdmpc2` | [TD-MPC2](https://github.com/nicklashansen/tdmpc2) 提供连续控制的模型预测基线。 |
+| `policy.train` | `lerobot_act` | LeRobot ACT 作为默认示范学习基线。 |
+| `policy.train` | `diffusion_policy` | [Diffusion Policy](https://github.com/real-stanford/diffusion_policy) 建模多峰连续动作。 |
+| `policy.train` | `vqbet` | [VQ-BeT](https://github.com/jayLEE0301/vq_bet_official) 学习离散动作意图与连续控制。 |
+| `policy.train` | `robomimic_bc` | [robomimic](https://github.com/ARISE-Initiative/robomimic) 提供 BC/离线学习复现基线。 |
+| `policy.train` | `rsl_rl_ppo` | [RSL-RL](https://github.com/leggedrobotics/rsl_rl) 提供 GPU PPO 与蒸馏。 |
 
-渲染适配器使用 BlenderProc 或 Omniverse Replicator，事件相机使用 ESIM，域随机化使用 Isaac Lab、ManiSkill 或 robosuite；Isaac Sim、Genesis 和 MuJoCo 只作为可替换执行后端。
+PPT 中 CAPE 的功能由 DINO-WM、IRASim、DreamerV3 和 TD-MPC2 覆盖；“VQ-VAE +
+Diffusion/FM”拆成 VQ-BeT、Diffusion Policy 和流匹配方法独立比较，不能虚构成一个已有项目。
+OpenVLA/openpi 的代码与模型权重许可证必须分别审核，默认方法不自动下载这些权重。
 
-## 5. 数据管理、世界模型与策略训练
+## 5. 评测、部署与失败反馈
 
-| API | 用途 | 推荐开源实现 |
+默认流程：
+
+```text
+离线回放 → 固定仿真基准 → shadow → 限速/限力 canary → 真机运行
+→ MCAP 留证 → 故障归因 → 定向数据集 → 再训练与全量回归
+```
+
+| 能力 | `method` | 开源实现与用途 |
 | --- | --- | --- |
-| `datasets.validate(dataset, level="deep")` | 校验 Episode 模式、时间轴、来源摘要、质量门和制品完整性。 | Pandera、PyArrow、DuckDB、Great Expectations |
-| `datasets.split(dataset, by=..., ratios=...)` | 按资产、场景或真机批次进行防泄漏切分并发布稳定视图。 | scikit-learn、Polars、DuckDB |
-| `datasets.export(dataset, format=...)` | 将同一数据集导出为 LeRobot、RLDS、Parquet、Zarr、HDF5 或 rosbag2。 | LeRobot、TensorFlow Datasets/RLDS、PyArrow、Zarr |
-| `training.submit(TrainingSpec(trainer="cape"))` | 训练动作条件并行世界模型并输出可复现模型清单。 | DINOv2、PyTorch、timm、FAISS、OpenDW 基线 |
-| `runs.submit(RunSpec(policy="cape_planner"))` | 用候选动作和目标状态执行想象 Rollout、反事实比较与规划。 | CAPE 插件、CEM、FAISS、OpenDW |
-| `training.submit(TrainingSpec(trainer="vla"))` | 训练视觉语言动作模型并保持观测、动作和机器人本体模式可追踪。 | LeRobot、OpenVLA、PyTorch |
-| `training.submit(TrainingSpec(trainer="imitation"))` | 训练行为克隆、ACT 或 Diffusion Policy 等示范学习策略。 | robomimic、LeRobot、Diffusion Policy |
-| `training.submit(TrainingSpec(trainer="reinforcement"))` | 在版本化场景任务上训练强化学习策略并保存环境与评测快照。 | Stable-Baselines3、CleanRL、RSL-RL、skrl |
-| `training.submit(TrainingSpec(trainer="vq_action_flow"))` | 先以 VQ-VAE 学习离散动作意图，再用 Diffusion 或 Flow Matching 解码连续控制。 | vector-quantize-pytorch、Diffusion Policy、facebookresearch/flow_matching |
+| `evaluation.run` | `libero` | [LIBERO](https://github.com/Lifelong-Robot-Learning/LIBERO) 评测多任务与终身学习策略。 |
+| `evaluation.run` | `robotwin2` | RoboTwin 2.0 评测多本体与双臂操作。 |
+| `evaluation.run` | `simpler` | [SimplerEnv](https://github.com/simpler-env/SimplerEnv) 检查仿真与真机表现相关性。 |
+| `deployment.stage` | `ros2` | [ros2_control](https://github.com/ros-controls/ros2_control) 与 [MoveIt 2](https://github.com/moveit/moveit2) 接入真机。 |
+| `telemetry.record` | `rosbag2_mcap` | rosbag2 + MCAP 记录观测、动作、TF、诊断、接触和任务判据。 |
+| `failure.analyze` | `rules` | 平台规则以时间线、跟踪误差、接触/力和诊断生成可核验故障证据。 |
+| `failure.analyze` | `robofac` | [RoboFAC](https://github.com/MINT-SJTU/RoboFAC) 作为二级视频 critic，输出须经规则或人工确认。 |
+| `feedback.build_dataset` | `hard_negative` | 从确认失败/OOD 切片发布新的不可变训练集版本。 |
 
-实现约定：CAPE 的 DINO 特征、动作条件并行预测、AdaLN/ViT 解码和对比目标封装为独立训练器；在官方代码可用前，使用 DINOv2、PyTorch 与 OpenDW 组成可复现基线。
+学习策略只输出期望动作或轨迹；急停、工作空间、关节/速度/力矩/力限制和 watchdog 由确定性
+安全监督器强制执行。故障无法确认时必须保留 `unknown`，不得强行归因。
 
-## 6. 评测与真机反馈闭环
+## 发布门禁
 
-| API | 用途 | 推荐开源实现 |
-| --- | --- | --- |
-| `evaluations.submit(model=..., matrix=...)` | 在冻结场景任务矩阵上评测成功率、轨迹误差、接触稳定性、耗时和泛化能力。 | Gymnasium、ManiSkill、RoboCasa、SciPy |
-| `evaluations.compare(reports, baseline=...)` | 对齐同一评测矩阵并输出差值、置信区间和失败分布。 | SciPy、statsmodels、Polars |
-| `deployments.deploy(model=..., robot=...)` | 通过安全门禁把模型部署到机器人工作节点并记录全部输入输出。 | ROS 2、ros2_control、MoveIt 2 |
-| `deployments.episodes(deployment)` | 将真机观测、动作、日志、截图和传感器数据发布为真实来源 Episode。 | rosbag2、MCAP、LeRobot dataset |
-| `feedback.ingest(source=...)` | 接收仿真、评测或真机失败证据并绑定原运行来源。 | OpenLineage、MLflow、Apache Arrow |
-| `feedback.analyze(feedback, analyzer=...)` | 按感知、语义、规划、控制、动力学和接触类别生成失败归因。 | Polars、DuckDB、scikit-learn、SHAP |
-| `feedback.plan_regeneration(analysis, budget=...)` | 根据覆盖缺口和失败分布生成数据补采、物性校准或仿真再生成计划。 | Optuna、Ray Tune、Hydra |
-| `feedback.execute(plan)` | 把再生成计划编译为普通运行并复用监控、取消和数据发布语义。 | Temporal/Ray、现有运行执行器 |
-
-## 平台公共底座
-
-| API | 用途 | 推荐开源实现 |
-| --- | --- | --- |
-| `workers.register(descriptor)` | 注册仿真、重建、训练或机器人工作节点的版本和能力声明。 | FastAPI、Pydantic、gRPC |
-| `workers.list(requirements=...)` | 查询满足 GPU、后端、传感器和机器人能力约束的工作节点。 | Kubernetes、Ray、NVIDIA Device Plugin |
-| `jobs.get(job)` | 读取构建、运行、训练、评测或导出任务的稳定状态。 | Temporal、Ray |
-| `jobs.watch(job)` | 从可恢复游标连续读取任务状态、进度和诊断事件。 | Temporal、OpenTelemetry |
-| `jobs.cancel(job)` | 以显式原因请求取消任务并保留最终审计记录。 | Temporal、Ray |
-| `artifacts.put(payload)` | 上传数据、模型、日志或配置并返回内容寻址引用。 | MinIO、S3 API、fsspec |
-| `artifacts.get(ref)` | 按精确摘要读取制品并验证响应长度和媒体类型。 | MinIO、S3 API、fsspec |
-| `artifacts.verify(ref)` | 重新计算摘要并报告制品是否完整且未被篡改。 | SHA-256、MinIO、fsspec |
-| `lineage.trace(resource)` | 查询资产、任务、运行、Episode、数据集和模型之间的全过程来源。 | OpenLineage、MLflow、PostgreSQL |
-| `streams.open(topic)` | 实时传输点云、位姿和设备状态并支持录制与回放。 | ROS 2/DDS、Foxglove、MCAP |
-| `visualization.open(resource)` | 在浏览器加载 glTF/USD 派生资产、轨迹和 WebXR 场景。 | three.js、WebXR、Draco、Foxglove |
-
-## 算法接入规则
-
-1. 每种算法实现 `descriptor + capability + execute` 适配器，不修改资产、场景、任务和 Episode 公共模型。
-2. 所有输入在调度前解析为带摘要的精确引用，算法输出通过质量门后才发布新资源版本。
-3. 训练权重、许可证、数据许可、运行环境和随机种子进入运行清单，不能只记录算法名称。
-4. 未公开官方代码的方案算法不得伪装成已集成功能，应使用同能力开源基线并保持插件名和结果来源明确。
-
-## 关键开源项目
-
-- [OMNI-DC](https://github.com/princeton-vl/OMNI-DC)、[CompletionFormer](https://github.com/youmi-zym/CompletionFormer)、[Open3D](https://github.com/isl-org/Open3D)、[OpenUSD](https://github.com/PixarAnimationStudios/OpenUSD)
-- [gsplat](https://github.com/nerfstudio-project/gsplat)、[VideoArtGS](https://videoartgs.github.io/)、[FreeArtGS](https://github.com/FreeArtGS/FreeArtGS)、[Articulate Anything](https://github.com/vlongle/articulate-anything)
-- [BlenderProc](https://github.com/DLR-RM/BlenderProc)、[MimicGen](https://github.com/NVlabs/mimicgen)、[ManiSkill](https://github.com/haosulab/ManiSkill)、[RoboCasa](https://github.com/robocasa/robocasa)
-- [Isaac Lab](https://github.com/isaac-sim/IsaacLab)、[Genesis](https://github.com/Genesis-Embodied-AI/Genesis)、[MuJoCo](https://github.com/google-deepmind/mujoco)、[ESIM](https://github.com/uzh-rpg/rpg_esim)
-- [LeRobot](https://github.com/huggingface/lerobot)、[robomimic](https://github.com/ARISE-Initiative/robomimic)、[Diffusion Policy](https://github.com/real-stanford/diffusion_policy)、[OpenDW](https://github.com/dexmal/opendw)
-- [ROS 2](https://github.com/ros2/ros2)、[rosbag2](https://github.com/ros2/rosbag2)、[MCAP](https://github.com/foxglove/mcap)、[OpenLineage](https://github.com/OpenLineage/OpenLineage)
+1. 方法必须登记可核验源码、不可变版本、许可证、输入输出 Schema 和完整运行要求。
+2. 算法环境与 Python 3.8–3.12 核心环境隔离；CUDA、系统库和模型权重不得进入核心依赖。
+3. 数据、模型和报告均绑定输入摘要、方法描述符、配置、种子、代码与环境版本。
+4. 资产通过结构、碰撞、动力学和回放门禁；数据通过时间同步、Schema、摘要与防泄漏门禁。
+5. 策略报告逐任务成功率、置信区间、延迟和安全事件；真机发布必须通过独立回归集。
+6. ArtGen、PD²GS、CAPE 等无法核验官方可复用代码、权重和许可证的工作不注册为可执行方法。

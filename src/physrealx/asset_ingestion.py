@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Final, cast
 
-from physrealx.contracts import API_VERSION, ArtifactWriter
+from physrealx.contracts import ArtifactWriter
 from physrealx.digital_twin import (
     AttachmentRole,
     IssueSeverity,
@@ -23,8 +23,9 @@ from physrealx.digital_twin import (
     SourceIssue,
     SourceStreamSummary,
 )
-from physrealx.domain import JSONValue
+from physrealx.domain import JSONValue, MethodCapability
 from physrealx.errors import ArtifactIntegrityError, DomainValidationError, SourcePackageError
+from physrealx.methods import builtin_method
 
 _STREAM_LAYOUT: Final = (
     ("real/can/start", "can.start", ObservationStateRole.RECONSTRUCTION),
@@ -171,9 +172,12 @@ def _stream_name(state: str, take_id: str, modality: ObservationModality) -> str
 class ArtModelingImporter:
     """Importer for the existing ArtModeling multi-state directory layout."""
 
-    name = "artmodeling"
-    plugin_version = "1.0.0"
-    api_version = API_VERSION
+    descriptor = builtin_method(
+        MethodCapability.OBSERVATION_IMPORT,
+        "artmodeling",
+        input_contract="ArtModelingCaptureDirectory",
+        output_contract="ObservationSetManifest",
+    )
 
     @staticmethod
     def _root(source: Path) -> Path:
@@ -333,8 +337,8 @@ class ArtModelingImporter:
         )
         regular_files = [item for item in files if item.is_file() and not item.is_symlink()]
         return SourceInspection(
-            importer=self.name,
-            importer_version=self.plugin_version,
+            importer=self.descriptor.name,
+            importer_version=self.descriptor.version,
             source_uri=root.as_uri(),
             total_files=len(regular_files),
             total_bytes=sum(item.stat().st_size for item in regular_files),
@@ -464,8 +468,8 @@ class ArtModelingImporter:
             resource_id=resource_id,
             version=version,
             display_name=display_name,
-            importer=self.name,
-            importer_version=self.plugin_version,
+            importer=self.descriptor.name,
+            importer_version=self.descriptor.version,
             source_uri=root.as_uri(),
             streams=tuple(streams),
             attachments=tuple(attachments),

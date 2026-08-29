@@ -1,145 +1,77 @@
 # 运行与数据生成 API
 
-运行服务编排仿真、策略和记录器，将一组完整 Episode 原子发布为数据集。
+运行服务编译场景、任务、仿真后端和策略方法，逐 Episode 执行并将合格结果原子发布为数据集。
 
 ## `runs.submit`
 
 ```python
-px.runs.submit(
-    spec: RunSpec,
-    *,
-    idempotency_key: str | None = None,
-    priority: int = 0,
-    validate_only: bool = False,
-) -> RunRef
+px.runs.submit(spec: RunSpec) -> RunRecord
 ```
 
-提交时执行：资源解析、后端与策略版本固定、能力匹配、预算检查和执行计划编译。
-
-`validate_only=True` 返回已编译计划但不创建运行，适合 CI 和成本预检。
-
-## `runs.get`
+`RunSpec.backend` 必须是 `simulation.run` 能力的 `MethodSpec`，`RunSpec.policy` 必须是
+`policy.inference` 能力的 `MethodSpec`。方法配置保存在各自 `MethodSpec.config` 中，不维护第二套
+`backend_config` / `policy_config` 字段。
 
 ```python
-px.runs.get(run: RunLike) -> RunRecord
+from physrealx import MethodCapability, RunSpec
+
+backend = px.methods.bind(
+    MethodCapability.SIMULATION_RUN,
+    "mujoco",
+    config={"physics_dt": 0.002},
+)
+policy = px.methods.bind(
+    MethodCapability.POLICY_INFERENCE,
+    "motion_planner",
+)
+
+record = px.runs.submit(
+    RunSpec(
+        scene=scene_ref,
+        task=task_ref,
+        backend=backend,
+        policy=policy,
+        episode_count=1000,
+        base_seed=2026,
+        dataset_id="drawer.rollouts",
+        dataset_version="1.0.0",
+        record_signals=("camera.front.rgb", "drawer.position"),
+    )
+)
 ```
 
-`RunRecord.status`：
+提交前平台解析场景和任务摘要，核对方法描述符、检查点、观测信号与后端能力；运行 ID 相同且规格
+相同时返回原成功记录，不允许以相同身份改写任务。
 
-```text
-pending → queued → provisioning → running → finalizing → succeeded
-                                      ├──────────────→ failed
-                                      └──────────────→ cancelled
-```
-
-## `runs.wait`
+## `runs.get` / `runs.wait`
 
 ```python
-px.runs.wait(
-    run: RunLike,
-    *,
-    timeout: float | None = None,
-    poll_interval: float = 2.0,
-) -> RunResult
+px.runs.get(run: str | RunRecord) -> RunRecord
+px.runs.wait(run: str | RunRecord) -> RunResult
 ```
 
-成功结果包含数据集精确引用；失败抛出 `RunFailedError`，异常对象带终态记录和结构化错误。
-
-## `runs.watch`
-
-```python
-px.runs.watch(
-    run: RunLike,
-    *,
-    cursor: str | None = None,
-) -> Iterator[RunEvent]
-```
-
-断线后使用最近 cursor 恢复事件流。
-
-## `runs.cancel`
-
-```python
-px.runs.cancel(
-    run: RunLike,
-    *,
-    reason: str,
-    mode: Literal["graceful", "immediate"] = "graceful",
-) -> RunRecord
-```
-
-- `graceful`：完成当前原子 Episode 写入后停止；
-- `immediate`：请求工作节点尽快终止，未完成 Episode 丢弃。
-
-## `runs.resume`
-
-```python
-px.runs.resume(
-    run: RunLike,
-    *,
-    retry_policy: RetryPolicy | None = None,
-) -> RunRef
-```
-
-从已发布 Episode 继续，保留原逻辑索引；不覆盖原失败记录。不可恢复的规格或能力错误不能 resume。
+当前执行器同步完成本地运行；`wait` 读取终态结果，非终态会明确失败，不以轮询或解析日志推断状态。
 
 ## `runs.episodes`
 
 ```python
-px.runs.episodes(
-    run: RunLike,
-    *,
-    success: bool | None = None,
-    failure_category: str | None = None,
-    limit: int = 100,
-    cursor: str | None = None,
-) -> Page[EpisodeSummary]
+px.runs.episodes(run: str | RunRecord) -> tuple[Episode, ...]
 ```
 
-## `runs.load_episode`
+平台从制品存储读取 Episode，重新验证清单摘要及全部领域约束。每条 Episode 保留精确场景、任务、
+后端与策略方法、种子、时间线、信号 Schema、动作、结果和失败原因。
 
-```python
-px.runs.load_episode(
-    run: RunLike,
-    episode_id: str,
-    *,
-    signals: Sequence[str] | None = None,
-) -> Episode
-```
+## 发布语义
 
-`signals` 可投影高带宽模态，减少读取量；Episode 元数据和时间语义始终完整。
-
-## 示例：提交并监控
-
-```python
-run = px.runs.submit(spec, idempotency_key="drawer-generate-v1")
-
-for event in px.runs.watch(run):
-    if event.kind == "progress":
-        print(f"{event.completed}/{event.total}")
-
-result = px.runs.wait(run)
-print(result.dataset)
-```
-
-## RunSpec 关键字段
-
-| 字段 | 说明 |
-| --- | --- |
-| `scene` / `task` | 精确场景与任务引用 |
-| `backend` / `policy` | 后端与策略标识及可选版本约束 |
-| `episodes` / `seed` | Episode 数量和根随机种子 |
-| `parallelism` | 期望并行度 |
-| `record` | 需要发布的观测与状态信号 |
-| `dataset` | 输出数据集 ID 与版本 |
-| `quality_gates` | Episode 与数据集级质量条件 |
-| `budget` | 时间、GPU、存储、失败数和成本上限 |
-| `tags` | 实验检索标签，不影响执行语义 |
+1. 每条 Episode 先写入内容寻址制品，再写摘要记录；
+2. 信号集合、dtype、shape、单位和 frame 在 Episode 内必须稳定；
+3. 全部 Episode 完成后构建 `DatasetManifest` 并原子登记数据集引用；
+4. 失败运行保存稳定错误码，不发布不完整数据集；
+5. session、策略和临时资源在成功或异常路径均关闭。
 
 ## 主要错误
 
-- `CapabilityMismatchError`：后端或策略能力不足；
-- `RunFailedError`：运行进入失败终态；
-- `BudgetExceededError`：达到明确预算上限；
-- `EpisodeValidationError`：轨迹违反数据合同；
-- `WorkerUnavailableError`：没有满足约束的工作节点。
+- `ResourceNotFoundError`：场景、任务、资产或方法不存在；
+- `ResourceConflictError`：摘要、方法身份或运行身份冲突；
+- `DomainValidationError`：任务信号、能力、检查点或 Episode 语义不合法；
+- `BackendExecutionError`：后端 reset/step/close 失败。

@@ -11,17 +11,19 @@ import os
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from physrealx.contracts import API_VERSION, ArtifactReader, ArtifactWriter, Frame
+from physrealx.contracts import ArtifactReader, ArtifactWriter, Frame
 from physrealx.domain import (
     DatasetManifest,
     DataValue,
     Episode,
     JSONValue,
+    MethodCapability,
     ModelManifest,
     TaskSpec,
     TrainingSpec,
 )
 from physrealx.errors import DomainValidationError, InvalidStateTransitionError
+from physrealx.methods import builtin_method
 
 
 def _torch_modules() -> tuple[Any, Any, Any]:
@@ -93,9 +95,12 @@ def _network(nn: Any, input_dim: int, hidden_dim: int, output_dim: int) -> Any:
 
 
 class TorchBehaviorCloningTrainer:
-    name = "torch_bc"
-    plugin_version = "1.0.0"
-    api_version = API_VERSION
+    descriptor = builtin_method(
+        MethodCapability.POLICY_TRAIN,
+        "torch_bc",
+        input_contract="TrainingSpec+DatasetManifest+Episode",
+        output_contract="ModelManifest",
+    )
 
     def train(
         self,
@@ -105,7 +110,7 @@ class TorchBehaviorCloningTrainer:
         artifacts: ArtifactWriter,
     ) -> ModelManifest:
         torch, nn, safetensors_torch = _torch_modules()
-        config = spec.config
+        config = spec.trainer.config
         _reject_unknown(
             config,
             frozenset(
@@ -208,10 +213,8 @@ class TorchBehaviorCloningTrainer:
         return ModelManifest(
             resource_id=spec.resource_id,
             version=spec.version,
-            trainer=self.name,
-            trainer_version=self.plugin_version,
-            policy=TorchBehaviorCloningPolicy.name,
-            policy_version=TorchBehaviorCloningPolicy.plugin_version,
+            trainer=spec.trainer,
+            policy=TorchBehaviorCloningPolicy.descriptor.bind(checkpoint=weights),
             dataset=spec.dataset,
             weights=weights,
             observation_signals=tuple(schema_by_name[name] for name in observation_signals),
@@ -233,9 +236,12 @@ class TorchBehaviorCloningTrainer:
 
 
 class TorchBehaviorCloningPolicy:
-    name = "torch_bc"
-    plugin_version = "1.0.0"
-    api_version = API_VERSION
+    descriptor = builtin_method(
+        MethodCapability.POLICY_INFERENCE,
+        "torch_bc",
+        input_contract="Frame+TaskSpec+ModelManifest",
+        output_contract="DataValue",
+    )
 
     def __init__(
         self,

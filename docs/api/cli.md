@@ -8,7 +8,7 @@
 physrealx [--debug] COMMAND
 ├── init [WORKSPACE]
 ├── doctor [--json] [--no-cuda] [--strict]
-├── plugins [--workspace PATH]
+├── methods [--workspace PATH]
 ├── validate {asset,scene,task,run,training} FILE
 ├── add {asset,scene,task} FILE [--workspace PATH]
 ├── list RESOURCE_TYPE [--workspace PATH]
@@ -26,7 +26,7 @@ physrealx [--debug] COMMAND
 ```bash
 physrealx init .physrealx
 physrealx doctor --strict
-physrealx plugins --workspace .physrealx
+physrealx methods --workspace .physrealx
 ```
 
 `doctor --strict` 在发现 Python、Torch 或 CUDA 环境问题时返回非零退出码；`--no-cuda` 用于不应初始化 CUDA 的 CI。

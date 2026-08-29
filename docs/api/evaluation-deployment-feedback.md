@@ -1,195 +1,84 @@
 # 评测、部署与反馈 API
 
-## Evaluation API
+评测使用冻结模型、任务和独立种子生成报告；真机部署与失败反馈通过能力方法接入，并共享
+Episode、制品和方法证据，不共享仿真后端对象。
 
-### `evaluations.submit`
+## `evaluations.submit`
 
 ```python
 px.evaluations.submit(
-    spec: EvaluationSpec | None = None,
     *,
-    model: ModelLike | None = None,
-    matrix: EvaluationMatrixLike | None = None,
-    backend: str | None = None,
-    seed: int | None = None,
-    idempotency_key: str | None = None,
-) -> EvaluationRef
+    resource_id: str,
+    version: str,
+    model: VersionedRef,
+    run: RunSpec,
+    episode_count: int = 16,
+    base_seed: int = 100_000,
+) -> VersionedRef
 ```
 
-可以传完整 `EvaluationSpec`，或使用关键字快速构建。两种形式不能混用冲突字段。
-
-### `evaluations.get` / `wait` / `watch` / `cancel`
-
-```python
-px.evaluations.get(ref: EvaluationLike) -> EvaluationRecord
-px.evaluations.wait(ref: EvaluationLike, *, timeout: float | None = None) -> EvaluationResult
-px.evaluations.watch(ref: EvaluationLike, *, cursor: str | None = None) -> Iterator[EvaluationEvent]
-px.evaluations.cancel(ref: EvaluationLike, *, reason: str) -> EvaluationRecord
-```
-
-### `evaluations.get_report`
+平台检查模型信号 Schema 与任务观测/动作一致，再把运行策略替换为模型清单登记的精确推理
+`MethodSpec`。评测身份包含模型、运行规格、输出身份、Episode 数和种子，独立报告不会碰撞。
 
 ```python
-px.evaluations.get_report(report: EvaluationReportLike) -> EvaluationReport
-```
-
-### `evaluations.compare`
-
-```python
-px.evaluations.compare(
-    reports: Sequence[EvaluationReportLike],
-    *,
-    baseline: EvaluationReportLike | None = None,
-    confidence: float = 0.95,
-) -> EvaluationComparison
-```
-
-比较按同一矩阵轴对齐，输出绝对值、差值、置信区间与失败分布。
-
-## Deployment API
-
-### `deployments.deploy`
-
-```python
-px.deployments.deploy(
-    *,
-    model: ModelLike,
-    robot: RobotLike,
-    task: TaskLike,
-    safety_profile: SafetyProfileLike,
-    mode: Literal["replay", "shadow", "supervised", "production"],
-    idempotency_key: str | None = None,
-) -> DeploymentRef
-```
-
-部署前执行输入输出模式、控制频率、坐标、关节、延迟和安全门禁检查。
-
-### `deployments.get`
-
-```python
-px.deployments.get(ref: DeploymentLike) -> DeploymentRecord
-```
-
-### `deployments.watch`
-
-```python
-px.deployments.watch(
-    ref: DeploymentLike,
-    *,
-    cursor: str | None = None,
-) -> Iterator[DeploymentEvent]
-```
-
-### `deployments.stop`
-
-```python
-px.deployments.stop(
-    ref: DeploymentLike,
-    *,
-    reason: str,
-    emergency: bool = False,
-) -> DeploymentRecord
-```
-
-`emergency=True` 请求机器人适配器执行安全急停；是否成功会作为明确事件记录，不能假设网络请求即代表硬件已经停止。
-
-### `deployments.episodes`
-
-```python
-px.deployments.episodes(
-    ref: DeploymentLike,
-    *,
-    success: bool | None = None,
-    limit: int = 100,
-    cursor: str | None = None,
-) -> Page[EpisodeSummary]
-```
-
-## Feedback API
-
-### `feedback.ingest`
-
-```python
-px.feedback.ingest(
-    *,
-    source: DeploymentLike | DatasetLike | Sequence[EpisodeLike],
-    labels: Sequence[FailureLabel] = (),
-    notes: str | None = None,
-) -> FeedbackBatchRef
-```
-
-### `feedback.analyze`
-
-```python
-px.feedback.analyze(
-    feedback: FeedbackBatchLike | None = None,
-    *,
-    deployment: DeploymentLike | None = None,
-    episodes: EpisodeQuery | None = None,
-    analyzer: str = "default",
-) -> JobRef[FailureAnalysis]
-```
-
-### `feedback.plan_regeneration`
-
-```python
-px.feedback.plan_regeneration(
-    analysis: FailureAnalysisLike,
-    *,
-    budget: Mapping[str, JSONValue],
-    objective: Sequence[str] = ("success_rate",),
-    planner: str = "coverage_gap",
-) -> RegenerationPlan
-```
-
-### `feedback.execute`
-
-```python
-px.feedback.execute(
-    plan: RegenerationPlan | RegenerationPlanLike,
-    *,
-    idempotency_key: str | None = None,
-) -> RunRef
-```
-
-执行再生成计划返回普通运行句柄，因此共享监控、取消、恢复与数据发布语义。
-
-## 完整示例
-
-```python
-evaluation = px.evaluations.submit(
-    model=model,
-    matrix="evaluation.drawer-heldout@1.0.0",
-    backend="isaac_lab",
-    seed=100_000,
+report_ref = px.evaluations.submit(
+    resource_id="drawer.bc.heldout",
+    version="1.0.0",
+    model=model_ref,
+    run=heldout_run,
+    episode_count=200,
+    base_seed=100_000,
 )
-report = px.evaluations.wait(evaluation).report
-
-deployment = px.deployments.deploy(
-    model=model,
-    robot="robot.franka-lab-01",
-    task="task.open-drawer@1.0.0",
-    safety_profile="safety.manipulation-conservative@1.0.0",
-    mode="supervised",
-)
-
-analysis_job = px.feedback.analyze(
-    deployment=deployment,
-    episodes={"success": False},
-)
-analysis = px.jobs.wait(analysis_job).result
-plan = px.feedback.plan_regeneration(
-    analysis,
-    budget={"episodes": 20_000, "gpu_hours": 100},
-)
-new_run = px.feedback.execute(plan)
 ```
 
-## 主要错误
+## `evaluations.get_report` / `evaluations.list_reports`
 
-- `EvaluationMatrixError`：评测矩阵非法或无法实例化；
-- `DeploymentGateError`：部署前门禁失败；
-- `RobotUnavailableError`：机器人离线、被占用或校准过期；
-- `SafetyViolationError`：检测到安全事件；
-- `FeedbackEvidenceError`：失败归因缺少必要 Episode 或日志；
-- `RegenerationPlanError`：计划无法满足预算或覆盖约束。
+```python
+px.evaluations.get_report(ref: VersionedRef) -> EvaluationReport
+px.evaluations.list_reports() -> list[VersionedRef]
+```
+
+报告保存模型和评测数据集精确引用、成功率、Episode 数、失败数与结构化失败案例。
+
+## 评测方法
+
+```python
+px.methods.list(MethodCapability.EVALUATION_RUN)
+```
+
+推荐 `libero`、`robotwin2` 和 `simpler` 扩展；每个基准必须固定官方任务、初态、种子、超时和成功
+判据，并报告逐任务成功率、Wilson 95% 置信区间、至少三个训练种子和旧版本回归差异。
+
+## 真机部署边界
+
+部署 worker 注册 `deployment.stage`，遥测 recorder 注册 `telemetry.record`：
+
+```python
+px.methods.list(MethodCapability.DEPLOYMENT_STAGE)
+px.methods.list(MethodCapability.TELEMETRY_RECORD)
+```
+
+`ros2` 方法使用 ros2_control/MoveIt 2 接入机器人，`rosbag2_mcap` 记录观测、动作、TF、诊断、
+接触和任务判据。学习策略只输出期望动作或轨迹；急停、工作空间、速度、力矩、力和 watchdog
+由确定性安全监督器执行。
+
+## 失败与反馈边界
+
+```python
+px.methods.list(MethodCapability.FAILURE_ANALYZE)
+px.methods.list(MethodCapability.FEEDBACK_BUILD_DATASET)
+```
+
+默认 `rules` 方法根据任务时间线、命令—状态误差、接触/力、TF/时钟和诊断产生证据；RoboFAC
+只能作为二级 critic。输出至少包含原因代码、起始时刻、置信度、证据引用和确认状态，证据不足时
+保留 `unknown`。
+
+`hard_negative` 从确认失败/OOD 切片发布新的 `DatasetRevision`，不得原地修改训练集；提升必须在未
+参与反馈构建的 failure holdout 和旧回归集上同时验证。
+
+## 发布门禁
+
+- 评测：逐任务成功率、置信区间、完成时间、碰撞/超力/越界和推理延迟；
+- shadow/canary：输入输出 Schema、频率、frame、关节顺序、延迟和安全限制全部通过；
+- 真机：关键安全事件为零，并报告干预率、误停率、跟踪误差和故障检测延迟；
+- 反馈：故障证据可定位、人工确认可审计、新数据集不可变、旧能力无回归。

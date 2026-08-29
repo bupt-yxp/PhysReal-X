@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from dataclasses import asdict
 from pathlib import Path
 from typing import NoReturn
 
@@ -24,6 +23,7 @@ from physrealx.domain import (
 from physrealx.errors import PhysRealXError
 from physrealx.platform import PhysRealX
 from physrealx.reference import reference_asset, reference_run, reference_scene, reference_task
+from physrealx.training import TorchBehaviorCloningTrainer
 
 
 def _workspace(parser: argparse.ArgumentParser) -> None:
@@ -46,8 +46,8 @@ def _parser() -> argparse.ArgumentParser:
     doctor.add_argument("--no-cuda", action="store_true")
     doctor.add_argument("--strict", action="store_true")
 
-    plugins = commands.add_parser("plugins", help="list registered plugins")
-    _workspace(plugins)
+    methods = commands.add_parser("methods", help="list installed capability methods")
+    _workspace(methods)
 
     validate = commands.add_parser("validate", help="validate a JSON/YAML specification")
     validate.add_argument("kind", choices=("asset", "scene", "task", "run", "training"))
@@ -125,9 +125,9 @@ def _run(args: argparse.Namespace) -> int:
             for issue in report.issues:
                 print(f"warning: {issue}")
         return 1 if args.strict and report.issues else 0
-    if command == "plugins":
+    if command == "methods":
         platform = _platform(args.workspace)
-        _print_model([asdict(descriptor) for descriptor in platform.plugins.descriptors()])
+        _print_model([descriptor.model_dump(mode="json") for descriptor in platform.methods.list()])
         return 0
     if command == "validate":
         models: dict[str, type[BaseModel]] = {
@@ -213,8 +213,7 @@ def _demo(args: argparse.Namespace) -> int:
             resource_id="drawer.bc",
             version="1.0.0",
             dataset=record.result.dataset,
-            trainer="torch_bc",
-            config={"device": args.device},
+            trainer=TorchBehaviorCloningTrainer.descriptor.bind(config={"device": args.device}),
         )
         model = platform.training.submit(training)
         evaluation = platform.evaluations.submit(

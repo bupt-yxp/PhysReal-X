@@ -22,6 +22,7 @@ from physrealx.domain import (
     Episode,
     EpisodeSummary,
     JSONValue,
+    MethodDescriptor,
     ModelManifest,
     RunRecord,
     RunResult,
@@ -77,9 +78,7 @@ class SimulationSession(Protocol):
 
 @runtime_checkable
 class SimulationBackend(Protocol):
-    name: str
-    plugin_version: str
-    api_version: str
+    descriptor: MethodDescriptor
 
     def capabilities(self) -> BackendCapabilities: ...
 
@@ -94,9 +93,7 @@ class SimulationBackend(Protocol):
 
 @runtime_checkable
 class Policy(Protocol):
-    name: str
-    plugin_version: str
-    api_version: str
+    descriptor: MethodDescriptor
 
     def reset(self, seed: int) -> None: ...
 
@@ -107,9 +104,7 @@ class Policy(Protocol):
 
 @runtime_checkable
 class Trainer(Protocol):
-    name: str
-    plugin_version: str
-    api_version: str
+    descriptor: MethodDescriptor
 
     def train(
         self,
@@ -124,9 +119,7 @@ class Trainer(Protocol):
 class ObservationImporter(Protocol):
     """Adapter for one immutable, already captured source-package format."""
 
-    name: str
-    plugin_version: str
-    api_version: str
+    descriptor: MethodDescriptor
 
     def inspect(self, source: Path) -> SourceInspection: ...
 
@@ -153,9 +146,7 @@ class DigitalTwinPipelineOutput:
 class DigitalTwinPipeline(Protocol):
     """Composite worker adapter executing one versioned digital-twin recipe."""
 
-    name: str
-    plugin_version: str
-    api_version: str
+    descriptor: MethodDescriptor
 
     def build(
         self,

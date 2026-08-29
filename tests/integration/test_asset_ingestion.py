@@ -8,7 +8,6 @@ import pytest
 
 from physrealx.contracts import ArtifactStore, DigitalTwinPipelineOutput
 from physrealx.digital_twin import (
-    AlgorithmSpec,
     AssetValidationProfile,
     AssetValidationReport,
     DigitalTwinBuildSpec,
@@ -18,7 +17,9 @@ from physrealx.digital_twin import (
     ObservationSetManifest,
     StageExecutionRecord,
 )
+from physrealx.domain import MethodCapability
 from physrealx.errors import ResourceConflictError, SourcePackageError
+from physrealx.methods import builtin_method
 from physrealx.platform import PhysRealX
 from physrealx.reference import reference_asset
 
@@ -54,13 +55,27 @@ def _source(root: Path, *, start_count: int = 2, end_count: int = 3) -> Path:
 
 
 def _recipe() -> DigitalTwinRecipe:
-    algorithms = {
-        DigitalTwinStage.NORMALIZATION: "normalize",
-        DigitalTwinStage.CAMERA_RECOVERY: "camera_recovery",
-        DigitalTwinStage.ARTICULATED_RECONSTRUCTION: "artgs",
-        DigitalTwinStage.PHYSICS_ENRICHMENT: "physics_measurement",
-        DigitalTwinStage.SIMULATION_PACKAGING: "openusd",
-        DigitalTwinStage.QUALITY_VALIDATION: "physrealx_validator",
+    methods = {
+        DigitalTwinStage.NORMALIZATION: (MethodCapability.ASSET_NORMALIZE, "normalize"),
+        DigitalTwinStage.CAMERA_RECOVERY: (MethodCapability.CAMERA_RECOVER, "camera_recovery"),
+        DigitalTwinStage.GEOMETRY_RECONSTRUCTION: (
+            MethodCapability.GEOMETRY_RECONSTRUCT,
+            "open3d_fusion",
+        ),
+        DigitalTwinStage.ARTICULATION_RECOVERY: (
+            MethodCapability.ARTICULATION_RECOVER,
+            "ditto",
+        ),
+        DigitalTwinStage.COLLISION_BUILD: (MethodCapability.COLLISION_BUILD, "coacd"),
+        DigitalTwinStage.PHYSICS_CALIBRATION: (
+            MethodCapability.PHYSICS_CALIBRATE,
+            "mujoco_sysid",
+        ),
+        DigitalTwinStage.ASSET_PACKAGING: (MethodCapability.ASSET_PACKAGE, "openusd"),
+        DigitalTwinStage.QUALITY_VALIDATION: (
+            MethodCapability.ASSET_VALIDATE,
+            "physics_probe",
+        ),
     }
     return DigitalTwinRecipe(
         name="cabinet_twin",
@@ -70,17 +85,25 @@ def _recipe() -> DigitalTwinRecipe:
         steps=tuple(
             DigitalTwinStep(
                 stage=stage,
-                algorithm=AlgorithmSpec(name=name, version="1.0.0"),
+                method=builtin_method(
+                    capability,
+                    name,
+                    input_contract="TestInput",
+                    output_contract="TestOutput",
+                ).bind(),
             )
-            for stage, name in algorithms.items()
+            for stage, (capability, name) in methods.items()
         ),
     )
 
 
 class _Pipeline:
-    name = "test_pipeline"
-    plugin_version = "1.0.0"
-    api_version = "1"
+    descriptor = builtin_method(
+        MethodCapability.ASSET_BUILD,
+        "test_pipeline",
+        input_contract="DigitalTwinBuildSpec+ObservationSetManifest",
+        output_contract="DigitalTwinPipelineOutput",
+    )
 
     def __init__(self) -> None:
         self.calls = 0
@@ -97,7 +120,7 @@ class _Pipeline:
         stages = tuple(
             StageExecutionRecord(
                 stage=step.stage,
-                algorithm=step.algorithm,
+                method=step.method,
                 started_at=now,
                 completed_at=now,
             )
@@ -199,6 +222,8 @@ def test_digital_twin_build_is_validated_persisted_and_idempotent(tmp_path: Path
         source=source,
         recipe=_recipe(),
     )
+    for step in spec.recipe.steps:
+        platform.methods.register(step.method.descriptor)
 
     result = platform.assets.build(spec)
     assert result.validation.passed

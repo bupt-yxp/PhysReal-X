@@ -1,127 +1,100 @@
 # 快速开始
 
-本页用一个“打开抽屉”任务展示完整主链路：注册资产与场景、编译任务、生成数据集、训练策略并进行独立评测。
+本页运行内置“打开抽屉”垂直切片，验证资产、场景、任务、仿真、Episode 与数据集的完整链路。
 
-## 1. 创建平台客户端
+## 1. 打开工作区
 
 ```python
 from physrealx import PhysRealX
 
-px = PhysRealX.from_profile("default")
+px = PhysRealX.open(".physrealx-demo")
 ```
 
-`default` 配置保存平台地址、当前项目和凭据来源。客户端只提交资源与任务请求；平台根据能力、配额和可用设备选择已注册工作节点执行仿真、训练或真机任务。
-
-## 2. 注册资产
+## 2. 注册资产、场景与任务
 
 ```python
-from physrealx import AssetSpec
+from physrealx.reference import reference_asset, reference_scene, reference_task
 
-drawer = px.assets.register(AssetSpec.from_file("assets/drawer.asset.yaml"))
-robot = px.assets.register(AssetSpec.from_file("assets/franka.asset.yaml"))
+asset = reference_asset()
+scene = reference_scene(asset)
+task = reference_task(scene)
+
+asset_ref = px.assets.register(asset)
+scene_ref = px.scenes.register(scene)
+task_ref = px.tasks.register(task)
 ```
 
-资产包含视觉几何、碰撞几何、link/joint 结构、物理参数、坐标系和制品摘要。注册时会执行结构与物理一致性校验。
+注册过程把场景中的资产和任务中的场景解析为带摘要的精确引用。重复注册相同内容是幂等的，
+同一 `resource_id@version` 对应不同内容会被拒绝。
 
-## 3. 组合场景并编译任务
-
-```python
-from physrealx import SceneSpec, TaskDraft
-
-scene = px.scenes.register(SceneSpec.from_file("scenes/drawer_table.scene.yaml"))
-
-task = px.tasks.compile(
-    TaskDraft(
-        instruction="打开抽屉至少 30 厘米",
-        scene=scene,
-        robot="franka",
-        target="drawer.drawer_link",
-    )
-)
-```
-
-任务编译会把自然语言草案转换为可执行条件：观测模式、动作空间、初始状态、成功条件、终止条件和评测指标。
-
-## 4. 生成多模态数据
+## 3. 生成 Episode 数据集
 
 ```python
-from physrealx import RunSpec
+from physrealx.reference import reference_run
 
-run = px.runs.submit(
-    RunSpec(
-        scene=scene,
-        task=task,
-        backend="isaac_lab",
-        policy="motion_planner",
-        episodes=1_000,
-        seed=2026,
-        record=(
-            "camera.front.rgb",
-            "camera.front.depth",
-            "robot.joint_position",
-            "drawer.joint_position",
-            "contact.force",
-        ),
-    )
-)
-
-result = px.runs.wait(run)
+record = px.runs.submit(reference_run(scene, task, episode_count=8, base_seed=7))
+result = px.runs.wait(record)
 dataset = px.datasets.get(result.dataset)
+
+print(record.status)
+print(len(dataset.episodes), dataset.total_steps)
 ```
 
-平台只在 1,000 条 Episode 全部完成、信号模式一致且制品通过摘要校验后发布数据集。
+运行规格已绑定精确后端和策略 `MethodSpec`。每条 Episode 保存种子、方法描述符、场景/任务摘要、
+连续时间线、观测、动作、奖励、终止语义和失败原因；全部 Episode 验证完成后才发布数据集。
 
-## 5. 训练策略
+## 4. 训练参考策略
+
+训练扩展需要 `.[train]` 和 PyTorch 环境。
 
 ```python
-from physrealx import TrainingSpec
+from physrealx import MethodCapability, TrainingSpec
 
-training = px.training.submit(
+trainer = px.methods.bind(
+    MethodCapability.POLICY_TRAIN,
+    "torch_bc",
+    config={"device": "cpu", "epochs": 80, "seed": 17},
+)
+model = px.training.submit(
     TrainingSpec(
-        dataset=dataset.ref,
-        trainer="diffusion_policy",
-        model_id="drawer.diffusion-policy",
-        seed=17,
-        config={"epochs": 200, "device": "cuda"},
+        resource_id="drawer.bc",
+        version="1.0.0",
+        dataset=result.dataset,
+        trainer=trainer,
     )
 )
+manifest = px.training.get_model(model)
 
-model = px.training.wait(training).model
+print(manifest.metrics)
 ```
 
-模型清单记录数据集摘要、训练器版本、配置、随机种子、权重摘要、输入输出模式和指标。
+模型清单绑定数据集摘要、训练与推理方法、训练配置、权重摘要、信号模式和指标。
 
-## 6. 独立评测
+## 5. 独立评测
 
 ```python
-from physrealx import EvaluationSpec
-
 evaluation = px.evaluations.submit(
-    EvaluationSpec(
-        model=model,
-        matrix="drawer.heldout-v1",
-        episodes=200,
-        seed=100_000,
-    )
+    resource_id="drawer.bc.heldout",
+    version="1.0.0",
+    model=model,
+    run=reference_run(scene, task),
+    episode_count=16,
+    base_seed=100_000,
 )
+report = px.evaluations.get_report(evaluation)
 
-report = px.evaluations.wait(evaluation).report
-print(report.success_rate)
-print(report.failures.by_category())
+print(report.success_rate, report.failures)
 ```
 
-评测种子、场景矩阵和生成数据与训练阶段独立。失败案例会按感知、规划、控制、接触、超时和数据质量分类。
+评测使用独立种子，并将推理方法切换为模型清单中登记的策略；结果保留评测数据集与失败证据。
 
-## 命令行等价流程
+## 命令行
 
 ```bash
-physrealx assets register assets/drawer.asset.yaml
-physrealx assets register assets/franka.asset.yaml
-physrealx scenes register scenes/drawer_table.scene.yaml
-physrealx tasks compile tasks/open_drawer.task.yaml
-physrealx runs submit runs/open_drawer.run.yaml --wait
-physrealx training submit training/diffusion_policy.yaml --wait
-physrealx evaluations submit evaluation/heldout.yaml --wait
+physrealx demo --workspace .physrealx-demo --episodes 8
+physrealx demo --workspace .physrealx-train --episodes 8 --train --device cpu
+physrealx methods --workspace .physrealx-demo
 ```
 
-接下来阅读[第一个完整项目](first-project.md)，了解推荐目录、规格文件和验收方法。
+接下来阅读[第一个完整项目](first-project.md)了解目录、规格和质量验收，或进入
+[资产与数字孪生](../user-guide/assets.md)处理已采集 ArtModeling 数据。

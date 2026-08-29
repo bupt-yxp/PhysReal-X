@@ -1,15 +1,17 @@
 # 资产与数字孪生
 
-本模块从**已采集数据包**开始，将 RGB-D、多状态观测和候选重建结果转换为可仿真、可训练、可追溯的铰接资产。数据采集设备和驱动不属于该 API 边界。
+本模块从**已采集数据包**开始，将多状态 RGB-D 和已有候选制品转换为可仿真、可训练、可追溯的
+铰接资产；相机驱动和采集设备不在平台 API 边界内。
 
 ## 标准流程
 
 ```text
-源包预检 → 不可变观测集 → 标准化/相机 → 可选深度补全
-          → 铰接重建 → 碰撞与物性 → USD 封装 → 质量验收
+源包预检 → 不可变观测集 → 坐标/相机 → 可选深度增强 → 几何重建
+→ 部件与关节 → 碰撞代理 → 物性标定 → OpenUSD → 质量验收
 ```
 
-不要用一个 `method` 同时表示整条流水线。整体 pipeline 负责调度和隔离运行环境，每个阶段的 `AlgorithmSpec` 单独固定方法、版本、权重和配置。
+整体 pipeline 只负责编排、隔离和汇总证据。每个阶段绑定一个匹配能力的 `MethodSpec`，因此
+COLMAP、OMNI-DC、Ditto、CoACD 和 MuJoCo 可以独立替换，不会彼此冒充。
 
 ## 1. 预检 ArtModeling 数据包
 
@@ -29,13 +31,8 @@ if not inspection.ingestible:
     raise RuntimeError("数据包未通过预检")
 ```
 
-预检要求：
-
-- `real/can/start` 和 `real/can/end` 至少各有一对 `img/<take>/` 与 `depth/<take>_depth.npy`；
-- 每个 take 的 RGB 帧从 `0.png` 开始连续编号，数量与对应 NPY 首维一致；
-- 可选 `real/cmp/start`、`real/video`、`real/recon`和 `sim`；
-- 整个源包不能含符号链接，避免越界导入；
-- 缺少标定或深度单位时必须给出明确诊断。
+预检确认必需状态、RGB/Depth 帧数、连续编号、NPY 头、符号链接、标定文件和单位声明。
+`real/recon` 与 `sim` 中的文件只是候选证据，不会自动变成可信资产。
 
 ## 2. 发布观测集
 
@@ -45,7 +42,6 @@ source = px.assets.ingest(
     resource_id="cabinet2.observations",
     version="1.0.0",
     display_name="Cabinet 2 observations",
-    importer="artmodeling",
     config={
         "depth_unit": "mm",
         "coordinate_frame": "camera",
@@ -54,66 +50,92 @@ source = px.assets.ingest(
 )
 ```
 
-导入不修改源目录。每个 RGB 帧、打包深度、PLY、USD 和元数据文件都在流式计算 SHA-256 后写入对象存储；文件在复制期间变化则整次导入失败。
+导入不修改源目录。文件在复制期间发生变化时整次导入失败；成功后每个流和附件都具有精确摘要。
 
-`real/recon` 和 `sim` 中的内容只是**候选制品**，不会因为存在就被视为正确资产。
+## 3. 安装并选择方法
 
-## 3. 选择阶段方法
+外部适配器通过 `physrealx.plugins` 入口注册方法。先查询能力，再绑定版本与配置：
 
-| 输入条件 | 建议方法 | 输出 |
+```python
+from physrealx import MethodCapability
+
+print(px.methods.list(MethodCapability.ARTICULATION_RECOVER))
+
+joint_method = px.methods.bind(
+    MethodCapability.ARTICULATION_RECOVER,
+    "ditto",
+)
+```
+
+推荐起点：
+
+| 条件 | 方法 | 主要产物 |
 | --- | --- | --- |
-| 已有可信内外参 | `provided_calibration` | 标准相机模型 |
-| 多视角 RGB 但缺相机位姿 | COLMAP | 相机位姿和稀疏点云 |
-| RGB + 稀疏/缺损深度 | OMNI-DC | 鲁棒稠密深度 |
-| NYUv2 类室内 RGB-D | CompletionFormer | 已有权重的基线深度 |
-| 多视角、多铰接状态 | ArtGS 方案 / FreeArtGS 开源基线 | 部件、3D Gaussian 和关节参数 |
-| 单目连续视频 | VideoArtGS | 可交互铰接数字孪生 |
-| 已有 Mesh 部件 | CoACD + trimesh | 碰撞代理、质量属性 |
+| 已有可信相机标定 | `provided_calibration` | 规范相机模型 |
+| 多视角 RGB 缺位姿 | `colmap` | 位姿与稀疏结构 |
+| 缺损 RGB-D | `omni_dc` | 稠密深度及置信度 |
+| 已标定 RGB-D | `open3d_fusion` | Mesh/点云 |
+| 交互前后点云 | `ditto` | 部件、关节轴、类型与范围 |
+| 已分部件 Mesh | `coacd` | 碰撞代理 |
+| 多状态动力学观测 | `mujoco_sysid` | 带来源和不确定度的物性 |
 
-RDFC-GAN 保留为论文方法选项，但其官方仓库未提供可直接下载的预训练权重，因此不设为默认深度插件。
+RDFC-GAN 无可直接复用的官方权重，不设为默认；ArtGen、PD²GS 等无法核验完整官方实现与许可证
+的工作不注册为可执行方法。
 
-## 4. 声明可复现配方
+## 4. 声明配方
 
 ```python
 from physrealx import (
-    AlgorithmSpec,
     DigitalTwinBuildSpec,
     DigitalTwinRecipe,
     DigitalTwinStage,
     DigitalTwinStep,
+    MethodCapability,
 )
 
 
-def step(stage, method, *, checkpoint=None, config=None):
+def bind(stage, capability, name, **config):
     return DigitalTwinStep(
         stage=stage,
-        algorithm=AlgorithmSpec(
-            name=method,
-            version="1.0.0",
-            checkpoint=checkpoint,
-            config=config or {},
-        ),
+        method=px.methods.bind(capability, name, config=config),
     )
 
 
 recipe = DigitalTwinRecipe(
     name="cabinet_twin",
     version="1.0.0",
-    pipeline="artgs_openusd",
+    pipeline="digital_twin_worker",
     pipeline_version="1.0.0",
     steps=(
-        step(DigitalTwinStage.NORMALIZATION, "artmodeling_rgbd"),
-        step(DigitalTwinStage.CAMERA_RECOVERY, "colmap"),
-        step(DigitalTwinStage.DEPTH_ENHANCEMENT, "omni_dc"),
-        step(DigitalTwinStage.ARTICULATED_RECONSTRUCTION, "artgs"),
-        step(DigitalTwinStage.PHYSICS_ENRICHMENT, "coacd_mujoco"),
-        step(DigitalTwinStage.SIMULATION_PACKAGING, "openusd"),
-        step(DigitalTwinStage.QUALITY_VALIDATION, "physrealx_validator"),
+        bind(DigitalTwinStage.NORMALIZATION, MethodCapability.ASSET_NORMALIZE, "normalize"),
+        bind(DigitalTwinStage.CAMERA_RECOVERY, MethodCapability.CAMERA_RECOVER, "colmap"),
+        bind(
+            DigitalTwinStage.GEOMETRY_RECONSTRUCTION,
+            MethodCapability.GEOMETRY_RECONSTRUCT,
+            "open3d_fusion",
+        ),
+        DigitalTwinStep(
+            stage=DigitalTwinStage.ARTICULATION_RECOVERY,
+            method=joint_method,
+        ),
+        bind(DigitalTwinStage.COLLISION_BUILD, MethodCapability.COLLISION_BUILD, "coacd"),
+        bind(
+            DigitalTwinStage.PHYSICS_CALIBRATION,
+            MethodCapability.PHYSICS_CALIBRATE,
+            "mujoco_sysid",
+        ),
+        bind(DigitalTwinStage.ASSET_PACKAGING, MethodCapability.ASSET_PACKAGE, "openusd"),
+        bind(
+            DigitalTwinStage.QUALITY_VALIDATION,
+            MethodCapability.ASSET_VALIDATE,
+            "physics_probe",
+        ),
     ),
 )
 ```
 
-权重应先写入制品存储，然后以 `ArtifactRef` 放入 `AlgorithmSpec.checkpoint`；不要在配方中写可变的文件路径或 `latest`。
+深度增强是唯一可省略阶段；其余阶段必须唯一且按固定顺序出现。更换源码、权重、配置或运行镜像
+都会产生不同配方证据，不能覆盖历史结果。
 
 ## 5. 构建与验收
 
@@ -131,16 +153,9 @@ asset = px.assets.get(result.asset)
 manifest = px.assets.get_build(result.build)
 ```
 
-构建 pipeline 必须返回与请求一致的资产身份、与配方完全对齐的阶段记录和 `digital_twin` 质量报告。未发布制品、缺失视觉/碰撞表示、无效摩擦关系或错误级质量问题都会阻止发布。
+至少检查：相机重投影误差、深度有效率与边界误差、几何 Chamfer/F-score、关节轴/原点/范围误差、
+碰撞近似误差、质量与摩擦拟合残差、穿模率、接触稳定性及多状态回放误差。没有真实参考值的指标
+必须标记不可用，不能用渲染图代替定量验收。
 
-## 资产语义
-
-最终 `AssetSpec` 至少包含：
-
-- 稳定的 link/joint 树，每个非根 link 只有一个父关节；
-- 分离的视觉和碰撞表示，且全部几何有精确内容摘要；
-- 单位化关节轴、合法限位、阻尼、摩擦及可选力/速度限制；
-- 每个 link 的质量、质心、正定惯量、摩擦和恢复系数；
-- 每个物性值的 `measured` / `inferred` / `default` 来源、不确定度和置信度。
-
-修改几何、关节、碰撞或物性时必须发布新版本；历史场景和运行通过摘要继续引用原资产。
+最终 `AssetSpec` 保存稳定 link/joint 树、分离的视觉/碰撞几何、单位化关节轴、合法限位以及带
+`measured` / `inferred` / `default` 来源、不确定度和置信度的物理参数。任何修改都发布新版本。

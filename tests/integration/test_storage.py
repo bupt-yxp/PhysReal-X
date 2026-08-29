@@ -10,6 +10,7 @@ import pytest
 from physrealx.domain import (
     ArtifactRef,
     EpisodeSummary,
+    MethodCapability,
     RunResult,
     RunSpec,
     RunStatus,
@@ -22,6 +23,7 @@ from physrealx.errors import (
     ResourceConflictError,
     ResourceNotFoundError,
 )
+from physrealx.methods import builtin_method
 from physrealx.storage import LocalArtifactStore, SQLiteRepository
 
 _RUN_ID = "00000000-0000-0000-0000-000000000001"
@@ -38,12 +40,24 @@ def _reference(resource_type: str, resource_id: str, digest: str) -> VersionedRe
 
 
 def _run_spec(digest: str, *, seed: int = 7) -> RunSpec:
+    backend = builtin_method(
+        MethodCapability.SIMULATION_RUN,
+        "reference",
+        input_contract="RunSpec",
+        output_contract="Episode",
+    ).bind()
+    policy = builtin_method(
+        MethodCapability.POLICY_INFERENCE,
+        "scripted",
+        input_contract="Frame",
+        output_contract="DataValue",
+    ).bind()
     return RunSpec(
         run_id=_RUN_ID,
         scene=_reference("scene", "drawer_lab", digest),
         task=_reference("task", "open_drawer", digest),
-        backend="reference",
-        policy="scripted",
+        backend=backend,
+        policy=policy,
         episode_count=1,
         base_seed=seed,
         dataset_id="drawer_dataset",

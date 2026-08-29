@@ -7,7 +7,7 @@ import random
 import uuid
 from collections.abc import Mapping
 
-from physrealx.contracts import API_VERSION, BackendCapabilities, Frame, StepResult
+from physrealx.contracts import BackendCapabilities, Frame, StepResult
 from physrealx.domain import (
     ActionSpec,
     AssetSpec,
@@ -19,6 +19,7 @@ from physrealx.domain import (
     JointSpec,
     JointType,
     JSONValue,
+    MethodCapability,
     ParameterSource,
     Predicate,
     PredicateOperator,
@@ -32,6 +33,7 @@ from physrealx.domain import (
     TaskSpec,
 )
 from physrealx.errors import DomainValidationError, InvalidStateTransitionError
+from physrealx.methods import builtin_method
 
 
 def _number(
@@ -185,9 +187,12 @@ class ReferenceDrawerSession:
 
 
 class ReferenceDrawerBackend:
-    name = "reference_drawer"
-    plugin_version = "1.0.0"
-    api_version = API_VERSION
+    descriptor = builtin_method(
+        MethodCapability.SIMULATION_RUN,
+        "reference_drawer",
+        input_contract="SceneSpec+TaskSpec+AssetSpec",
+        output_contract="SimulationSession",
+    )
 
     def capabilities(self) -> BackendCapabilities:
         return BackendCapabilities(
@@ -216,9 +221,12 @@ class ReferenceDrawerBackend:
 
 
 class ScriptedDrawerPolicy:
-    name = "scripted_drawer"
-    plugin_version = "1.0.0"
-    api_version = API_VERSION
+    descriptor = builtin_method(
+        MethodCapability.POLICY_INFERENCE,
+        "scripted_drawer",
+        input_contract="Frame+TaskSpec",
+        output_contract="DataValue",
+    )
 
     def __init__(self, config: Mapping[str, JSONValue]) -> None:
         _reject_unknown(
@@ -429,8 +437,8 @@ def reference_run(
         run_id=str(uuid.uuid5(uuid.NAMESPACE_URL, run_key)),
         scene=target_scene.reference(),
         task=target_task.reference(),
-        backend="reference_drawer",
-        policy="scripted_drawer",
+        backend=ReferenceDrawerBackend.descriptor.bind(),
+        policy=ScriptedDrawerPolicy.descriptor.bind(),
         episode_count=episode_count,
         base_seed=base_seed,
         dataset_id="drawer.demo",

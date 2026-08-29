@@ -1,151 +1,86 @@
 # 场景与任务 API
 
-## Scene API
+场景明确组合机器人、物体和环境资产；任务绑定场景实体并声明观测、动作、初始条件、成功条件与
+终止条件。自然语言和生成器只能产生待校验草案，不能绕过公共模型直接执行。
+
+## 场景
 
 ### `scenes.register`
 
 ```python
-px.scenes.register(
-    spec: SceneSpec,
-    *,
-    idempotency_key: str | None = None,
-) -> ResolvedRef[SceneSpec]
+px.scenes.register(spec: SceneSpec) -> VersionedRef
 ```
 
-解析全部资产引用、验证实体命名、位姿、传感器和随机化约束后发布场景。
+平台解析每个实体资产为带摘要引用，验证实体名唯一后原子发布场景。任务逻辑不得依赖实体数组下标。
 
-### `scenes.compose`
+### `scenes.get` / `scenes.list`
 
 ```python
-px.scenes.compose(
-    *,
-    resource_id: str,
-    version: str = "1.0.0",
-    template: SceneLike | None = None,
-    robot: AssetLike,
-    assets: Mapping[str, AssetLike],
-    sensors: Sequence[SensorSpec | str] = (),
-    randomization: RandomizationSpec | None = None,
-) -> ResolvedRef[SceneSpec]
+px.scenes.get(ref: VersionedRef) -> SceneSpec
+px.scenes.list() -> list[VersionedRef]
 ```
-
-从模板和资产引用构建场景并直接注册。`assets` 的键成为场景内稳定实体名。
-
-### `scenes.get`
 
 ```python
-px.scenes.get(ref: SceneLike) -> SceneSpec
+from physrealx import SceneEntityRole, SceneEntitySpec, SceneSpec
+
+scene = px.scenes.register(
+    SceneSpec(
+        resource_id="drawer_lab",
+        version="1.0.0",
+        display_name="Drawer lab",
+        entities=(
+            SceneEntitySpec(
+                name="drawer",
+                role=SceneEntityRole.OBJECT,
+                asset=drawer_ref,
+            ),
+        ),
+    )
+)
 ```
 
-### `scenes.validate`
-
-```python
-px.scenes.validate(
-    scene: SceneSpec | SceneLike,
-    *,
-    backend: str | None = None,
-    check_reachability: bool = False,
-) -> ValidationReport
-```
-
-### `scenes.materialize`
-
-```python
-px.scenes.materialize(
-    scene: SceneLike,
-    *,
-    backend: str,
-    seed: int,
-) -> JobRef[SceneInstance]
-```
-
-用于调试场景转换和随机化采样。`SceneInstance` 是有生命周期的后端实例，不是版本化公共资源；使用完必须释放。
-
-## Task API
+## 任务
 
 ### `tasks.register`
 
 ```python
-px.tasks.register(
-    spec: TaskSpec,
-    *,
-    idempotency_key: str | None = None,
-) -> ResolvedRef[TaskSpec]
+px.tasks.register(spec: TaskSpec) -> VersionedRef
 ```
 
-### `tasks.compile`
+注册时解析场景摘要，并确认 `subject_entity` 存在。谓词只能引用已声明的标量数值观测，动作和观测
+信号名称不能冲突。
+
+### `tasks.get` / `tasks.list`
 
 ```python
-px.tasks.compile(
-    draft: TaskDraft | str,
-    *,
-    scene: SceneLike,
-    resource_id: str | None = None,
-    version: str = "1.0.0",
-    compiler: str = "default",
-    config: Mapping[str, JSONValue] | None = None,
-) -> ResolvedRef[TaskSpec]
+px.tasks.get(ref: VersionedRef) -> TaskSpec
+px.tasks.list() -> list[VersionedRef]
 ```
 
-编译自然语言或结构化草案，输出确定性任务规格。若编译结果存在歧义或无法构造可判定成功条件，抛出 `TaskCompilationError`，不自动猜测。
+`TaskSpec` 至少固定：
 
-### `tasks.get`
+- 场景引用和主体实体；
+- 人类可读指令；
+- 初始、成功与终止谓词；
+- 观测 `SignalSpec` 和带上下界的 `ActionSpec`；
+- 最大步数与折扣。
+
+## 生成与编译方法
+
+场景生成、任务编译和轨迹规划通过方法能力注册，不向 `SceneSpec` / `TaskSpec` 添加算法专属字段：
 
 ```python
-px.tasks.get(ref: TaskLike) -> TaskSpec
+px.methods.list(MethodCapability.SCENE_GENERATE)
+px.methods.list(MethodCapability.TASK_COMPILE)
+px.methods.list(MethodCapability.TASK_PLAN)
+px.methods.list(MethodCapability.TASK_VALIDATE)
 ```
 
-### `tasks.validate`
-
-```python
-px.tasks.validate(
-    task: TaskSpec | TaskLike,
-    *,
-    scene: SceneLike | None = None,
-    backend: str | None = None,
-    policy: str | None = None,
-) -> ValidationReport
-```
-
-检查信号、条件、动作空间、实体引用、可达性以及后端/策略能力。
-
-### `tasks.instantiate`
-
-```python
-px.tasks.instantiate(
-    template: TaskLike,
-    *,
-    scene: SceneLike,
-    bindings: Mapping[str, str],
-    version: str,
-) -> ResolvedRef[TaskSpec]
-```
-
-将参数化任务模板绑定到具体场景实体。
-
-## 示例
-
-```python
-scene = px.scenes.compose(
-    resource_id="scene.drawer-table",
-    robot="franka.standard@1.0.0",
-    assets={"drawer": "drawer.real-001@1.0.0"},
-    sensors=("camera.front", "wrist.force_torque"),
-)
-
-task = px.tasks.compile(
-    "打开抽屉至少 30 厘米",
-    scene=scene,
-    resource_id="task.open-drawer",
-)
-
-px.tasks.validate(task, scene=scene, backend="isaac_lab").raise_for_errors()
-```
+生成结果必须先转换为公共模型，再经过实体解析、Schema、约束、可达性、碰撞和冻结种子仿真检查。
+模型生成的 Python 代码不能直接进入工作节点。
 
 ## 主要错误
 
-- `SceneCompositionError`：实体、位姿或模板绑定非法；
-- `RandomizationConstraintError`：随机变量违反联合约束；
-- `TaskCompilationError`：草案无法编译为可执行规格；
-- `SignalSchemaError`：观测、动作或条件信号不一致；
-- `CapabilityMismatchError`：后端或策略不支持任务要求。
+- `ResourceNotFoundError`：场景引用的资产或任务引用的场景不存在；
+- `ResourceConflictError`：引用摘要或不可变资源身份冲突；
+- `DomainValidationError`：实体、信号、谓词、动作边界或任务绑定不合法。

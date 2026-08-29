@@ -45,13 +45,14 @@ from physrealx.errors import (
     ResourceNotFoundError,
     SourcePackageError,
 )
-from physrealx.plugins import PluginDescriptor, PluginRegistry
+from physrealx.plugins import PluginRegistry
 from physrealx.reference import ReferenceDrawerBackend, ScriptedDrawerPolicy
 from physrealx.runtime import RunExecutor
 from physrealx.services import (
     AssetsService,
     DatasetsService,
     EvaluationsService,
+    MethodsService,
     RunsService,
     ScenesService,
     TasksService,
@@ -78,6 +79,7 @@ class PhysRealX:
         self.artifacts = artifacts
         self.plugins = plugins
         self._executor = RunExecutor(repository, artifacts, plugins)
+        self.methods = MethodsService(self)
         self.assets = AssetsService(self)
         self.scenes = ScenesService(self)
         self.tasks = TasksService(self)
@@ -103,22 +105,12 @@ class PhysRealX:
         plugins.register_importer(ArtModelingImporter())
         plugins.register_backend(ReferenceDrawerBackend())
         plugins.register_policy(
-            PluginDescriptor(
-                kind="policy",
-                name=ScriptedDrawerPolicy.name,
-                version=ScriptedDrawerPolicy.plugin_version,
-                api_version=ScriptedDrawerPolicy.api_version,
-            ),
+            ScriptedDrawerPolicy.descriptor,
             ScriptedDrawerPolicy,
         )
         plugins.register_trainer(TorchBehaviorCloningTrainer())
         plugins.register_policy(
-            PluginDescriptor(
-                kind="policy",
-                name=TorchBehaviorCloningPolicy.name,
-                version=TorchBehaviorCloningPolicy.plugin_version,
-                api_version=TorchBehaviorCloningPolicy.api_version,
-            ),
+            TorchBehaviorCloningPolicy.descriptor,
             lambda config: TorchBehaviorCloningPolicy(config, artifacts),
         )
         return plugins
@@ -134,7 +126,7 @@ class PhysRealX:
             raise
         except Exception as error:
             raise SourcePackageError(
-                f"observation importer {adapter.name!r} failed during inspection"
+                f"observation importer {adapter.descriptor.name!r} failed during inspection"
             ) from error
 
     def _ingest_asset_source(
@@ -161,13 +153,13 @@ class PhysRealX:
             raise
         except Exception as error:
             raise SourcePackageError(
-                f"observation importer {adapter.name!r} failed during ingestion"
+                f"observation importer {adapter.descriptor.name!r} failed during ingestion"
             ) from error
         if (
             manifest.resource_id != resource_id
             or manifest.version != version
-            or manifest.importer != adapter.name
-            or manifest.importer_version != adapter.plugin_version
+            or manifest.importer != adapter.descriptor.name
+            or manifest.importer_version != adapter.descriptor.version
         ):
             raise DomainValidationError("observation importer returned mismatched identity")
         referenced = tuple(
@@ -210,19 +202,20 @@ class PhysRealX:
             )
         source = self._load_registered(registered_source, ObservationSetManifest)
         pipeline = self.plugins.asset_pipeline(spec.recipe.pipeline)
-        if pipeline.plugin_version != spec.recipe.pipeline_version:
+        if pipeline.descriptor.version != spec.recipe.pipeline_version:
             raise AssetBuildError(
                 "digital-twin pipeline version does not match the recipe",
                 details={
                     "expected": spec.recipe.pipeline_version,
-                    "actual": pipeline.plugin_version,
+                    "actual": pipeline.descriptor.version,
                 },
             )
         for step in spec.recipe.steps:
-            checkpoint = step.algorithm.checkpoint
+            self.plugins.resolve_method(step.method)
+            checkpoint = step.method.checkpoint
             if checkpoint is not None and not self.artifacts.verify(checkpoint):
                 raise AssetBuildError(
-                    f"algorithm checkpoint is unavailable for stage {step.stage.value!r}"
+                    f"method checkpoint is unavailable for stage {step.stage.value!r}"
                 )
 
         try:
@@ -231,7 +224,7 @@ class PhysRealX:
             raise
         except Exception as error:
             raise AssetBuildError(
-                f"digital-twin pipeline {pipeline.name!r} failed during execution"
+                f"digital-twin pipeline {pipeline.descriptor.name!r} failed during execution"
             ) from error
         try:
             ensure_pipeline_output_identity(spec, output.asset)
@@ -243,8 +236,8 @@ class PhysRealX:
         if tuple(item.stage for item in output.stages) != expected_steps:
             raise AssetBuildError("pipeline stage records do not exactly match the recipe")
         for recipe_step, record in zip(spec.recipe.steps, output.stages):
-            if record.algorithm != recipe_step.algorithm:
-                raise AssetBuildError("pipeline stage algorithm does not match the recipe")
+            if record.method != recipe_step.method:
+                raise AssetBuildError("pipeline stage method does not match the recipe")
             if any(not self.artifacts.verify(item) for item in record.outputs):
                 raise AssetBuildError("pipeline returned an unpublished stage artifact")
 
@@ -341,7 +334,12 @@ class PhysRealX:
             raise ResourceConflictError("training dataset digest does not match the registry")
         dataset = self.datasets.get(registered)
         episodes = (self._executor.load_episode(summary) for summary in dataset.episodes)
-        trainer = self.plugins.trainer(spec.trainer)
+        trainer = self.plugins.trainer(spec.trainer.name)
+        self.plugins.resolve_method(spec.trainer)
+        if spec.trainer.checkpoint is not None and not self.artifacts.verify(
+            spec.trainer.checkpoint
+        ):
+            raise DomainValidationError("trainer checkpoint is not present in artifact storage")
         manifest = trainer.train(spec, dataset, episodes, self.artifacts)
         if (
             manifest.resource_id != spec.resource_id
@@ -349,11 +347,10 @@ class PhysRealX:
             or manifest.dataset != registered
         ):
             raise DomainValidationError("trainer returned a model outside the requested lineage")
-        if manifest.trainer != trainer.name or manifest.trainer_version != trainer.plugin_version:
-            raise DomainValidationError("trainer returned mismatched plugin identity")
-        policy = self.plugins.policy_descriptor(manifest.policy)
-        if manifest.policy_version != policy.version:
-            raise DomainValidationError("trainer returned an unavailable inference policy version")
+        if manifest.trainer != spec.trainer:
+            raise DomainValidationError("trainer returned mismatched method identity")
+        self.plugins.policy_descriptor(manifest.policy.name)
+        self.plugins.resolve_method(manifest.policy)
         if manifest.action_signal != dataset.action_schema:
             raise DomainValidationError("trainer changed the dataset action schema")
         if not self.artifacts.verify(manifest.weights):
@@ -395,9 +392,14 @@ class PhysRealX:
         evaluation_payload = run.model_dump(mode="json")
         evaluation_payload.update(
             {
-                "policy": model_manifest.policy,
-                "policy_version": model_manifest.policy_version,
-                "policy_config": {"model_digest": registered_model.digest or ""},
+                "policy": model_manifest.policy.model_copy(
+                    update={
+                        "config": {
+                            **model_manifest.policy.config,
+                            "model_digest": registered_model.digest or "",
+                        }
+                    }
+                ).model_dump(mode="json"),
                 "episode_count": episode_count,
                 "base_seed": base_seed,
                 "dataset_id": f"{resource_id}.episodes",

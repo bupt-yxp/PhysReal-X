@@ -11,6 +11,7 @@ from physrealx.diagnostics import DoctorReport
 from physrealx.domain import ResourceType, TrainingSpec, VersionedRef
 from physrealx.platform import PhysRealX
 from physrealx.reference import reference_asset, reference_run, reference_scene, reference_task
+from physrealx.training import TorchBehaviorCloningTrainer
 
 
 def _invoke(
@@ -60,12 +61,12 @@ def test_cli_runs_complete_local_workspace_workflow(
 
     status, output, error = _invoke(
         capsys,
-        ["plugins", "--workspace", str(workspace)],
+        ["methods", "--workspace", str(workspace)],
     )
     assert status == 0
     assert not error
-    plugins = json.loads(output)
-    assert {item["name"] for item in plugins} == {
+    methods = json.loads(output)
+    assert {item["name"] for item in methods} == {
         "artmodeling",
         "reference_drawer",
         "scripted_drawer",
@@ -156,7 +157,7 @@ def test_cli_validates_every_supported_contract_kind(
                 version="1.0.0",
                 digest=f"sha256:{'a' * 64}",
             ),
-            trainer="torch_bc",
+            trainer=TorchBehaviorCloningTrainer.descriptor.bind(),
         ),
     }
     path = tmp_path / f"{kind}.json"
@@ -288,8 +289,9 @@ def test_cli_trains_and_evaluates_registered_model(
             resource_id="drawer.cli.bc",
             version="1.0.0",
             dataset=record.result.dataset,
-            trainer="torch_bc",
-            config={"device": "cpu", "epochs": 20, "seed": 13},
+            trainer=TorchBehaviorCloningTrainer.descriptor.bind(
+                config={"device": "cpu", "epochs": 20, "seed": 13}
+            ),
         ),
     )
     status, output, error = _invoke(

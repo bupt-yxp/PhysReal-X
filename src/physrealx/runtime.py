@@ -69,18 +69,19 @@ class RunExecutor:
             raise DomainValidationError(
                 f"run requests undeclared observation signals: {sorted(unknown)!r}"
             )
-        backend = self._plugins.backend(spec.backend)
-        policy = self._plugins.policy_descriptor(spec.policy)
-        if spec.backend_version is not None and spec.backend_version != backend.plugin_version:
-            raise ResourceConflictError("requested simulation backend version is not registered")
-        if spec.policy_version is not None and spec.policy_version != policy.version:
-            raise ResourceConflictError("requested policy version is not registered")
+        self._plugins.backend(spec.backend.name)
+        self._plugins.resolve_method(spec.backend)
+        self._plugins.policy_descriptor(spec.policy.name)
+        self._plugins.resolve_method(spec.policy)
+        for method in (spec.backend, spec.policy):
+            if method.checkpoint is not None and not self._artifacts.verify(method.checkpoint):
+                raise DomainValidationError(
+                    f"method checkpoint is unavailable for {method.capability.value}:{method.name}"
+                )
         resolved = spec.model_copy(
             update={
                 "scene": scene_ref,
                 "task": task_ref,
-                "backend_version": backend.plugin_version,
-                "policy_version": policy.version,
             }
         )
         return resolved, scene, assets, task
@@ -97,12 +98,12 @@ class RunExecutor:
         self._repository.transition_run(resolved.run_id, RunStatus.RUNNING)
         summaries: list[EpisodeSummary] = []
         try:
-            backend = self._plugins.backend(resolved.backend)
+            backend = self._plugins.backend(resolved.backend.name)
             self._preflight(backend.capabilities(), task)
             with ExitStack() as resources:
-                session = backend.create_session(scene, assets, task, resolved.backend_config)
+                session = backend.create_session(scene, assets, task, resolved.backend.config)
                 resources.callback(session.close)
-                policy = self._plugins.policy(resolved.policy, resolved.policy_config)
+                policy = self._plugins.policy(resolved.policy.name, resolved.policy.config)
                 resources.callback(policy.close)
                 for index in range(resolved.episode_count):
                     episode = self._rollout(
@@ -147,10 +148,8 @@ class RunExecutor:
                 metadata={
                     "scene_digest": resolved.scene.digest or "",
                     "task_digest": resolved.task.digest or "",
-                    "backend": resolved.backend,
-                    "backend_version": resolved.backend_version or "",
-                    "policy": resolved.policy,
-                    "policy_version": resolved.policy_version or "",
+                    "backend_method": resolved.backend.model_dump(mode="json"),
+                    "policy_method": resolved.policy.model_dump(mode="json"),
                 },
             )
             dataset_artifact = self._artifacts.put_json(
@@ -328,10 +327,8 @@ class RunExecutor:
             seed=seed,
             scene=spec.scene,
             task=spec.task,
-            backend=backend.name,
-            backend_version=backend.plugin_version,
-            policy=policy.name,
-            policy_version=policy.plugin_version,
+            backend=spec.backend,
+            policy=spec.policy,
             steps=tuple(steps),
             success=success,
             failure_reason=(

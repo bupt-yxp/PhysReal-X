@@ -17,11 +17,15 @@ from physrealx.digital_twin import (
     SourceInspection,
 )
 from physrealx.domain import (
+    ArtifactRef,
     AssetSpec,
     DatasetManifest,
     Episode,
     EvaluationReport,
     JSONValue,
+    MethodCapability,
+    MethodDescriptor,
+    MethodSpec,
     ModelManifest,
     ResourceType,
     RunRecord,
@@ -101,6 +105,38 @@ class AssetsService:
     ) -> AssetValidationReport:
         target = asset if isinstance(asset, AssetSpec) else self.get(asset)
         return self._platform._validate_asset(target, profile)
+
+
+class MethodsService:
+    """Inspect and bind the exact implementations installed in this workspace."""
+
+    def __init__(self, platform: PhysRealX) -> None:
+        self._platform = platform
+
+    def register(self, descriptor: MethodDescriptor) -> None:
+        self._platform.plugins.register_method(descriptor)
+
+    def get(self, capability: MethodCapability, name: str) -> MethodDescriptor:
+        return self._platform.plugins.method_descriptor(capability, name)
+
+    def list(
+        self,
+        capability: MethodCapability | None = None,
+    ) -> tuple[MethodDescriptor, ...]:
+        return self._platform.plugins.descriptors(capability)
+
+    def bind(
+        self,
+        capability: MethodCapability,
+        name: str,
+        *,
+        checkpoint: ArtifactRef | None = None,
+        config: Mapping[str, JSONValue] | None = None,
+    ) -> MethodSpec:
+        descriptor = self.get(capability, name)
+        if checkpoint is not None and not self._platform.artifacts.verify(checkpoint):
+            raise DomainValidationError("method checkpoint is not present in artifact storage")
+        return descriptor.bind(checkpoint=checkpoint, config=config)
 
 
 class ScenesService:
@@ -215,6 +251,7 @@ __all__ = [
     "AssetsService",
     "DatasetsService",
     "EvaluationsService",
+    "MethodsService",
     "RunsService",
     "ScenesService",
     "TasksService",

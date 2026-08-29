@@ -1,133 +1,44 @@
-# 评测、部署与反馈闭环
+# 评测、真机部署与失败反馈
 
-平台的最终价值不是在仿真中获得高成功率，而是让策略在可解释的评测体系下进入真实机器人，并把失败转化为下一轮数据生成计划。
+完整闭环采用逐级门禁：
 
-## 评测矩阵
-
-评测矩阵是冻结的场景与任务集合：
-
-```yaml
-resource_id: evaluation.drawer-heldout
-version: 1.0.0
-axes:
-  asset_instance: [seen, unseen]
-  scene_layout: [seen, unseen]
-  lighting: [nominal, hard]
-  friction: [low, nominal, high]
-  language: [canonical, paraphrase]
-repetitions: 20
+```text
+离线回放 → 冻结仿真评测 → shadow → 限速/限力 canary → 真机运行
+→ MCAP 留证 → 故障确认 → 定向数据集 → 再训练 → 全量回归
 ```
 
-矩阵保证不同模型在相同条件下比较，并防止只报告有利场景。
-
-## 提交评测
+## 冻结评测
 
 ```python
-evaluation = px.evaluations.submit(
-    model="model.drawer-dp@1.0.0",
-    matrix="evaluation.drawer-heldout@1.0.0",
-    backend="isaac_lab",
-    seed=100_000,
+report_ref = px.evaluations.submit(
+    resource_id="drawer.policy.heldout",
+    version="1.0.0",
+    model=model_ref,
+    run=heldout_run,
+    episode_count=200,
+    base_seed=100_000,
 )
-report = px.evaluations.wait(evaluation).report
+report = px.evaluations.get_report(report_ref)
 ```
 
-## 指标
+训练与评测不得共用随机种子或资产/场景切分。总体成功率之外，还需报告逐任务置信区间、完成时间、
+接触安全、推理延迟和未见资产最差分组。
 
-至少覆盖：
+## 真机门禁
 
-| 维度 | 指标示例 |
-| --- | --- |
-| 任务 | 成功率、阶段完成率、恢复率、超时率 |
-| 轨迹 | 路径长度、动作平滑度、执行时间、末端误差 |
-| 接触 | 峰值力、冲量、滑移、非目标碰撞、安全触发 |
-| 泛化 | 新资产、新场景、新语言和参数区间成功率 |
-| 效率 | 推理延迟、吞吐、显存、能耗 |
-| 校准 | 仿真—真实指标差、置信区间和显著性 |
+1. 模型输入输出与机器人 Schema、频率、单位、frame 和关节顺序完全一致；
+2. 急停、watchdog、工作空间、速度、力矩、力和碰撞限制独立于学习策略；
+3. 先做日志回放和 shadow，再做有人看护的限速/限力 canary；
+4. rosbag2 + MCAP 保存统一时钟下的观测、动作、TF、诊断和任务判据；
+5. 任一关键安全事件阻止扩大部署范围。
 
-聚合指标必须保留分层结果，不能用总体成功率掩盖某一物体或条件下的系统性失败。
+## 故障归因
 
-## 失败归因
+固定原因族覆盖传感/同步/标定、感知/姿态/语义、策略无进展/振荡、控制跟踪/超时、接触滑移/
+卡死/超力/碰撞、任务判据及基础设施。每条结论必须指向发生时刻和证据；模型 critic 的建议需经
+规则或人工确认，无法确认时保留 `unknown`。
 
-失败类别：
+## 定向再训练
 
-- `perception`：目标、姿态、深度或部件识别错误；
-- `planning`：任务分解、路径或可达性错误；
-- `control`：跟踪、增益、时延或动作饱和；
-- `contact`：抓取、摩擦、碰撞或力控制问题；
-- `timeout`：未在预算内完成；
-- `data_quality`：传感缺失、时间错位或标注错误；
-- `unknown`：证据不足，等待人工复核。
-
-归因记录必须引用失败 Episode、模型、场景、任务和部署版本，并附带证据窗口。
-
-## 部署前门禁
-
-真实机器人部署前必须通过：
-
-1. 模型输入输出模式与机器人适配器兼容；
-2. 控制频率、坐标 frame、关节顺序和单位一致；
-3. 动作限制、工作空间、速度、力和碰撞安全策略可用；
-4. 延迟、丢帧和传感降级测试通过；
-5. 仿真评测达到任务门槛；
-6. 人工急停、看护模式和回滚策略已配置。
-
-## 部署
-
-```python
-deployment = px.deployments.deploy(
-    model="model.drawer-dp@1.0.0",
-    robot="robot.franka-lab-01",
-    task="task.open-drawer@1.0.0",
-    safety_profile="manipulation.conservative@1.0.0",
-    mode="shadow",
-)
-```
-
-建议按 `replay → shadow → supervised → production` 逐级放开权限。部署记录保存模型摘要、机器人校准、控制器、ROS 2 图、安全配置和操作者。
-
-## 真机 Episode
-
-真实执行使用与仿真相同的 Episode 合同，`source="real"`。这样可以：
-
-- 直接比较同一任务的仿真和真实信号；
-- 将真实失败加入评测与训练视图；
-- 反演物理参数和传感噪声；
-- 定位 Sim-to-Real 差异来自视觉、动力学还是控制。
-
-## 反馈到再生成
-
-```python
-analysis = px.feedback.analyze(
-    deployment=deployment,
-    episodes="query://deployment.failures",
-)
-
-plan = px.feedback.plan_regeneration(
-    analysis,
-    budget={"episodes": 20_000, "gpu_hours": 100},
-)
-
-new_dataset = px.feedback.execute(plan)
-```
-
-`RegenerationPlan` 应明确：
-
-- 目标失败簇与证据；
-- 需要调整的资产、物理、场景、语言或策略变量；
-- 采样分布和优先级；
-- 成功/失败/恢复比例；
-- 预算、停止条件和验收指标；
-- 新数据与原数据的合并策略。
-
-## 闭环停止条件
-
-闭环不是无限重训。达到以下任一条件时应暂停：
-
-- 真实成功率和安全指标达到门槛；
-- 新增数据的边际收益低于阈值；
-- 失败属于硬件、任务定义或资产不可识别问题；
-- 数据预算或真机风险超过上限；
-- 仿真—真实差异无法由当前参数族解释，需要升级模型。
-
-每轮闭环产生独立数据集、模型和评测版本，保留完整对比链路。
+从确认失败和 OOD 切片建立新的不可变数据集版本，保留父 Episode、模型、资产、场景、任务和方法
+来源。再训练只有在独立 failure holdout 改善且旧回归集不退化时才可晋级。

@@ -53,6 +53,8 @@ _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _URI = re.compile(r"^[a-z][a-z0-9+.-]*://\S+$")
 _UNIT = re.compile(r"^(?:1|[A-Za-zµ°%][A-Za-z0-9µ°%*/^()._-]{0,62})$")
 _FRAME = re.compile(r"^[A-Za-z][A-Za-z0-9_./:-]{0,126}$")
+_SPDX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.+-]{0,63}$")
+_SOURCE_REVISION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:+-]{0,127}$")
 
 PositiveFloat = Annotated[float, Field(gt=0, allow_inf_nan=False)]
 NonNegativeFloat = Annotated[float, Field(ge=0, allow_inf_nan=False)]
@@ -221,6 +223,183 @@ class ResourceType(StrEnum):
     DATASET = "dataset"
     MODEL = "model"
     EVALUATION = "evaluation"
+
+
+class MethodCapability(StrEnum):
+    """One replaceable implementation boundary in the platform."""
+
+    OBSERVATION_IMPORT = "observation.import"
+    ASSET_BUILD = "asset.build"
+    ASSET_NORMALIZE = "asset.normalize"
+    CAMERA_RECOVER = "camera.recover"
+    DEPTH_ENHANCE = "depth.enhance"
+    GEOMETRY_RECONSTRUCT = "geometry.reconstruct"
+    ARTICULATION_RECOVER = "articulation.recover"
+    COLLISION_BUILD = "collision.build"
+    PHYSICS_CALIBRATE = "physics.calibrate"
+    ASSET_GENERATE = "asset.generate"
+    ASSET_PACKAGE = "asset.package"
+    ASSET_VALIDATE = "asset.validate"
+    SCENE_GENERATE = "scene.generate"
+    SCENE_COMPOSE = "scene.compose"
+    TASK_COMPILE = "task.compile"
+    TASK_PLAN = "task.plan"
+    TRAJECTORY_GENERATE = "trajectory.generate"
+    TASK_VALIDATE = "task.validate"
+    SIMULATION_COMPILE = "simulation.compile"
+    SIMULATION_RUN = "simulation.run"
+    RENDER_GENERATE = "render.generate"
+    EVENT_SYNTHESIZE = "event.synthesize"
+    POINT_CLOUD_PROJECT = "point_cloud.project"
+    RANDOMIZATION_APPLY = "randomization.apply"
+    EPISODE_PACK = "episode.pack"
+    DATASET_INGEST = "dataset.ingest"
+    DATASET_VALIDATE = "dataset.validate"
+    DATASET_SNAPSHOT = "dataset.snapshot"
+    POLICY_TRAIN = "policy.train"
+    POLICY_INFERENCE = "policy.inference"
+    WORLD_MODEL_TRAIN = "world_model.train"
+    WORLD_MODEL_ROLLOUT = "world_model.rollout"
+    MODEL_REGISTER = "model.register"
+    EVALUATION_RUN = "evaluation.run"
+    DEPLOYMENT_STAGE = "deployment.stage"
+    TELEMETRY_RECORD = "telemetry.record"
+    FAILURE_ANALYZE = "failure.analyze"
+    FEEDBACK_BUILD_DATASET = "feedback.build_dataset"
+
+
+class MethodMaturity(StrEnum):
+    STABLE = "stable"
+    EXPERIMENTAL = "experimental"
+
+
+class MethodExecutionMode(StrEnum):
+    IN_PROCESS = "in_process"
+    CONTAINER = "container"
+
+
+class MethodAccelerator(StrEnum):
+    ANY = "any"
+    CPU = "cpu"
+    CUDA = "cuda"
+
+
+class MethodRuntime(DomainModel):
+    """Pinned execution requirements for a method implementation."""
+
+    mode: MethodExecutionMode
+    accelerator: MethodAccelerator = MethodAccelerator.ANY
+    python: str = Field(min_length=1, max_length=127)
+    image_digest: str | None = None
+    minimum_vram_gb: NonNegativeFloat | None = None
+
+    @field_validator("image_digest")
+    @classmethod
+    def validate_image_digest(cls, value: str | None) -> str | None:
+        if value is not None and _DIGEST.fullmatch(value) is None:
+            raise ValueError("method image_digest must be a SHA-256 digest")
+        return value
+
+    @model_validator(mode="after")
+    def validate_execution_mode(self) -> MethodRuntime:
+        if self.mode is MethodExecutionMode.CONTAINER and self.image_digest is None:
+            raise ValueError("container methods require an immutable image_digest")
+        if self.accelerator is not MethodAccelerator.CUDA and self.minimum_vram_gb is not None:
+            raise ValueError("minimum_vram_gb is only valid for CUDA methods")
+        return self
+
+
+class MethodDescriptor(DomainModel):
+    """Auditable identity and capability declaration for one installed method."""
+
+    capability: MethodCapability
+    name: str
+    version: str
+    api_version: str
+    source_uri: str
+    source_revision: str
+    license_spdx: str
+    maturity: MethodMaturity = MethodMaturity.STABLE
+    runtime: MethodRuntime
+    input_contract: str = Field(min_length=1, max_length=127)
+    output_contract: str = Field(min_length=1, max_length=127)
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        return _identifier(value, "method name")
+
+    @field_validator("version")
+    @classmethod
+    def validate_version(cls, value: str) -> str:
+        return _semver(value)
+
+    @field_validator("api_version")
+    @classmethod
+    def validate_api_version(cls, value: str) -> str:
+        if not value.isdigit() or int(value) < 1:
+            raise ValueError("method api_version must be a positive integer string")
+        return value
+
+    @field_validator("source_uri")
+    @classmethod
+    def validate_source_uri(cls, value: str) -> str:
+        if _URI.fullmatch(value) is None:
+            raise ValueError("method source_uri must be absolute and include a scheme")
+        return value
+
+    @field_validator("source_revision")
+    @classmethod
+    def validate_source_revision(cls, value: str) -> str:
+        if _SOURCE_REVISION.fullmatch(value) is None or value.lower() in {
+            "head",
+            "latest",
+            "main",
+            "master",
+        }:
+            raise ValueError("method source_revision must identify an immutable release")
+        return value
+
+    @field_validator("license_spdx")
+    @classmethod
+    def validate_license(cls, value: str) -> str:
+        if _SPDX.fullmatch(value) is None:
+            raise ValueError("license_spdx must be a compact SPDX identifier")
+        return value
+
+    def bind(
+        self,
+        *,
+        checkpoint: ArtifactRef | None = None,
+        config: Mapping[str, JsonValue] | None = None,
+    ) -> MethodSpec:
+        """Freeze this installed descriptor into a reproducible recipe selection."""
+
+        return MethodSpec(
+            descriptor=self,
+            checkpoint=checkpoint,
+            config=dict(config or {}),
+        )
+
+
+class MethodSpec(DomainModel):
+    """A method descriptor plus immutable weights and invocation configuration."""
+
+    descriptor: MethodDescriptor
+    checkpoint: ArtifactRef | None = None
+    config: dict[str, JsonValue] = Field(default_factory=dict)
+
+    @property
+    def capability(self) -> MethodCapability:
+        return self.descriptor.capability
+
+    @property
+    def name(self) -> str:
+        return self.descriptor.name
+
+    @property
+    def version(self) -> str:
+        return self.descriptor.version
 
 
 class ArtifactRef(DomainModel):
@@ -872,17 +1051,13 @@ class RunSpec(DomainModel):
     run_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     scene: VersionedRef
     task: VersionedRef
-    backend: str
-    backend_version: str | None = None
-    policy: str
-    policy_version: str | None = None
+    backend: MethodSpec
+    policy: MethodSpec
     episode_count: int = Field(gt=0, le=1_000_000)
     base_seed: int = Field(ge=0, lt=2**63)
     dataset_id: str
     dataset_version: str
     record_signals: tuple[str, ...]
-    backend_config: dict[str, JsonValue] = Field(default_factory=dict)
-    policy_config: dict[str, JsonValue] = Field(default_factory=dict)
     tags: tuple[str, ...] = ()
 
     @field_validator("run_id")
@@ -893,7 +1068,7 @@ class RunSpec(DomainModel):
         except ValueError as error:
             raise ValueError("run_id must be a UUID") from error
 
-    @field_validator("backend", "policy", "dataset_id")
+    @field_validator("dataset_id")
     @classmethod
     def validate_names(cls, value: str, info: object) -> str:
         return _identifier(value, getattr(info, "field_name", "identifier"))
@@ -902,11 +1077,6 @@ class RunSpec(DomainModel):
     @classmethod
     def validate_dataset_version(cls, value: str) -> str:
         return _semver(value)
-
-    @field_validator("backend_version", "policy_version")
-    @classmethod
-    def validate_optional_plugin_versions(cls, value: str | None) -> str | None:
-        return _semver(value) if value is not None else None
 
     @field_validator("record_signals")
     @classmethod
@@ -925,6 +1095,10 @@ class RunSpec(DomainModel):
             raise ValueError("RunSpec.scene must reference a scene")
         if self.task.resource_type is not ResourceType.TASK:
             raise ValueError("RunSpec.task must reference a task")
+        if self.backend.capability is not MethodCapability.SIMULATION_RUN:
+            raise ValueError("RunSpec.backend requires simulation.run capability")
+        if self.policy.capability is not MethodCapability.POLICY_INFERENCE:
+            raise ValueError("RunSpec.policy requires policy.inference capability")
         return self
 
 
@@ -968,10 +1142,8 @@ class Episode(DomainModel):
     seed: int = Field(ge=0, lt=2**63)
     scene: VersionedRef
     task: VersionedRef
-    backend: str
-    backend_version: str
-    policy: str
-    policy_version: str
+    backend: MethodSpec
+    policy: MethodSpec
     steps: tuple[EpisodeStep, ...]
     success: bool
     failure_reason: str | None = Field(default=None, max_length=1024)
@@ -992,16 +1164,6 @@ class Episode(DomainModel):
             return str(uuid.UUID(value))
         except ValueError as error:
             raise ValueError("run_id must be a UUID") from error
-
-    @field_validator("backend", "policy")
-    @classmethod
-    def validate_plugin_names(cls, value: str, info: object) -> str:
-        return _identifier(value, getattr(info, "field_name", "plugin"))
-
-    @field_validator("backend_version", "policy_version")
-    @classmethod
-    def validate_plugin_versions(cls, value: str) -> str:
-        return _semver(value)
 
     @model_validator(mode="after")
     def validate_episode(self) -> Episode:
@@ -1039,6 +1201,10 @@ class Episode(DomainModel):
             raise ValueError("Episode.scene must reference a scene")
         if self.task.resource_type is not ResourceType.TASK:
             raise ValueError("Episode.task must reference a task")
+        if self.backend.capability is not MethodCapability.SIMULATION_RUN:
+            raise ValueError("Episode.backend requires simulation.run capability")
+        if self.policy.capability is not MethodCapability.POLICY_INFERENCE:
+            raise ValueError("Episode.policy requires policy.inference capability")
 
         observation_keys = set(self.steps[0].observations)
         state_keys = set(self.steps[0].state)
@@ -1168,10 +1334,8 @@ class ModelManifest(DomainModel):
     schema_version: Literal[1] = SCHEMA_VERSION
     resource_id: str
     version: str
-    trainer: str
-    trainer_version: str
-    policy: str
-    policy_version: str
+    trainer: MethodSpec
+    policy: MethodSpec
     dataset: VersionedRef
     weights: ArtifactRef
     observation_signals: tuple[SignalSpec, ...]
@@ -1180,12 +1344,12 @@ class ModelManifest(DomainModel):
     metrics: dict[str, float]
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
-    @field_validator("resource_id", "trainer", "policy")
+    @field_validator("resource_id")
     @classmethod
     def validate_identifiers(cls, value: str, info: object) -> str:
         return _identifier(value, getattr(info, "field_name", "identifier"))
 
-    @field_validator("version", "trainer_version", "policy_version")
+    @field_validator("version")
     @classmethod
     def validate_versions(cls, value: str) -> str:
         return _semver(value)
@@ -1194,6 +1358,10 @@ class ModelManifest(DomainModel):
     def validate_model(self) -> ModelManifest:
         if self.dataset.resource_type is not ResourceType.DATASET or not self.dataset.resolved:
             raise ValueError("model dataset must be a resolved dataset reference")
+        if self.trainer.capability is not MethodCapability.POLICY_TRAIN:
+            raise ValueError("ModelManifest.trainer requires policy.train capability")
+        if self.policy.capability is not MethodCapability.POLICY_INFERENCE:
+            raise ValueError("ModelManifest.policy requires policy.inference capability")
         if any(not math.isfinite(value) for value in self.metrics.values()):
             raise ValueError("model metrics must be finite")
         names = [item.name for item in self.observation_signals]
@@ -1215,10 +1383,9 @@ class TrainingSpec(DomainModel):
     resource_id: str
     version: str
     dataset: VersionedRef
-    trainer: str
-    config: dict[str, JsonValue] = Field(default_factory=dict)
+    trainer: MethodSpec
 
-    @field_validator("resource_id", "trainer")
+    @field_validator("resource_id")
     @classmethod
     def validate_identifiers(cls, value: str, info: object) -> str:
         return _identifier(value, getattr(info, "field_name", "identifier"))
@@ -1232,6 +1399,8 @@ class TrainingSpec(DomainModel):
     def validate_training(self) -> TrainingSpec:
         if self.dataset.resource_type is not ResourceType.DATASET or not self.dataset.resolved:
             raise ValueError("training requires a resolved dataset reference")
+        if self.trainer.capability is not MethodCapability.POLICY_TRAIN:
+            raise ValueError("TrainingSpec.trainer requires policy.train capability")
         return self
 
 
@@ -1415,6 +1584,13 @@ __all__ = [
     "JSONValue",
     "JointSpec",
     "JointType",
+    "MethodAccelerator",
+    "MethodCapability",
+    "MethodDescriptor",
+    "MethodExecutionMode",
+    "MethodMaturity",
+    "MethodRuntime",
+    "MethodSpec",
     "ModelManifest",
     "ParameterSource",
     "PoseSpec",

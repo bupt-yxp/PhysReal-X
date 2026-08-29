@@ -1,6 +1,6 @@
 # 资产 API
 
-资产服务处理已采集数据包、数字孪生构建和版本化资产；不提供相机、力传感器或采集设备控制接口。
+资产服务从已采集数据包开始，发布观测集、构建数字孪生并校验可仿真资产；不控制相机或采集设备。
 
 ## 源数据预检
 
@@ -14,11 +14,11 @@ px.assets.inspect_source(
 ) -> SourceInspection
 ```
 
-只读检查目录结构、模态、状态帧数、RGB-D 对齐、标定缺失和不安全链接，不写入工作区。
+只读检查目录结构、模态、状态帧数、RGB-D 对齐、标定缺失和不安全链接。内置
+`artmodeling` 方法将 `real/can/start`、`real/can/end` 作为必需重建状态，将
+`real/cmp`、`real/video`、`real/recon` 和 `sim` 作为可选证据或候选制品。
 
-`ArtModelingImporter` 将 `real/can/start` 和 `real/can/end` 视为必需重建状态，将 `real/cmp/start` 和 `real/video` 视为可选验证或时序观测。
-
-## 已采集数据导入
+## 观测集导入
 
 ### `assets.ingest`
 
@@ -34,7 +34,8 @@ px.assets.ingest(
 ) -> VersionedRef
 ```
 
-将通过预检的文件流式写入内容寻址存储，并发布不可变 `ObservationSetManifest`。ArtModeling 导入必须显式提供 `depth_unit` 和 `coordinate_frame`，不允许平台猜测尺度或坐标语义。
+文件经流式 SHA-256 校验后写入内容寻址存储，再原子发布不可变 `ObservationSetManifest`。
+ArtModeling 导入必须显式提供深度单位和坐标系，平台不猜测尺度或 frame。
 
 ```python
 source = px.assets.ingest(
@@ -53,7 +54,18 @@ px.assets.get_observations(ref: VersionedRef) -> ObservationSetManifest
 px.assets.list_observations() -> list[VersionedRef]
 ```
 
-读取观测集清单或列出已发布版本，清单中每个原始文件都保留 SHA-256 摘要、字节数和媒体类型。
+## 方法目录
+
+### `methods.list` / `methods.get` / `methods.bind`
+
+```python
+px.methods.list(capability=None) -> tuple[MethodDescriptor, ...]
+px.methods.get(capability, name) -> MethodDescriptor
+px.methods.bind(capability, name, *, checkpoint=None, config=None) -> MethodSpec
+```
+
+扩展包安装并注册方法后，用户按能力选择实现。`bind` 会冻结完整方法描述符、配置和可选权重
+摘要；未写入本工作区制品存储的权重会被拒绝。
 
 ## 数字孪生构建
 
@@ -63,50 +75,78 @@ px.assets.list_observations() -> list[VersionedRef]
 px.assets.build(spec: DigitalTwinBuildSpec) -> DigitalTwinBuildResult
 ```
 
-`DigitalTwinBuildSpec` 把整体 pipeline 和每个阶段的方法分开；`ArtGS` 只能出现在铰接重建阶段，不能代替整条流水线。
+`DigitalTwinBuildSpec` 分离整体 worker 与逐阶段方法。每个阶段只接受匹配的
+`MethodCapability`，不能用一个 `method` 指代整条链路。
 
-| 阶段 | 职责 | 可选方法 / 开源基线 |
+| 阶段 | 所需能力 | 典型方法 |
 | --- | --- | --- |
-| `normalization` | 解码、单位、坐标、命名和状态对齐 | OpenCV、Open3D |
-| `camera_recovery` | 使用已知标定或恢复相机位姿 | COLMAP、VGGT |
-| `depth_enhancement` | 可选的 RGB-D 深度补全 | OMNI-DC、CompletionFormer |
-| `articulated_reconstruction` | 恢复几何、部件、关节轴与范围 | ArtGS（方案方法）、VideoArtGS、FreeArtGS |
-| `physics_enrichment` | 生成碰撞体并添加带来源的物性 | CoACD、trimesh、MuJoCo |
-| `simulation_packaging` | 封装视觉、碰撞、关节和物性 | OpenUSD |
-| `quality_validation` | 执行结构、制品和仿真质量门 | PhysReal-X validator、MuJoCo |
-
-除 `depth_enhancement` 外，上述阶段必须按固定顺序出现且不得重复。每个 `AlgorithmSpec` 必须记录名称、语义版本、配置与可选权重摘要。
+| `normalization` | `asset.normalize` | 单位、坐标、命名和状态对齐 |
+| `camera_recovery` | `camera.recover` | COLMAP 或可信现成标定 |
+| `depth_enhancement`（可选） | `depth.enhance` | OMNI-DC、CompletionFormer |
+| `geometry_reconstruction` | `geometry.reconstruct` | Open3D TSDF/点云融合 |
+| `articulation_recovery` | `articulation.recover` | Ditto、ScrewSplat |
+| `collision_build` | `collision.build` | CoACD |
+| `physics_calibration` | `physics.calibrate` | MuJoCo system identification |
+| `asset_packaging` | `asset.package` | OpenUSD |
+| `quality_validation` | `asset.validate` | 结构、碰撞、动力学与回放门禁 |
 
 ```python
 from physrealx import (
-    AlgorithmSpec,
     DigitalTwinBuildSpec,
     DigitalTwinRecipe,
     DigitalTwinStage,
     DigitalTwinStep,
+    MethodCapability,
 )
 
 
-def step(stage, name):
+def step(stage, capability, name, *, checkpoint=None, config=None):
     return DigitalTwinStep(
         stage=stage,
-        algorithm=AlgorithmSpec(name=name, version="1.0.0"),
+        method=px.methods.bind(
+            capability,
+            name,
+            checkpoint=checkpoint,
+            config=config,
+        ),
     )
 
 
 recipe = DigitalTwinRecipe(
     name="cabinet_twin",
     version="1.0.0",
-    pipeline="artgs_openusd",
+    pipeline="digital_twin_worker",
     pipeline_version="1.0.0",
     steps=(
-        step(DigitalTwinStage.NORMALIZATION, "artmodeling_rgbd"),
-        step(DigitalTwinStage.CAMERA_RECOVERY, "colmap"),
-        step(DigitalTwinStage.DEPTH_ENHANCEMENT, "omni_dc"),
-        step(DigitalTwinStage.ARTICULATED_RECONSTRUCTION, "artgs"),
-        step(DigitalTwinStage.PHYSICS_ENRICHMENT, "coacd_mujoco"),
-        step(DigitalTwinStage.SIMULATION_PACKAGING, "openusd"),
-        step(DigitalTwinStage.QUALITY_VALIDATION, "physrealx_validator"),
+        step(DigitalTwinStage.NORMALIZATION, MethodCapability.ASSET_NORMALIZE, "normalize"),
+        step(DigitalTwinStage.CAMERA_RECOVERY, MethodCapability.CAMERA_RECOVER, "colmap"),
+        step(
+            DigitalTwinStage.DEPTH_ENHANCEMENT,
+            MethodCapability.DEPTH_ENHANCE,
+            "omni_dc",
+        ),
+        step(
+            DigitalTwinStage.GEOMETRY_RECONSTRUCTION,
+            MethodCapability.GEOMETRY_RECONSTRUCT,
+            "open3d_fusion",
+        ),
+        step(
+            DigitalTwinStage.ARTICULATION_RECOVERY,
+            MethodCapability.ARTICULATION_RECOVER,
+            "ditto",
+        ),
+        step(DigitalTwinStage.COLLISION_BUILD, MethodCapability.COLLISION_BUILD, "coacd"),
+        step(
+            DigitalTwinStage.PHYSICS_CALIBRATION,
+            MethodCapability.PHYSICS_CALIBRATE,
+            "mujoco_sysid",
+        ),
+        step(DigitalTwinStage.ASSET_PACKAGING, MethodCapability.ASSET_PACKAGE, "openusd"),
+        step(
+            DigitalTwinStage.QUALITY_VALIDATION,
+            MethodCapability.ASSET_VALIDATE,
+            "physics_probe",
+        ),
     ),
 )
 
@@ -120,7 +160,10 @@ result = px.assets.build(
 )
 ```
 
-相同资源、版本、源摘要和配方重复提交时直接返回已发布结果；同一身份对应不同输入时拒绝覆盖。
+运行前平台会核对 pipeline 版本、每个已安装方法的完整描述符和权重摘要。运行结果必须逐阶段
+返回相同 `MethodSpec`、时间、指标和已发布制品；阶段缺失、换方法或返回可变文件均会失败。
+
+相同资源、版本、源摘要和配方重复提交时返回原结果；相同身份对应不同输入时拒绝覆盖。
 
 ### `assets.get_build` / `assets.list_builds`
 
@@ -129,23 +172,12 @@ px.assets.get_build(ref: VersionedRef) -> DigitalTwinBuildManifest
 px.assets.list_builds() -> list[VersionedRef]
 ```
 
-构建清单保留输入观测摘要、完整配方、逐阶段耗时/指标/制品、最终资产和质量报告。
-
 ## 资产发布与校验
-
-### `assets.register` / `assets.get` / `assets.list`
 
 ```python
 px.assets.register(spec: AssetSpec) -> VersionedRef
 px.assets.get(ref: VersionedRef) -> AssetSpec
 px.assets.list() -> list[VersionedRef]
-```
-
-直接发布、读取或列出结构化资产；已发布的 `resource_id@version` 不可覆盖。
-
-### `assets.validate`
-
-```python
 px.assets.validate(
     asset: AssetSpec | VersionedRef,
     *,
@@ -155,15 +187,15 @@ px.assets.validate(
 
 | Profile | 检查 |
 | --- | --- |
-| `schema` | 标识、坐标、图结构与参数范围 |
-| `simulation` | 增加制品完整性、每 link 视觉/碰撞表示和摩擦约束 |
-| `digital_twin` | 增加物性来源、置信度和关节执行限制检查 |
+| `schema` | 标识、坐标、link/joint 图和参数范围 |
+| `simulation` | 增加制品完整性、视觉/碰撞表示和摩擦约束 |
+| `digital_twin` | 增加物性来源、置信度和关节执行限制 |
 
-只有无 `error` 的候选资产才能发布；`warning` 必须保留在构建清单中。
+只有无 `error` 的候选资产才能发布；`warning` 保留在构建清单中。
 
 ## 主要错误
 
 - `SourcePackageError`：数据包缺项、帧数冲突、单位不明或包含符号链接；
-- `AssetBuildError`：pipeline 输出身份、阶段证据、制品或质量门不符合契约；
-- `ArtifactIntegrityError`：文件导入期间变化或存储制品与摘要不符；
-- `ResourceConflictError`：不可变资源身份已对应其他内容。
+- `AssetBuildError`：pipeline 身份、阶段证据、制品或质量门不符合契约；
+- `ArtifactIntegrityError`：导入期间文件变化或存储制品摘要不符；
+- `ResourceConflictError`：资源身份或已注册方法对应了不同内容。

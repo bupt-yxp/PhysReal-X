@@ -38,17 +38,29 @@ BackendCapabilities(
 ## 运行规格
 
 ```python
+from physrealx import MethodCapability, RunSpec
+
+backend = px.methods.bind(
+    MethodCapability.SIMULATION_RUN,
+    "mujoco",
+    config={"physics_dt": 0.002, "control_dt": 0.02},
+)
+policy = px.methods.bind(
+    MethodCapability.POLICY_INFERENCE,
+    "motion_planner",
+)
+
 run = px.runs.submit(
     RunSpec(
         scene=scene,
         task=task,
-        backend="isaac_lab",
-        policy="motion_planner",
-        episodes=10_000,
-        seed=2026,
-        parallelism=256,
-        record=("camera.front.rgb", "robot.state", "contact.force"),
-        budget={"gpu_hours": 20, "max_failures": 500},
+        backend=backend,
+        policy=policy,
+        episode_count=10_000,
+        base_seed=2026,
+        dataset_id="drawer.rollouts",
+        dataset_version="1.0.0",
+        record_signals=("camera.front.rgb", "robot.state", "contact.force"),
     )
 )
 ```

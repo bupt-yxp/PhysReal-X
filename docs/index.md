@@ -134,14 +134,18 @@ PhysReal-X 统一管理数字孪生、场景任务、仿真执行、Episode 数�
 <div class="prx-sdk__code" markdown>
 
 ```python
-from physrealx import PhysRealX, RunSpec
+from physrealx import PhysRealX
+from physrealx.reference import reference_asset, reference_run, reference_scene, reference_task
 
-px = PhysRealX.from_profile("default")
+px = PhysRealX.open(".physrealx")
+asset = reference_asset()
+scene = reference_scene(asset)
+task = reference_task(scene)
+px.assets.register(asset)
+px.scenes.register(scene)
+px.tasks.register(task)
 
-run = px.runs.submit(
-    RunSpec.from_file("runs/open-drawer.run.yaml"),
-    idempotency_key="open-drawer-v1",
-)
+run = px.runs.submit(reference_run(scene, task, episode_count=8))
 
 dataset = px.datasets.get(px.runs.wait(run).dataset)
 ```

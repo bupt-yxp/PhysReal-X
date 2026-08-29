@@ -107,7 +107,9 @@ DigitalTwinRecipe(
 )
 ```
 
-`DigitalTwinStep` 将一个有序 `DigitalTwinStage` 绑定到 `AlgorithmSpec`；后者记录算法名、语义版本、可选权重 `ArtifactRef` 和冻结配置。
+`DigitalTwinStep` 将有序 `DigitalTwinStage` 绑定到能力匹配的 `MethodSpec`。`MethodSpec`
+包含完整 `MethodDescriptor`、可选权重 `ArtifactRef` 和冻结配置；描述符固定源码 revision、
+许可证、运行环境以及输入输出契约。
 
 ### `DigitalTwinBuildSpec` / `DigitalTwinBuildManifest`
 
@@ -156,7 +158,8 @@ Predicate(
 
 ### `RunSpec`
 
-包含场景、任务、后端、策略、Episode 数、根种子、并行度、记录信号、输出数据集、质量门、预算和标签。
+包含场景/任务引用、后端与策略 `MethodSpec`、Episode 数、根种子、记录信号、输出数据集身份和标签。
+后端必须声明 `simulation.run`，策略必须声明 `policy.inference`。
 
 ### `EpisodeStep`
 
@@ -171,31 +174,27 @@ Predicate(
 
 ### `Episode`
 
-包含来源、种子、场景/任务精确引用、后端/策略版本、步骤、成功状态、失败原因和运行元数据。Episode 不再重复保存单资产引用，全部资产均由场景清单确定。
+包含来源、种子、场景/任务精确引用、后端/策略完整方法证据、步骤、成功状态、失败原因和运行元数据。
+Episode 不重复保存单资产引用，全部资产由场景清单确定。
 
 ### `DatasetManifest`
 
-包含 Episode 摘要、来源运行、信号模式、split、统计、质量报告、数据卡和使用限制。
+包含 Episode 摘要、来源运行、观测/动作 Schema、总步数和结构化元数据。
 
 ## 学习与评测模型
 
 ### `TrainingSpec`
 
-包含训练器、数据集或环境、split、种子、配置、资源、validation、检查点策略和输出模型身份。
+包含输出模型身份、数据集精确引用和 `policy.train` 能力的训练方法；配置与可选检查点位于
+`TrainingSpec.trainer` 的 `MethodSpec` 中。
 
 ### `ModelManifest`
 
-包含训练器、数据集与环境来源、权重、输入输出模式、训练配置、指标、检查点和推理适配器。
+包含训练与推理 `MethodSpec`、数据集来源、权重摘要、输入输出 Schema、规范化训练配置和指标。
 
-### `EvaluationSpec` / `EvaluationReport`
+### `EvaluationReport`
 
-规格固定模型、矩阵、后端、种子、重复数和指标；报告保存聚合指标、分层结果、置信区间、失败案例和 Episode 数据集。
-
-## 部署与反馈模型
-
-### `DeploymentRecord`
-
-保存模型、机器人、任务、安全配置、控制器、运行模式、状态、事件和真实 Episode 引用。
+报告保存模型、评测数据集、成功率、结构化指标和失败案例，并以不可变资源版本发布。
 
 ### `FailureCase`
 
@@ -203,25 +202,16 @@ Predicate(
 FailureCase(
     episode_id: str,
     category: FailureCategory,
-    stage: str,
     message: str,
-    evidence: tuple[EvidenceRef, ...],
-    confidence: float,
 )
 ```
-
-### `RegenerationPlan`
-
-保存目标失败簇、待调整变量、采样分布、数据比例、预算、停止条件、质量门和输出数据集身份。
 
 ## 序列化
 
 ```python
-spec = TaskSpec.from_file("task.yaml")
-spec.to_file("task.normalized.json")
-
+spec = TaskSpec.model_validate(task_payload)
 payload = spec.model_dump(mode="json")
-digest = spec.digest()
+digest = sha256_digest(spec)
 ```
 
 规范化 JSON 使用 UTF-8、稳定键顺序、无 NaN/Inf；内容摘要不依赖空格和输入文件格式。

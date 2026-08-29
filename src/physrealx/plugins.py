@@ -1,13 +1,11 @@
-"""Explicit plugin registry with optional Python entry-point discovery."""
+"""Capability-oriented plugin and method registry."""
 
 from __future__ import annotations
 
-import re
 import sys
 from collections.abc import Mapping
-from dataclasses import dataclass
 from importlib.metadata import entry_points
-from typing import Callable, Literal
+from typing import Callable
 from typing import Mapping as TypingMapping
 
 from typing_extensions import TypeAlias
@@ -20,119 +18,118 @@ from physrealx.contracts import (
     SimulationBackend,
     Trainer,
 )
-from physrealx.domain import JSONValue
+from physrealx.domain import JSONValue, MethodCapability, MethodDescriptor, MethodSpec
 from physrealx.errors import PluginError, ResourceConflictError, ResourceNotFoundError
 
 PolicyFactory: TypeAlias = Callable[[TypingMapping[str, JSONValue]], Policy]
-_PLUGIN_NAME = re.compile(r"^[a-z][a-z0-9_.-]{0,127}$")
-_PLUGIN_VERSION = re.compile(
-    r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
-    r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
-    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
-)
-
-
-@dataclass(frozen=True)
-class PluginDescriptor:
-    kind: Literal[
-        "asset_pipeline",
-        "observation_importer",
-        "simulation_backend",
-        "policy",
-        "trainer",
-    ]
-    name: str
-    version: str
-    api_version: str
-
-    def __post_init__(self) -> None:
-        if self.kind not in {
-            "asset_pipeline",
-            "observation_importer",
-            "simulation_backend",
-            "policy",
-            "trainer",
-        }:
-            raise PluginError(f"unsupported plugin kind {self.kind!r}")
-        if _PLUGIN_NAME.fullmatch(self.name) is None:
-            raise PluginError(f"invalid plugin name {self.name!r}")
-        if _PLUGIN_VERSION.fullmatch(self.version) is None:
-            raise PluginError(f"invalid plugin version {self.version!r}")
 
 
 class PluginRegistry:
-    """An application-owned registry; importing the package creates no global state."""
+    """Application-owned registry of executable adapters and method metadata.
+
+    Typed accessors keep the runtime boundary explicit, while the shared method
+    catalog provides one auditable identity model across every capability.
+    Importing :mod:`physrealx` never creates a process-global registry.
+    """
 
     def __init__(self) -> None:
+        self._descriptors: dict[tuple[MethodCapability, str], MethodDescriptor] = {}
         self._backends: dict[str, SimulationBackend] = {}
         self._importers: dict[str, ObservationImporter] = {}
         self._asset_pipelines: dict[str, DigitalTwinPipeline] = {}
-        self._policies: dict[str, tuple[PluginDescriptor, PolicyFactory]] = {}
+        self._policies: dict[str, tuple[MethodDescriptor, PolicyFactory]] = {}
         self._trainers: dict[str, Trainer] = {}
 
     @staticmethod
-    def _validate(plugin: object) -> None:
-        name = getattr(plugin, "name", None)
-        version = getattr(plugin, "plugin_version", getattr(plugin, "version", None))
-        if not isinstance(name, str) or _PLUGIN_NAME.fullmatch(name) is None:
-            raise PluginError(f"plugin has an invalid name {name!r}")
-        if not isinstance(version, str) or _PLUGIN_VERSION.fullmatch(version) is None:
-            raise PluginError(f"plugin {name!r} has an invalid version {version!r}")
-        api_version = getattr(plugin, "api_version", None)
-        if api_version != API_VERSION:
+    def _validate_descriptor(
+        descriptor: MethodDescriptor,
+        expected: MethodCapability | None = None,
+    ) -> None:
+        if descriptor.api_version != API_VERSION:
             raise PluginError(
-                f"plugin API version {api_version!r} is incompatible with {API_VERSION!r}"
+                f"method API version {descriptor.api_version!r} is incompatible with "
+                f"{API_VERSION!r}"
             )
+        if expected is not None and descriptor.capability is not expected:
+            raise PluginError(
+                f"registration requires capability {expected.value!r}, got "
+                f"{descriptor.capability.value!r}"
+            )
+
+    @staticmethod
+    def _descriptor(plugin: object, expected: MethodCapability) -> MethodDescriptor:
+        descriptor = getattr(plugin, "descriptor", None)
+        if not isinstance(descriptor, MethodDescriptor):
+            raise PluginError("plugin must expose a MethodDescriptor as 'descriptor'")
+        PluginRegistry._validate_descriptor(descriptor, expected)
+        return descriptor
+
+    def _record(self, descriptor: MethodDescriptor) -> None:
+        self._validate_descriptor(descriptor)
+        key = (descriptor.capability, descriptor.name)
+        if key in self._descriptors:
+            raise ResourceConflictError(
+                f"method {descriptor.capability.value}:{descriptor.name!r} is already registered"
+            )
+        self._descriptors[key] = descriptor
+
+    def register_method(self, descriptor: MethodDescriptor) -> None:
+        """Register a method executed inside a composite or remote worker."""
+
+        self._record(descriptor)
 
     def register_backend(self, backend: SimulationBackend) -> None:
         if not isinstance(backend, SimulationBackend):
             raise PluginError("simulation backend does not implement the required protocol")
-        self._validate(backend)
-        if backend.name in self._backends:
+        descriptor = self._descriptor(backend, MethodCapability.SIMULATION_RUN)
+        if descriptor.name in self._backends:
             raise ResourceConflictError(
-                f"simulation backend {backend.name!r} is already registered"
+                f"simulation backend {descriptor.name!r} is already registered"
             )
-        self._backends[backend.name] = backend
+        self._record(descriptor)
+        self._backends[descriptor.name] = backend
 
     def register_importer(self, importer: ObservationImporter) -> None:
         if not isinstance(importer, ObservationImporter):
             raise PluginError("observation importer does not implement the required protocol")
-        self._validate(importer)
-        if importer.name in self._importers:
+        descriptor = self._descriptor(importer, MethodCapability.OBSERVATION_IMPORT)
+        if descriptor.name in self._importers:
             raise ResourceConflictError(
-                f"observation importer {importer.name!r} is already registered"
+                f"observation importer {descriptor.name!r} is already registered"
             )
-        self._importers[importer.name] = importer
+        self._record(descriptor)
+        self._importers[descriptor.name] = importer
 
     def register_asset_pipeline(self, pipeline: DigitalTwinPipeline) -> None:
         if not isinstance(pipeline, DigitalTwinPipeline):
             raise PluginError("asset pipeline does not implement the required protocol")
-        self._validate(pipeline)
-        if pipeline.name in self._asset_pipelines:
-            raise ResourceConflictError(f"asset pipeline {pipeline.name!r} is already registered")
-        self._asset_pipelines[pipeline.name] = pipeline
+        descriptor = self._descriptor(pipeline, MethodCapability.ASSET_BUILD)
+        if descriptor.name in self._asset_pipelines:
+            raise ResourceConflictError(f"asset pipeline {descriptor.name!r} is already registered")
+        self._record(descriptor)
+        self._asset_pipelines[descriptor.name] = pipeline
 
     def register_policy(
         self,
-        descriptor: PluginDescriptor,
+        descriptor: MethodDescriptor,
         factory: PolicyFactory,
     ) -> None:
-        if descriptor.kind != "policy":
-            raise PluginError("policy registration requires a policy descriptor")
+        self._validate_descriptor(descriptor, MethodCapability.POLICY_INFERENCE)
         if not callable(factory):
             raise PluginError("policy factory must be callable")
-        self._validate(descriptor)
         if descriptor.name in self._policies:
             raise ResourceConflictError(f"policy {descriptor.name!r} is already registered")
+        self._record(descriptor)
         self._policies[descriptor.name] = (descriptor, factory)
 
     def register_trainer(self, trainer: Trainer) -> None:
         if not isinstance(trainer, Trainer):
             raise PluginError("trainer does not implement the required protocol")
-        self._validate(trainer)
-        if trainer.name in self._trainers:
-            raise ResourceConflictError(f"trainer {trainer.name!r} is already registered")
-        self._trainers[trainer.name] = trainer
+        descriptor = self._descriptor(trainer, MethodCapability.POLICY_TRAIN)
+        if descriptor.name in self._trainers:
+            raise ResourceConflictError(f"trainer {descriptor.name!r} is already registered")
+        self._record(descriptor)
+        self._trainers[descriptor.name] = trainer
 
     def backend(self, name: str) -> SimulationBackend:
         try:
@@ -162,12 +159,11 @@ class PluginRegistry:
         policy = factory(config)
         if not isinstance(policy, Policy):
             raise PluginError(f"policy factory {name!r} returned an incompatible object")
-        self._validate(policy)
-        if policy.name != descriptor.name or policy.plugin_version != descriptor.version:
-            raise PluginError(f"policy factory {name!r} returned mismatched plugin identity")
+        if policy.descriptor != descriptor:
+            raise PluginError(f"policy factory {name!r} returned mismatched method identity")
         return policy
 
-    def policy_descriptor(self, name: str) -> PluginDescriptor:
+    def policy_descriptor(self, name: str) -> MethodDescriptor:
         try:
             descriptor, _ = self._policies[name]
         except KeyError as error:
@@ -180,45 +176,41 @@ class PluginRegistry:
         except KeyError as error:
             raise ResourceNotFoundError(f"trainer {name!r} is not registered") from error
 
-    def descriptors(self) -> tuple[PluginDescriptor, ...]:
-        descriptors = [
-            PluginDescriptor(
-                kind="simulation_backend",
-                name=item.name,
-                version=item.plugin_version,
-                api_version=item.api_version,
+    def method_descriptor(
+        self,
+        capability: MethodCapability,
+        name: str,
+    ) -> MethodDescriptor:
+        try:
+            return self._descriptors[(capability, name)]
+        except KeyError as error:
+            raise ResourceNotFoundError(
+                f"method {capability.value}:{name!r} is not registered"
+            ) from error
+
+    def resolve_method(self, method: MethodSpec) -> MethodDescriptor:
+        installed = self.method_descriptor(method.capability, method.name)
+        if installed != method.descriptor:
+            raise ResourceConflictError(
+                f"method {method.capability.value}:{method.name!r} does not match the "
+                "installed immutable descriptor"
             )
-            for item in self._backends.values()
-        ]
-        descriptors.extend(
-            PluginDescriptor(
-                kind="observation_importer",
-                name=item.name,
-                version=item.plugin_version,
-                api_version=item.api_version,
+        return installed
+
+    def descriptors(
+        self,
+        capability: MethodCapability | None = None,
+    ) -> tuple[MethodDescriptor, ...]:
+        selected = (
+            self._descriptors.values()
+            if capability is None
+            else (
+                descriptor
+                for (registered_capability, _), descriptor in self._descriptors.items()
+                if registered_capability is capability
             )
-            for item in self._importers.values()
         )
-        descriptors.extend(
-            PluginDescriptor(
-                kind="asset_pipeline",
-                name=item.name,
-                version=item.plugin_version,
-                api_version=item.api_version,
-            )
-            for item in self._asset_pipelines.values()
-        )
-        descriptors.extend(descriptor for descriptor, _ in self._policies.values())
-        descriptors.extend(
-            PluginDescriptor(
-                kind="trainer",
-                name=item.name,
-                version=item.plugin_version,
-                api_version=item.api_version,
-            )
-            for item in self._trainers.values()
-        )
-        return tuple(sorted(descriptors, key=lambda item: (item.kind, item.name)))
+        return tuple(sorted(selected, key=lambda item: (item.capability.value, item.name)))
 
     def discover(self) -> None:
         """Load external registration functions from ``physrealx.plugins`` entry points."""
@@ -239,3 +231,6 @@ class PluginRegistry:
                 raise PluginError(
                     f"entry point {entry_point.name!r} failed during registration"
                 ) from error
+
+
+__all__ = ["PluginRegistry", "PolicyFactory"]

@@ -1,185 +1,81 @@
 # 客户端与公共约定
 
-Python 客户端是 PhysReal-X 控制面的用户入口。它负责资源操作、任务提交、状态查询和结果读取，不在用户进程中加载仿真器、训练框架或机器人驱动。
+`PhysRealX` 是工作区内的平台门面：领域对象留在轻量核心，仿真器、重建算法和训练框架通过
+注册方法接入。它不通过不同 URI 把“本机直连”和“远程控制面”伪装成同一个连接对象。
 
-```text
-Python SDK ──> 平台控制面 ──> 调度器 ──> 仿真 / 训练 / 机器人工作节点
-```
-
-本机 GPU 也通过工作节点接入平台，而不是作为另一种客户端端点。这样可以统一鉴权、调度、审计和任务状态，同时保持各后端运行环境隔离。
-
-## 创建客户端
-
-### `PhysRealX.from_profile`
-
-```python
-PhysRealX.from_profile(
-    name: str = "default",
-    *,
-    timeout: float | None = None,
-    retries: int | None = None,
-) -> PhysRealX
-```
+## 打开工作区
 
 ```python
 from physrealx import PhysRealX
 
-px = PhysRealX.from_profile("default")
+px = PhysRealX.open(".physrealx")
 ```
 
-配置档案由命令行创建，业务代码不保存平台地址或访问令牌：
-
-```bash
-physrealx profile add default \
-  --server https://<平台地址> \
-  --project embodied-manipulation
-physrealx auth login --profile default
-physrealx profile use default
-```
-
-| 配置项 | 用途 |
-| --- | --- |
-| `server` | 平台控制面地址 |
-| `project` | 默认资源与任务作用域 |
-| `credential` | 系统密钥环或环境变量中的凭据引用 |
-| `tls` | 证书验证和企业 CA 配置 |
-| `timeout`、`retries` | 请求超时与安全重试策略 |
-
-配置档案可以进入用户配置目录，但凭据本身不得写入项目 YAML、源码或 Git。配置优先级从低到高为：系统默认、配置档案、环境变量、显式客户端参数。
-
-## 生命周期
-
-客户端支持上下文管理；退出时会释放连接池和后台线程，不会停止已经提交的任务：
+打开工作区会初始化本地元数据数据库和内容寻址制品存储，并加载内置及入口点方法；导入
+`physrealx` 本身不会创建工作区、初始化 CUDA 或启动仿真器。
 
 ```python
-with PhysRealX.from_profile("default") as px:
-    report = px.health()
-    print(report.status)
+px = PhysRealX.open(".physrealx", discover_plugins=False)
 ```
 
-### `health`
-
-```python
-px.health(*, deep: bool = False) -> HealthReport
-```
-
-- `deep=False`：验证身份、项目访问权和控制面连通性；
-- `deep=True`：同时检查调度、制品和元数据服务；
-- 工作节点能力通过 `px.workers.list()` 查询，不混入客户端连接状态。
-
-### `close`
-
-```python
-px.close() -> None
-```
-
-`close()` 可重复调用。关闭客户端后再次请求会抛出 `ClientClosedError`。
+`discover_plugins=False` 适合测试和严格受控环境，只保留平台内置参考方法。
 
 ## 服务边界
 
-客户端按领域暴露服务，不提供底层数据库、队列或仿真器对象：
-
-| 服务 | 主要操作 |
+| 服务 | 职责 |
 | --- | --- |
-| `assets` | 预检/导入已采集数据包，构建、注册和验证数字孪生 |
-| `scenes`、`tasks` | 注册、校验、解析版本和编译任务 |
-| `runs`、`training`、`evaluations` | 提交、观察、等待、取消和恢复任务 |
-| `datasets`、`artifacts` | 查询、验证、流式读取和导出结果 |
-| `deployments`、`feedback` | 管理真机运行、反馈与定向补充数据计划 |
-| `jobs` | 统一查询全部长任务的状态、事件和日志 |
-| `workers` | 查询已注册工作节点的版本、能力和可用状态 |
+| `methods` | 查询、校验并绑定已安装能力方法 |
+| `assets` | 预检/导入已采集数据，构建、注册和验证数字孪生 |
+| `scenes`、`tasks` | 注册并读取不可变场景与任务 |
+| `runs` | 编译并执行仿真运行，读取 Episode |
+| `datasets` | 读取运行原子发布的数据集 |
+| `training` | 提交训练并读取模型清单 |
+| `evaluations` | 执行独立种子评测并读取报告 |
+| `artifacts` | 写入、读取和验证内容寻址制品 |
 
-用户 SDK 与工作节点协议相互独立：SDK 表达“做什么”，工作节点适配器负责“如何在某个后端执行”。增加仿真器或训练框架不会改变用户任务模型。
+业务代码不直接访问 SQLite，不持有仿真器 session，也不从模型路径推断版本。
+
+## 能力方法
+
+```python
+from physrealx import MethodCapability
+
+methods = px.methods.list(MethodCapability.POLICY_TRAIN)
+trainer = px.methods.bind(
+    MethodCapability.POLICY_TRAIN,
+    "torch_bc",
+    config={"epochs": 80, "device": "cpu"},
+)
+```
+
+`MethodDescriptor` 是已安装实现的审计身份；`MethodSpec` 是某次配方或任务使用的冻结选择。
+名称相同但源码 revision、许可证、镜像、输入输出契约或版本不同的方法不会被视为同一实现。
 
 ## 资源引用
 
-读操作可使用人可读引用；提交运行、训练、评测或部署时，平台会解析为带内容摘要的精确引用，并写入不可变任务清单。
+`VersionedRef` 使用 `resource_type + resource_id + version` 表达逻辑身份；注册或提交时解析为带
+SHA-256 的精确引用。已发布版本不能覆盖，内容变化必须使用新版本。
 
 ```python
-"drawer.real-001@1.0.0"  # 人可读引用
-
-VersionedRef(resource_id="drawer.real-001", version="1.0.0")
-ResolvedRef(resource_id="drawer.real-001", version="1.0.0", digest="sha256:…")
+scene = px.scenes.get(scene_ref)
+assert scene_ref.digest.startswith("sha256:")
 ```
 
-- 语义版本描述资源意图；
-- 内容摘要确定实际输入；
-- 已发布版本不可覆盖，修改必须生成新版本；
-- 返回对象不包含任何后端专属句柄。
+`ArtifactRef` 只包含摘要、字节数和媒体类型；平台读取时重新验证摘要，不暴露可变文件路径。
 
-## 长任务
+## 写入与失败
 
-构建资产、生成数据、训练、评测和导出均为异步任务。提交方法立即返回稳定句柄，调用方可以退出后重新查询。
+- 同一资源身份和相同内容重复注册时返回原引用；相同身份对应不同内容时抛出
+  `ResourceConflictError`。
+- 运行 ID 固定请求身份；成功运行重复提交时返回原记录，失败运行不会自动伪装成新任务。
+- 资产和数据集在所有子制品通过摘要与质量检查后原子发布，失败不会留下可见半成品。
+- 预期错误继承 `PhysRealXError` 并携带稳定 `code`；CLI 默认输出错误码和消息，`--debug`
+  才显示回溯。
 
-```python
-run = px.runs.submit(spec, idempotency_key="drawer-generate-v1")
+## 并发与生命周期
 
-for event in px.jobs.watch(run):
-    print(event.kind, event.message)
+每个 `PhysRealX` 实例拥有自己的仓储、制品存储和方法目录，不使用进程全局注册表。后端 session、
+策略和临时资源由运行执行器按 `create → reset/step → close` 生命周期管理，异常路径同样关闭。
 
-result = px.jobs.wait(run, timeout=3600)
-```
-
-公共任务方法：
-
-```python
-px.jobs.get(job: JobLike) -> JobRecord
-px.jobs.wait(job: JobLike, *, timeout: float | None = None) -> JobResult
-px.jobs.watch(job: JobLike, *, cursor: str | None = None) -> Iterator[JobEvent]
-px.jobs.logs(job: JobLike, *, cursor: str | None = None) -> Iterator[LogRecord]
-px.jobs.cancel(job: JobLike, *, reason: str) -> JobRecord
-```
-
-事件用于程序控制，日志用于诊断；调用方不得解析日志文本判断任务状态。
-
-## 幂等、超时与重试
-
-```python
-run = px.runs.submit(spec, idempotency_key="paper-exp-2026-08-28")
-```
-
-- 相同项目、方法、幂等键和请求内容返回原任务；
-- 相同幂等键对应不同内容时抛出 `IdempotencyConflictError`；
-- 客户端只自动重试读请求和带幂等键的安全写请求；
-- 单次请求超时不代表平台任务失败，应使用任务句柄继续查询；
-- `wait()` 超时只结束等待，不会取消任务；取消必须显式调用 `cancel()`。
-
-## 分页
-
-```python
-page = px.assets.list(limit=100)
-
-for asset in page.items:
-    print(asset.ref)
-
-if page.next_cursor:
-    page = px.assets.list(limit=100, cursor=page.next_cursor)
-```
-
-```python
-Page[T](items: tuple[T, ...], next_cursor: str | None)
-```
-
-游标是不透明字符串，只能原样回传。列表结果具有稳定排序；客户端不得拼接游标或推断数据库偏移。
-
-## 同步与异步
-
-同步客户端适合脚本、Notebook 和常规服务；异步客户端用于已有事件循环的应用：
-
-```python
-from physrealx.aio import PhysRealX
-
-async with PhysRealX.from_profile("default") as px:
-    run = await px.runs.submit(spec, idempotency_key="drawer-generate-v1")
-    result = await px.jobs.wait(run)
-```
-
-两种客户端共享领域模型、错误类型和方法语义，不维护两套业务协议。
-
-## 并发与进程
-
-- 同步客户端可在同一进程的多个线程中共享；
-- 客户端不能跨 `fork` 复用，子进程必须重新从配置档案创建；
-- 领域模型不可变，可安全缓存和跨线程传递；
-- 数据流、下载器和上传器必须显式关闭或使用上下文管理器；
-- 失败响应统一映射为公共错误类型，详见[错误、状态与幂等](errors.md)。
+远程调度需要单独的控制面客户端和认证边界；本地工作区对象不接受 `local://` / `https://`
+端点切换。二者可以共享领域模型和 worker 协议，但不共享连接生命周期或错误重试实现。
