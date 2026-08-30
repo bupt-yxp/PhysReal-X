@@ -1,0 +1,44 @@
+{
+  "adapter": "physrealx_mujoco_sysid_adapter",
+  "evidence_digest": "sha256:629a554906e1381062f4c2ba074d1e4158727753b358b1883c5c87012cfe33d2",
+  "evidence_state": "identified",
+  "joint": {
+    "name": "drawer.slide",
+    "type": "slide"
+  },
+  "parameters": {
+    "coulomb_friction": {
+      "confidence_interval": {
+        "level": 0.95,
+        "lower": 0.23999811375619412,
+        "upper": 0.24002965607451354
+      },
+      "multi_start_spread": 1.299003127286369e-10,
+      "unit": "N",
+      "value": 0.24001388491535383
+    },
+    "effective_inertia": {
+      "confidence_interval": {
+        "level": 0.95,
+        "lower": 2.300371751892545,
+        "upper": 2.3003968790395986
+      },
+      "multi_start_spread": 1.6919798895287386e-12,
+      "unit": "kg",
+      "value": 2.3003843154660717
+    },
+    "viscous_damping": {
+      "confidence_interval": {
+        "level": 0.95,
+        "lower": 0.6999430412502016,
+        "upper": 0.699999656795515
+      },
+      "multi_start_spread": 2.556717060286928e-10,
+      "unit": "N*s/m",
+      "value": 0.6999713490228583
+    }
+  },
+  "schema": "physrealx.identified-joint-physics/1",
+  "status": "IDENTIFIED",
+  "upstream_attribution": "not_an_upstream_mujoco_component"
+}

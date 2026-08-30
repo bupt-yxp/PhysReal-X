@@ -12,17 +12,12 @@ from typing import TypeVar
 from pydantic import BaseModel
 
 from physrealx.asset_ingestion import ArtModelingImporter
-from physrealx.asset_validation import merge_validation_reports, validate_asset
+from physrealx.asset_validation import validate_asset
 from physrealx.contracts import ArtifactStore, MethodExecutionOutput, Repository
 from physrealx.digital_twin import (
     AssetValidationProfile,
     AssetValidationReport,
-    DigitalTwinBuildManifest,
-    DigitalTwinBuildResult,
-    DigitalTwinBuildSpec,
-    ObservationSetManifest,
     SourceInspection,
-    ensure_pipeline_output_identity,
 )
 from physrealx.domain import (
     AssetSpec,
@@ -43,7 +38,6 @@ from physrealx.domain import (
     sha256_digest,
 )
 from physrealx.errors import (
-    AssetBuildError,
     DomainValidationError,
     MethodExecutionError,
     PhysRealXError,
@@ -52,6 +46,8 @@ from physrealx.errors import (
     SourcePackageError,
 )
 from physrealx.plugins import PluginRegistry
+from physrealx.readiness import ReadinessService
+from physrealx.recipe_executor import RecipeExecutor
 from physrealx.reference import ReferenceDrawerBackend, ScriptedDrawerPolicy
 from physrealx.runtime import RunExecutor
 from physrealx.services import (
@@ -99,6 +95,8 @@ class PhysRealX:
         self.plugins = plugins
         self._executor = RunExecutor(repository, artifacts, plugins)
         self.methods = MethodsService(self)
+        self.readiness = ReadinessService(self)
+        self.recipes = RecipeExecutor(self)
         self.operations = OperationsService(self)
         self.assets = AssetsService(self)
         self.scenes = ScenesService(self)
@@ -205,116 +203,6 @@ class PhysRealX:
             manifest,
             manifest.reference(),
             "application/vnd.physrealx.observation-set+json",
-        )
-
-    def _build_digital_twin(self, spec: DigitalTwinBuildSpec) -> DigitalTwinBuildResult:
-        registered_source = self.repository.get_resource(
-            ResourceType.OBSERVATION_SET.value,
-            spec.source.resource_id,
-            spec.source.version,
-        )
-        if registered_source.digest != spec.source.digest:
-            raise ResourceConflictError("build source digest does not match the registry")
-        try:
-            existing_ref = self.repository.get_resource(
-                ResourceType.ASSET_BUILD.value,
-                spec.resource_id,
-                spec.version,
-            )
-        except ResourceNotFoundError:
-            pass
-        else:
-            existing = self._load_registered(existing_ref, DigitalTwinBuildManifest)
-            if existing.source != registered_source or existing.recipe != spec.recipe:
-                raise ResourceConflictError(
-                    "asset build identity already exists for a different source or recipe"
-                )
-            return DigitalTwinBuildResult(
-                asset=existing.asset,
-                build=existing_ref,
-                validation=existing.validation,
-            )
-        source = self._load_registered(registered_source, ObservationSetManifest)
-        pipeline = self.plugins.asset_pipeline(spec.recipe.pipeline)
-        if pipeline.descriptor.version != spec.recipe.pipeline_version:
-            raise AssetBuildError(
-                "digital-twin pipeline version does not match the recipe",
-                details={
-                    "expected": spec.recipe.pipeline_version,
-                    "actual": pipeline.descriptor.version,
-                },
-            )
-        for step in spec.recipe.steps:
-            self.plugins.resolve_method(step.method)
-            checkpoint = step.method.checkpoint
-            if checkpoint is not None and not self.artifacts.verify(checkpoint):
-                raise AssetBuildError(
-                    f"method checkpoint is unavailable for stage {step.stage.value!r}"
-                )
-
-        try:
-            output = pipeline.build(spec, source, self.artifacts)
-        except PhysRealXError:
-            raise
-        except Exception as error:
-            raise AssetBuildError(
-                f"digital-twin pipeline {pipeline.descriptor.name!r} failed during execution"
-            ) from error
-        try:
-            ensure_pipeline_output_identity(spec, output.asset)
-        except ValueError as error:
-            raise AssetBuildError(str(error)) from error
-        if output.validation.profile is not AssetValidationProfile.DIGITAL_TWIN:
-            raise AssetBuildError("pipeline must return a digital_twin validation report")
-        expected_steps = tuple(item.stage for item in spec.recipe.steps)
-        if tuple(item.stage for item in output.stages) != expected_steps:
-            raise AssetBuildError("pipeline stage records do not exactly match the recipe")
-        for recipe_step, record in zip(spec.recipe.steps, output.stages):
-            if record.method != recipe_step.method:
-                raise AssetBuildError("pipeline stage method does not match the recipe")
-            if any(not self.artifacts.verify(item) for item in record.outputs):
-                raise AssetBuildError("pipeline returned an unpublished stage artifact")
-
-        platform_report = validate_asset(
-            output.asset,
-            AssetValidationProfile.DIGITAL_TWIN,
-            self.artifacts,
-        )
-        validation = merge_validation_reports(output.validation, platform_report)
-        if not validation.passed:
-            raise AssetBuildError(
-                "digital-twin candidate failed validation",
-                details={
-                    "issue_codes": [
-                        item.code for item in validation.issues if item.severity.value == "error"
-                    ]
-                },
-            )
-
-        asset_ref = self._store_resource(
-            output.asset,
-            output.asset.reference(),
-            "application/vnd.physrealx.asset+json",
-        )
-        manifest = DigitalTwinBuildManifest(
-            resource_id=spec.resource_id,
-            version=spec.version,
-            source=registered_source,
-            recipe=spec.recipe,
-            asset=asset_ref,
-            stages=output.stages,
-            validation=validation,
-        )
-        build_ref = self._store_resource(
-            manifest,
-            manifest.reference(),
-            "application/vnd.physrealx.asset-build+json",
-        )
-        self.repository.register_resources((asset_ref, build_ref))
-        return DigitalTwinBuildResult(
-            asset=asset_ref,
-            build=build_ref,
-            validation=validation,
         )
 
     def _validate_asset(
@@ -541,8 +429,31 @@ class PhysRealX:
             not isinstance(item, OperationOutput) for item in result.outputs
         ):
             raise MethodExecutionError("method worker returned an incompatible result")
+        expected_outputs = tuple((item.name, item.contract) for item in resolved.outputs)
+        actual_outputs = tuple((item.name, item.contract) for item in result.outputs)
+        if actual_outputs != expected_outputs:
+            raise MethodExecutionError(
+                "method worker output names or contracts do not match the operation"
+            )
         if any(not self.artifacts.verify(item.artifact) for item in result.outputs):
             raise MethodExecutionError("method worker returned unpublished or corrupt artifacts")
+        for requirement, output in zip(resolved.outputs, result.outputs):
+            if (
+                requirement.media_types
+                and output.artifact.media_type not in requirement.media_types
+            ):
+                raise MethodExecutionError(
+                    f"method output {output.name!r} uses media type "
+                    f"{output.artifact.media_type!r}; expected one of "
+                    f"{requirement.media_types!r}"
+                )
+            if (
+                requirement.max_size_bytes is not None
+                and output.artifact.size_bytes > requirement.max_size_bytes
+            ):
+                raise MethodExecutionError(
+                    f"method output {output.name!r} exceeds its declared size limit"
+                )
 
         try:
             manifest = OperationManifest(

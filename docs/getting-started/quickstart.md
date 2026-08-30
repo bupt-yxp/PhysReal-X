@@ -1,6 +1,8 @@
 # 快速开始
 
-本页运行内置“打开抽屉”垂直切片，验证资产、场景、任务、仿真、Episode 与数据集的完整链路。
+本页运行内置“打开抽屉”确定性参考切片，验证资产、场景、任务、运行、
+Episode 与数据集的契约链路。该参考后端是回归测试用状态机，不代表 MuJoCo/Isaac Sim
+真实物理、`cabinet2` 数字孪生、外部策略训练或 ROS 2 真机部署已经完成。
 
 ## 1. 打开工作区
 
@@ -43,9 +45,10 @@ print(len(dataset.episodes), dataset.total_steps)
 运行规格已绑定精确后端和策略 `MethodSpec`。每条 Episode 保存种子、方法描述符、场景/任务摘要、
 连续时间线、观测、动作、奖励、终止语义和失败原因；全部 Episode 验证完成后才发布数据集。
 
-## 4. 训练参考策略
+## 4. 训练契约参考策略
 
-训练扩展需要 `.[train]` 和 PyTorch 环境。
+训练扩展需要 `.[train]` 和 PyTorch 环境。`torch_bc` 只是小型数值回归基线，用于验证
+数据集→训练→模型清单的契约，不可作为真实机器人能力结论。
 
 ```python
 from physrealx import MethodCapability, TrainingSpec
@@ -96,5 +99,5 @@ physrealx demo --workspace .physrealx-train --episodes 8 --train --device cpu
 physrealx methods --workspace .physrealx-demo
 ```
 
-接下来阅读[第一个完整项目](first-project.md)了解目录、规格和质量验收，或进入
+接下来阅读[第一个可复现契约实验](first-project.md)了解目录、规格和质量验收，或进入
 [资产与数字孪生](../user-guide/assets.md)处理已采集 ArtModeling 数据。

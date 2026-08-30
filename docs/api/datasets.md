@@ -30,7 +30,10 @@ episodes = px.runs.episodes(run)
 ## 外部格式与快照
 
 ```python
-normalized = px.datasets.ingest(raw_mcap, method="lerobot_v2_1")
+normalized = px.datasets.ingest(
+    raw_mcap,
+    method="<installed-dataset-ingest-method>",
+)
 snapshot = px.datasets.snapshot(
     normalized.outputs[0].artifact,
     method="dvc",
@@ -42,12 +45,14 @@ snapshot = px.datasets.snapshot(
 
 | 能力 | 推荐方法 |
 | --- | --- |
-| `dataset.ingest` | `lerobot_v2_1`、`rlds`、`rosbag2_mcap` |
+| `dataset.ingest` | 已安装的 LeRobot v3、RLDS 或 rosbag2/MCAP 适配器 |
 | `dataset.validate` | `episode_contract` |
 | `dataset.snapshot` | `dvc` |
 
 适配器必须发布新的不可变数据集或派生制品，并记录源摘要、转换配置、代码/镜像版本和输出摘要。
 训练切分按资产、场景与采集批次防泄漏，不能依赖文件顺序。
+核心仓库不附带 LeRobot 转换占位 worker；示例中的尖括号必须替换为当前工作区内
+已安装且探针通过的方法名。`raw_mcap` 也必须是已发布、摘要已校验的版本化资源。
 
 ## 主要错误
 

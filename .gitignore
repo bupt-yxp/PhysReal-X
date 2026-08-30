@@ -20,6 +20,8 @@ venv/
 .wheel-smoke/
 .worker-envs/
 .physrealx-experiments/
+/experiments/*/workspace/
+/experiments/*/worker-envs/
 
 # Editors and operating systems
 .idea/

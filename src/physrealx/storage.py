@@ -43,6 +43,7 @@ _SCHEMA_VERSION: Final = 1
 _DIGEST_PATTERN: Final = re.compile(r"\Asha256:[0-9a-f]{64}\Z")
 _HASH_CHUNK_SIZE: Final = 1024 * 1024
 _DEFAULT_BUSY_TIMEOUT_MS: Final = 5_000
+_MINIMUM_SQLITE_VERSION: Final = (3, 37, 0)
 _T = TypeVar("_T", bound=BaseModel)
 
 
@@ -54,7 +55,7 @@ def _canonical_json(value: Any) -> str:
     """Serialize metadata deterministically and reject non-finite numbers."""
 
     if isinstance(value, BaseModel):
-        value = value.model_dump(mode="json")
+        value = value.model_dump(mode="json", by_alias=True)
     return json.dumps(
         value,
         allow_nan=False,
@@ -367,6 +368,13 @@ class SQLiteRepository:
             or busy_timeout_ms <= 0
         ):
             raise DomainValidationError("busy_timeout_ms must be a positive integer")
+        if sqlite3.sqlite_version_info < _MINIMUM_SQLITE_VERSION:
+            detected = ".".join(str(value) for value in sqlite3.sqlite_version_info)
+            minimum = ".".join(str(value) for value in _MINIMUM_SQLITE_VERSION)
+            raise RuntimeError(
+                f"SQLite >= {minimum} is required for the STRICT metadata schema; "
+                f"detected {detected}"
+            )
         database_path = Path(database).expanduser()
         database_path.parent.mkdir(parents=True, exist_ok=True)
         self._database = database_path.resolve()

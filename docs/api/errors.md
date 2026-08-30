@@ -8,7 +8,6 @@
 PhysRealXError
 ├── DomainValidationError
 ├── SourcePackageError
-├── AssetBuildError
 ├── ResourceNotFoundError
 ├── ResourceConflictError
 ├── ArtifactIntegrityError
@@ -24,14 +23,14 @@ Pydantic 模型构造失败直接抛出 `pydantic.ValidationError`；多个已�
 ## 捕获错误
 
 ```python
-from physrealx.errors import AssetBuildError, SourcePackageError
+from physrealx.errors import MethodExecutionError, SourcePackageError
 
 try:
     source = px.assets.ingest(path, **options)
-    result = px.assets.build(spec)
+    result = px.recipes.execute(spec)
 except SourcePackageError as exc:
     print(exc.code, exc.details.get("issue_codes"))
-except AssetBuildError as exc:
+except MethodExecutionError as exc:
     print(exc.code, exc.details.get("issue_codes"))
 ```
 
@@ -69,7 +68,8 @@ same_record = px.runs.submit(run_spec)
 - 输出数据集不会发布为成功版本；
 - `RunRecord.result` 在终态保存稳定错误码与信息。
 
-训练、评测、导出和资产构建遵循相同原则：部分制品只有在终态清单引用后才成为正式结果。
+训练、评测、导出和资产配方遵循相同原则：已成功的前缀操作可作为审计证据，但只有终端阶段
+成功后才发布 `RecipeExecutionManifest`。
 
 ## 安全错误
 

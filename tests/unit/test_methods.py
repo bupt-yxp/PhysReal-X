@@ -8,7 +8,6 @@ from pydantic import ValidationError
 from physrealx import platform as platform_module
 from physrealx import plugins as plugins_module
 from physrealx.contracts import ArtifactStore, MethodExecutionOutput
-from physrealx.digital_twin import DigitalTwinStage, DigitalTwinStep
 from physrealx.domain import (
     ArtifactRef,
     MethodAccelerator,
@@ -71,20 +70,6 @@ def test_method_descriptor_rejects_mutable_source_revision() -> None:
         )
 
 
-def test_digital_twin_stage_rejects_wrong_method_capability() -> None:
-    wrong = builtin_method(
-        MethodCapability.COLLISION_BUILD,
-        "coacd",
-        input_contract="TriangleMesh",
-        output_contract="CollisionGeometry",
-    ).bind()
-    with pytest.raises(ValidationError, match=r"geometry\.reconstruct"):
-        DigitalTwinStep(
-            stage=DigitalTwinStage.GEOMETRY_RECONSTRUCTION,
-            method=wrong,
-        )
-
-
 def test_workspace_method_catalog_binds_exact_registered_descriptor(tmp_path: Path) -> None:
     platform = PhysRealX.open(tmp_path, discover_plugins=False)
     descriptor = builtin_method(
@@ -144,8 +129,8 @@ class _CollisionWorker:
     descriptor = builtin_method(
         MethodCapability.COLLISION_BUILD,
         "test_coacd",
-        input_contract="AssetSpec",
-        output_contract="CollisionGeometry",
+        input_contract="VisualMesh/1",
+        output_contract="CollisionGeometry/1+CollisionBuildReport/1",
     )
 
     def execute(
@@ -153,17 +138,38 @@ class _CollisionWorker:
         spec: OperationSpec,
         artifacts: ArtifactStore,
     ) -> MethodExecutionOutput:
+        source = spec.inputs[0].artifact
+        assert source is not None
+        collision = artifacts.put_bytes(
+            b"glTF fixture",
+            media_type="model/gltf-binary",
+        )
+        report = artifacts.put_json(
+            {
+                "schema": "physrealx.collision-build-report/1",
+                "status": "PASSED",
+                "method": {
+                    "name": "test_coacd",
+                    "version": "1.0.0",
+                    "source_revision": "builtin-reference",
+                },
+                "unit": "m",
+                "link": "fixture",
+                "source_geometry": source.model_dump(mode="json"),
+                "collision_geometry": collision.model_dump(mode="json"),
+                "metrics": {"convex_parts": 1.0},
+                "gates": {"decomposition_nonempty": True},
+            }
+        )
+        artifacts_by_contract = {
+            "CollisionGeometry/1": collision,
+            "CollisionBuildReport/1": report,
+        }
         outputs = tuple(
             OperationOutput(
                 name=requirement.name,
                 contract=requirement.contract,
-                artifact=artifacts.put_json(
-                    {
-                        "input_digest": spec.inputs[0].resource.digest,
-                        "method": spec.method.name,
-                        "output": requirement.name,
-                    }
-                ),
+                artifact=artifacts_by_contract[requirement.contract],
             )
             for requirement in spec.outputs
         )
@@ -172,12 +178,15 @@ class _CollisionWorker:
 
 def test_capability_service_executes_and_publishes_immutable_evidence(tmp_path: Path) -> None:
     platform = PhysRealX.open(tmp_path, discover_plugins=False)
-    asset_ref = platform.assets.register(reference_asset())
+    visual_mesh = platform.artifacts.put_bytes(
+        b"glTF fixture input",
+        media_type="model/gltf-binary",
+    )
     platform.methods.register(_CollisionWorker.descriptor)
     platform.plugins.register_worker(_CollisionWorker())
 
-    first = platform.assets.build_collision(asset_ref, method="test_coacd")
-    second = platform.assets.build_collision(asset_ref, method="test_coacd")
+    first = platform.assets.build_collision(visual_mesh, method="test_coacd")
+    second = platform.assets.build_collision(visual_mesh, method="test_coacd")
 
     assert first == second
     assert first.spec.method.capability is MethodCapability.COLLISION_BUILD
@@ -193,11 +202,14 @@ def test_metadata_only_method_cannot_be_executed(tmp_path: Path) -> None:
     descriptor = builtin_method(
         MethodCapability.COLLISION_BUILD,
         "coacd",
-        input_contract="TriangleMesh",
-        output_contract="CollisionGeometry",
+        input_contract="VisualMesh/1",
+        output_contract="CollisionGeometry/1+CollisionBuildReport/1",
     )
     platform.methods.register(descriptor)
-    source = platform.artifacts.put_json({"mesh": "example"})
+    source = platform.artifacts.put_bytes(
+        b"glTF fixture",
+        media_type="model/gltf-binary",
+    )
 
     with pytest.raises(ResourceNotFoundError, match="metadata only"):
         platform.assets.build_collision(source, method="coacd")

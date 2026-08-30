@@ -14,7 +14,6 @@ from typing_extensions import TypeAlias
 
 from physrealx.contracts import (
     API_VERSION,
-    DigitalTwinPipeline,
     MethodWorker,
     ObservationImporter,
     Policy,
@@ -75,7 +74,6 @@ class PluginRegistry:
         self._descriptors: dict[tuple[MethodCapability, str], MethodDescriptor] = {}
         self._backends: dict[str, SimulationBackend] = {}
         self._importers: dict[str, ObservationImporter] = {}
-        self._asset_pipelines: dict[str, DigitalTwinPipeline] = {}
         self._policies: dict[str, tuple[MethodDescriptor, PolicyFactory]] = {}
         self._trainers: dict[str, Trainer] = {}
         self._workers: dict[tuple[MethodCapability, str], MethodWorker] = {}
@@ -188,17 +186,6 @@ class PluginRegistry:
         self._importers[descriptor.name] = importer
         self._execution_kinds[(descriptor.capability, descriptor.name)] = "observation_importer"
 
-    def register_asset_pipeline(self, pipeline: DigitalTwinPipeline) -> None:
-        if not isinstance(pipeline, DigitalTwinPipeline):
-            raise PluginError("asset pipeline does not implement the required protocol")
-        descriptor = self._descriptor(pipeline, MethodCapability.ASSET_BUILD)
-        self._require_in_process(descriptor, "asset pipeline")
-        if descriptor.name in self._asset_pipelines:
-            raise ResourceConflictError(f"asset pipeline {descriptor.name!r} is already registered")
-        self._record(descriptor)
-        self._asset_pipelines[descriptor.name] = pipeline
-        self._execution_kinds[(descriptor.capability, descriptor.name)] = "asset_pipeline"
-
     def register_policy(
         self,
         descriptor: MethodDescriptor,
@@ -238,12 +225,6 @@ class PluginRegistry:
             raise ResourceNotFoundError(
                 f"observation importer {name!r} is not registered"
             ) from error
-
-    def asset_pipeline(self, name: str) -> DigitalTwinPipeline:
-        try:
-            return self._asset_pipelines[name]
-        except KeyError as error:
-            raise ResourceNotFoundError(f"asset pipeline {name!r} is not registered") from error
 
     def policy(self, name: str, config: Mapping[str, JSONValue]) -> Policy:
         try:
@@ -386,7 +367,6 @@ class PluginRegistry:
                 self._descriptors.copy(),
                 self._backends.copy(),
                 self._importers.copy(),
-                self._asset_pipelines.copy(),
                 self._policies.copy(),
                 self._trainers.copy(),
                 self._workers.copy(),
@@ -401,7 +381,6 @@ class PluginRegistry:
                     self._descriptors,
                     self._backends,
                     self._importers,
-                    self._asset_pipelines,
                     self._policies,
                     self._trainers,
                     self._workers,
@@ -416,7 +395,6 @@ class PluginRegistry:
                     self._descriptors,
                     self._backends,
                     self._importers,
-                    self._asset_pipelines,
                     self._policies,
                     self._trainers,
                     self._workers,

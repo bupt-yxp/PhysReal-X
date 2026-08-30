@@ -1,6 +1,9 @@
 # 仿真运行与后端
 
 PhysReal-X 使用统一后端协议执行仿真，但不会强行抹平后端能力差异。运行提交前，平台根据任务要求和工作节点能力进行匹配。
+核心仓库只内置确定性 Reference backend 用于契约回归，不内置 MuJoCo、Isaac Sim、Genesis、Gazebo 或真机后端；真实物理结果必须来自独立安装、通过探针且留存运行证据的适配器。
+后端名称只是方法选择：对应独立 worker 必须已安装、固定版本并通过探针；
+核心仓库不会用硬编码轨迹代替真实后端。
 
 ## 如何选择后端
 
@@ -42,7 +45,7 @@ from physrealx import MethodCapability, RunSpec
 
 backend = px.methods.bind(
     MethodCapability.SIMULATION_RUN,
-    "mujoco",
+    "<installed-simulation-method>",
     config={"physics_dt": 0.002, "control_dt": 0.02},
 )
 policy = px.methods.bind(

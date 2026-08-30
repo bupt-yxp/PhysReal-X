@@ -19,7 +19,8 @@ physrealx [--debug] COMMAND
 └── demo [--episodes N] [--base-seed N] [--train] [--device DEVICE]
 ```
 
-`RESOURCE_TYPE` 包含 `observation_set`、`asset_build`、`asset`、`scene`、`task`、`dataset`、`model` 和 `evaluation`。
+`RESOURCE_TYPE` 包含 `observation_set`、`asset`、`scene`、`task`、`dataset`、`model`、
+`evaluation`、`operation` 和 `recipe_execution`。
 
 ## 工作区与诊断
 
@@ -54,10 +55,11 @@ physrealx evaluate drawer.bc 1.0.0 runs/evaluate.run.yaml \
 
 命令成功时输出结构化 JSON。预期的 `PhysRealXError`、Pydantic 校验错误和文件错误默认仅输出稳定错误码与消息；使用 `--debug` 时保留回溯。
 
-## 可执行演示
+## 可执行契约演示
 
 ```bash
 physrealx demo --workspace .physrealx-demo --episodes 8 --train --device cpu
 ```
 
-演示使用内置抽屉资产、确定性参考后端和脚本策略，验证资产→场景→任务→运行→数据集，可选继续训练和评测。
+演示使用内置抽屉资产、确定性参考后端和脚本策略，验证资产→场景→任务→运行→数据集，
+可选继续验证参考训练和评测契约。它不执行外部物理仿真器或真机。

@@ -98,8 +98,8 @@ class TorchBehaviorCloningTrainer:
     descriptor = builtin_method(
         MethodCapability.POLICY_TRAIN,
         "torch_bc",
-        input_contract="TrainingSpec+DatasetManifest+Episode",
-        output_contract="ModelManifest",
+        input_contract="TrainingSpec/1+DatasetManifest/1+Episode/1",
+        output_contract="ModelManifest/1",
     )
 
     def train(
@@ -239,8 +239,8 @@ class TorchBehaviorCloningPolicy:
     descriptor = builtin_method(
         MethodCapability.POLICY_INFERENCE,
         "torch_bc",
-        input_contract="Frame+TaskSpec+ModelManifest",
-        output_contract="DataValue",
+        input_contract="Frame/1+TaskSpec/1+ModelManifest/1",
+        output_contract="DataValue/1",
     )
 
     def __init__(

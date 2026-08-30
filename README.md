@@ -20,14 +20,14 @@ PhysReal-X 不重复实现物理引擎。SAPIEN、Isaac Sim、Genesis、渲染�
 
 文档站只保留四个稳定入口：
 
-- **首页**：平台定位、能力边界与端到端闭环。
-- **入门**：安装、快速开始和第一个完整项目。
+- **首页**：平台定位、能力边界与业务闭环。
+- **入门**：安装、快速开始和第一个可复现契约实验。
 - **用户指南**：资产、场景、仿真、数据、训练、评测与部署教程。
 - **API 文档**：Python SDK、领域模型、CLI、错误和幂等约定。
 
 ## 快速开始
 
-PhysReal-X 支持 Python 3.8–3.12；Python 3.11 是推荐运行环境：
+PhysReal-X 核心 SDK 支持 Python 3.8–3.12；Python 3.11 是推荐运行环境：
 
 ```bash
 conda env create -f environment.yml
@@ -57,8 +57,20 @@ run = px.runs.submit(reference_run(scene, task, episode_count=8))
 dataset = px.datasets.get(px.runs.wait(run).dataset)
 ```
 
-完整教程见[第一个完整项目](https://bupt-yxp.github.io/PhysReal-X/getting-started/first-project/)，
-所有方法、参数、返回值与异常见 [API 文档](https://bupt-yxp.github.io/PhysReal-X/api/)。
+这段代码使用确定性 Reference backend，只验证领域契约、不可变资源和运行生命周期；
+它不是真实物理仿真、`cabinet2` 数字孪生或真机闭环的实验结果。
+
+完整教程见[第一个可复现契约实验](https://bupt-yxp.github.io/PhysReal-X/getting-started/first-project/)，
+公共服务、领域模型、方法协议与错误语义见 [API 文档](https://bupt-yxp.github.io/PhysReal-X/api/)。
+
+## 当前实验证据边界
+
+仓库内的 `cabinet2` 实测报告包含 18 个生命周期阶段；目前只有观测导入和未定尺 COLMAP
+相机恢复为 `READY`，其余阶段均因缺少方法或科学证据而保持 `BLOCKED`。已安装并通过探针的
+CoACD、单关节系统辨识和 OpenUSD 适配器不等于 `cabinet2` 已完成对应阶段。详见
+[实验说明](docs/user-guide/external-workers.md)与
+[机器可读证据](experiments/results/cabinet2-lifecycle/cabinet2_lifecycle_evidence.json)。隔离 worker 的
+合成自检结果保存在 `experiments/results/synthetic-worker-self-tests/`，禁止与真实对象结论混用。
 
 ## 架构原则
 

@@ -4,15 +4,13 @@ from __future__ import annotations
 
 import builtins
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from physrealx.digital_twin import (
     AssetValidationProfile,
     AssetValidationReport,
-    DigitalTwinBuildManifest,
-    DigitalTwinBuildResult,
-    DigitalTwinBuildSpec,
     ObservationSetManifest,
     SourceInspection,
 )
@@ -43,9 +41,365 @@ from physrealx.domain import (
 )
 from physrealx.errors import DomainValidationError
 from physrealx.plugins import MethodInstallation
+from physrealx.readiness import ReadinessService
 
 if TYPE_CHECKING:
     from physrealx.platform import PhysRealX
+
+
+_MIB = 1024 * 1024
+_GIB = 1024 * _MIB
+
+
+def _output(
+    name: str,
+    contract: str,
+    *,
+    content_kind: Literal["auto", "binary", "json", "zip"] = "auto",
+    media_types: tuple[str, ...] = (),
+    max_size_bytes: int | None = None,
+    schema_discriminator: str | None = None,
+) -> OperationOutputRequirement:
+    """Build one immutable service-owned output declaration."""
+
+    return OperationOutputRequirement(
+        name=name,
+        contract=contract,
+        content_kind=content_kind,
+        media_types=media_types,
+        max_size_bytes=max_size_bytes,
+        schema_discriminator=schema_discriminator,
+    )
+
+
+@dataclass(frozen=True)
+class _ServiceMethodContract:
+    """Canonical wire contract for one public capability service.
+
+    A service owns these names and schemas.  Callers select an implementation,
+    but cannot silently redefine what the capability consumes or publishes.
+    """
+
+    input_contract: str
+    input_names: tuple[str, ...]
+    outputs: tuple[OperationOutputRequirement, ...]
+    input_kinds: tuple[Literal["resource", "artifact", "either"], ...] = ()
+
+    def __post_init__(self) -> None:
+        if len(self.input_names) != len(set(self.input_names)):
+            raise ValueError("service method input names must be unique")
+        if self.input_kinds and len(self.input_kinds) != len(self.input_names):
+            raise ValueError("service method input kinds must match its input names")
+        if not self.outputs or len(self.outputs) != len({item.name for item in self.outputs}):
+            raise ValueError("service method outputs must be non-empty and uniquely named")
+
+
+_SERVICE_METHOD_CONTRACTS: dict[MethodCapability, _ServiceMethodContract] = {
+    MethodCapability.CAMERA_RECOVER: _ServiceMethodContract(
+        "ObservationSetManifest/1",
+        ("observations",),
+        (
+            _output(
+                "camera_rig_calibration",
+                "CameraRigCalibration/1",
+                content_kind="json",
+                media_types=("application/json",),
+                max_size_bytes=64 * _MIB,
+                schema_discriminator="physrealx.camera-rig-calibration/1",
+            ),
+            _output(
+                "sparse_reconstruction_bundle",
+                "SparseReconstructionBundle/1",
+                content_kind="zip",
+                media_types=("application/zip",),
+                max_size_bytes=8 * _GIB,
+            ),
+            _output(
+                "camera_recovery_report",
+                "CameraRecoveryReport/1",
+                content_kind="json",
+                media_types=("application/json",),
+                max_size_bytes=16 * _MIB,
+                schema_discriminator="physrealx.camera-recovery-report/1",
+            ),
+        ),
+        input_kinds=("resource",),
+    ),
+    MethodCapability.CAMERA_ALIGN_METRIC: _ServiceMethodContract(
+        "CameraRigCalibration/1+MetricAlignmentEvidence/1",
+        ("camera_rig", "evidence"),
+        (
+            _output(
+                "camera_rig_calibration",
+                "CameraRigCalibration/1",
+                content_kind="json",
+                media_types=("application/json",),
+                max_size_bytes=64 * _MIB,
+                schema_discriminator="physrealx.camera-rig-calibration/1",
+            ),
+            _output(
+                "metric_alignment_report",
+                "MetricAlignmentReport/1",
+                content_kind="json",
+                media_types=("application/json",),
+                max_size_bytes=16 * _MIB,
+                schema_discriminator="physrealx.metric-alignment-report/1",
+            ),
+        ),
+        input_kinds=("artifact", "artifact"),
+    ),
+    MethodCapability.DEPTH_ENHANCE: _ServiceMethodContract(
+        "CalibratedRGBDBundle/1",
+        ("rgbd",),
+        (
+            _output(
+                "enhanced_depth",
+                "EnhancedDepthBundle/1",
+                content_kind="zip",
+                media_types=("application/zip",),
+                max_size_bytes=32 * _GIB,
+            ),
+            _output(
+                "enhancement_report",
+                "DepthEnhancementReport/1",
+                content_kind="json",
+                media_types=("application/json",),
+                max_size_bytes=32 * _MIB,
+                schema_discriminator="physrealx.depth-enhancement-report/1",
+            ),
+        ),
+        input_kinds=("resource",),
+    ),
+    MethodCapability.ARTICULATION_RECOVER: _ServiceMethodContract(
+        "PairedInteractionPointCloudBundle/1",
+        ("pair",),
+        (
+            _output(
+                "articulation_model",
+                "ArticulationModel/1",
+                content_kind="json",
+                media_types=("application/json",),
+                max_size_bytes=32 * _MIB,
+                schema_discriminator="physrealx.articulation-model/1",
+            ),
+            _output(
+                "articulation_recovery_report",
+                "ArticulationRecoveryReport/1",
+                content_kind="json",
+                media_types=("application/json",),
+                max_size_bytes=16 * _MIB,
+                schema_discriminator="physrealx.articulation-recovery-report/1",
+            ),
+        ),
+        input_kinds=("resource",),
+    ),
+    MethodCapability.COLLISION_BUILD: _ServiceMethodContract(
+        "VisualMesh/1",
+        ("asset",),
+        (
+            _output(
+                "collision_geometry",
+                "CollisionGeometry/1",
+                content_kind="binary",
+                media_types=("model/gltf-binary",),
+                max_size_bytes=8 * _GIB,
+            ),
+            _output(
+                "collision_build_report",
+                "CollisionBuildReport/1",
+                content_kind="json",
+                media_types=("application/json",),
+                max_size_bytes=16 * _MIB,
+                schema_discriminator="physrealx.collision-build-report/1",
+            ),
+        ),
+        input_kinds=("artifact",),
+    ),
+    MethodCapability.PHYSICS_CALIBRATE: _ServiceMethodContract(
+        "JointSystemIdentificationEvidence/1",
+        ("evidence",),
+        (
+            _output(
+                "identified_joint_physics",
+                "IdentifiedJointPhysics/1",
+                content_kind="json",
+                media_types=("application/json",),
+                max_size_bytes=4 * _MIB,
+                schema_discriminator="physrealx.identified-joint-physics/1",
+            ),
+            _output(
+                "identification_report",
+                "PhysicsIdentificationReport/1",
+                content_kind="json",
+                media_types=("application/json",),
+                max_size_bytes=8 * _MIB,
+                schema_discriminator="physrealx.physics-identification-report/1",
+            ),
+        ),
+        input_kinds=("resource",),
+    ),
+    MethodCapability.ASSET_PACKAGE: _ServiceMethodContract(
+        "AssetAssemblyBundle/1",
+        ("asset",),
+        (
+            _output(
+                "usd_asset_bundle",
+                "UsdAssetBundle/1",
+                content_kind="binary",
+                media_types=("model/vnd.usd+binary",),
+                max_size_bytes=8 * _GIB,
+            ),
+            _output(
+                "asset_package_manifest",
+                "AssetPackageManifest/1",
+                content_kind="json",
+                media_types=("application/json",),
+                max_size_bytes=8 * _MIB,
+                schema_discriminator="physrealx.asset-package-manifest/1",
+            ),
+            _output(
+                "roundtrip_validation_report",
+                "UsdRoundTripValidationReport/1",
+                content_kind="json",
+                media_types=("application/json",),
+                max_size_bytes=16 * _MIB,
+                schema_discriminator="physrealx.usd-roundtrip-validation-report/1",
+            ),
+        ),
+        input_kinds=("resource",),
+    ),
+    MethodCapability.SCENE_GENERATE: _ServiceMethodContract(
+        "SceneGenerationRequest/1",
+        (),
+        (_output("scene_draft", "SceneDraft/1"),),
+    ),
+    MethodCapability.SCENE_COMPOSE: _ServiceMethodContract(
+        "SceneDraft/1",
+        ("scene",),
+        (
+            _output("scene_spec", "SceneSpec/1"),
+            _output("constraint_report", "ConstraintReport/1"),
+        ),
+    ),
+    MethodCapability.TASK_COMPILE: _ServiceMethodContract(
+        "SceneSpec/1+Instruction/1",
+        ("scene",),
+        (_output("task_spec", "TaskSpec/1"),),
+    ),
+    MethodCapability.TASK_VALIDATE: _ServiceMethodContract(
+        "TaskSpec/1",
+        ("task",),
+        (_output("validation_report", "TaskValidationReport/1"),),
+    ),
+    MethodCapability.TRAJECTORY_GENERATE: _ServiceMethodContract(
+        "TaskInstance/1",
+        ("instance",),
+        (
+            _output("trajectory", "Trajectory/1"),
+            _output("planning_report", "PlanningReport/1"),
+        ),
+    ),
+    MethodCapability.SIMULATION_RUN: _ServiceMethodContract(
+        "SceneSpec/1+TaskSpec/1",
+        ("scene", "task"),
+        (
+            _output("state_trajectory", "StateTrajectory/1"),
+            _output("simulation_report", "SimulationReport/1"),
+        ),
+    ),
+    MethodCapability.RENDER_GENERATE: _ServiceMethodContract(
+        "StateTrajectory/1",
+        ("state_trajectory",),
+        (
+            _output("render_streams", "RenderStreams/1"),
+            _output("camera_metadata", "CameraMetadata/1"),
+        ),
+    ),
+    MethodCapability.EVENT_SYNTHESIZE: _ServiceMethodContract(
+        "RGBStream/1",
+        ("rgb_stream",),
+        (_output("event_stream", "EventStream/1"),),
+    ),
+    MethodCapability.POINT_CLOUD_PROJECT: _ServiceMethodContract(
+        "DepthStream/1",
+        ("depth",),
+        (_output("point_cloud", "PointCloud/1"),),
+    ),
+    MethodCapability.EPISODE_PACK: _ServiceMethodContract(
+        "RunEvidence/1",
+        ("run",),
+        (
+            _output("episode_bundle", "EpisodeBundle/1"),
+            _output("episode_manifest", "EpisodeManifest/1"),
+        ),
+    ),
+    MethodCapability.DATASET_INGEST: _ServiceMethodContract(
+        "EpisodeBundle/1",
+        ("source",),
+        (
+            _output("dataset", "DatasetBundle/1"),
+            _output("quality_report", "DataQualityReport/1"),
+        ),
+    ),
+    MethodCapability.DATASET_SNAPSHOT: _ServiceMethodContract(
+        "DatasetBundle/1",
+        ("dataset",),
+        (
+            _output("snapshot", "DatasetSnapshot/1"),
+            _output("snapshot_manifest", "SnapshotManifest/1"),
+        ),
+    ),
+    MethodCapability.MODEL_REGISTER: _ServiceMethodContract(
+        "ModelBundle/1",
+        ("model",),
+        (_output("model_registration", "ModelRegistration/1"),),
+    ),
+    MethodCapability.WORLD_MODEL_ROLLOUT: _ServiceMethodContract(
+        "ModelBundle/1+ContextWindow/1+ActionSequence/1",
+        ("model", "context", "actions"),
+        (
+            _output("rollout", "WorldModelRollout/1"),
+            _output("uncertainty", "UncertaintyReport/1"),
+        ),
+    ),
+    MethodCapability.EVALUATION_RUN: _ServiceMethodContract(
+        "ModelBundle/1+BenchmarkSuite/1",
+        ("model", "suite"),
+        (
+            _output("evaluation_report", "EvaluationReport/1"),
+            _output("episode_evidence", "EpisodeEvidence/1"),
+        ),
+    ),
+    MethodCapability.DEPLOYMENT_STAGE: _ServiceMethodContract(
+        "ModelBundle/1+RobotTarget/1",
+        ("model", "robot"),
+        (
+            _output("deployment_plan", "DeploymentPlan/1"),
+            _output("safety_report", "SafetyReport/1"),
+        ),
+    ),
+    MethodCapability.TELEMETRY_RECORD: _ServiceMethodContract(
+        "DeploymentRun/1",
+        ("run",),
+        (
+            _output("telemetry", "TelemetryBundle/1"),
+            _output("telemetry_manifest", "TelemetryManifest/1"),
+        ),
+    ),
+    MethodCapability.FAILURE_ANALYZE: _ServiceMethodContract(
+        "TelemetryBundle/1",
+        ("run",),
+        (_output("failure_report", "FailureReport/1"),),
+    ),
+    MethodCapability.FEEDBACK_BUILD_DATASET: _ServiceMethodContract(
+        "FailureQuery/1",
+        ("query",),
+        (
+            _output("dataset", "DatasetBundle/1"),
+            _output("selection_report", "SelectionReport/1"),
+        ),
+    ),
+}
 
 
 class AssetsService:
@@ -94,14 +448,58 @@ class AssetsService:
     def list_observations(self) -> builtins.list[VersionedRef]:
         return self._platform._list_resources(ResourceType.OBSERVATION_SET)
 
-    def build(self, spec: DigitalTwinBuildSpec) -> DigitalTwinBuildResult:
-        return self._platform._build_digital_twin(spec)
+    def recover_cameras(
+        self,
+        observations: VersionedRef,
+        *,
+        method: str | MethodSpec,
+        config: Mapping[str, JSONValue] | None = None,
+    ) -> OperationManifest:
+        """Recover camera intrinsics, poses and an unscaled sparse reconstruction."""
 
-    def get_build(self, reference: VersionedRef) -> DigitalTwinBuildManifest:
-        return self._platform._load_registered(reference, DigitalTwinBuildManifest)
+        if observations.resource_type is not ResourceType.OBSERVATION_SET:
+            raise DomainValidationError(
+                "assets.recover_cameras requires an observation-set reference"
+            )
+        return self._platform.methods.execute(
+            MethodCapability.CAMERA_RECOVER,
+            method,
+            inputs={"observations": observations},
+            config=config,
+        )
 
-    def list_builds(self) -> builtins.list[VersionedRef]:
-        return self._platform._list_resources(ResourceType.ASSET_BUILD)
+    def align_cameras_metric(
+        self,
+        camera_rig: ArtifactRef,
+        evidence: ArtifactRef,
+        *,
+        method: str | MethodSpec,
+        config: Mapping[str, JSONValue] | None = None,
+    ) -> OperationManifest:
+        """Resolve a recovered camera rig into metres from held-out metrology evidence."""
+
+        return self._platform.methods.execute(
+            MethodCapability.CAMERA_ALIGN_METRIC,
+            method,
+            inputs={"camera_rig": camera_rig, "evidence": evidence},
+            config=config,
+        )
+
+    def enhance_depth(
+        self,
+        rgbd: VersionedRef,
+        *,
+        method: str | MethodSpec,
+        config: Mapping[str, JSONValue] | None = None,
+    ) -> OperationManifest:
+        """Complete calibrated metric RGB-D while retaining held-out quality evidence."""
+
+        return self._platform.methods.execute(
+            MethodCapability.DEPTH_ENHANCE,
+            method,
+            inputs={"rgbd": rgbd},
+            config=config,
+        )
 
     def validate(
         self,
@@ -118,7 +516,7 @@ class AssetsService:
 
     def articulate(
         self,
-        source: VersionedRef | ArtifactRef,
+        pair: VersionedRef,
         *,
         method: str | MethodSpec,
         config: Mapping[str, JSONValue] | None = None,
@@ -126,14 +524,13 @@ class AssetsService:
         return self._platform.methods.execute(
             MethodCapability.ARTICULATION_RECOVER,
             method,
-            inputs={"source": source},
+            inputs={"pair": pair},
             config=config,
-            outputs={"articulation": "ArticulationModel"},
         )
 
     def build_collision(
         self,
-        asset: VersionedRef | ArtifactRef,
+        asset: ArtifactRef,
         *,
         method: str | MethodSpec,
         config: Mapping[str, JSONValue] | None = None,
@@ -143,13 +540,11 @@ class AssetsService:
             method,
             inputs={"asset": asset},
             config=config,
-            outputs={"collision_geometry": "CollisionGeometry"},
         )
 
     def calibrate_physics(
         self,
-        asset: VersionedRef | ArtifactRef,
-        evidence: VersionedRef | ArtifactRef,
+        evidence: VersionedRef,
         *,
         method: str | MethodSpec,
         config: Mapping[str, JSONValue] | None = None,
@@ -157,14 +552,13 @@ class AssetsService:
         return self._platform.methods.execute(
             MethodCapability.PHYSICS_CALIBRATE,
             method,
-            inputs={"asset": asset, "evidence": evidence},
+            inputs={"evidence": evidence},
             config=config,
-            outputs={"identified_physics": "IdentifiedPhysics"},
         )
 
     def package(
         self,
-        asset: VersionedRef | ArtifactRef,
+        asset: VersionedRef,
         *,
         method: str | MethodSpec,
         config: Mapping[str, JSONValue] | None = None,
@@ -174,10 +568,6 @@ class AssetsService:
             method,
             inputs={"asset": asset},
             config=config,
-            outputs={
-                "asset_package": "PackagedAsset",
-                "asset_manifest": "AssetPackageManifest",
-            },
         )
 
 
@@ -229,11 +619,10 @@ class MethodsService:
         inputs: Mapping[str, VersionedRef | ArtifactRef] | None = None,
         config: Mapping[str, JSONValue] | None = None,
         arguments: Mapping[str, JSONValue] | None = None,
-        outputs: Mapping[str, str],
         resource_id: str | None = None,
         version: str = "1.0.0",
     ) -> OperationManifest:
-        """Bind, validate and execute one capability method with immutable inputs."""
+        """Execute the canonical contract owned by one public capability service."""
 
         if isinstance(method, MethodSpec) and config is not None:
             raise DomainValidationError(
@@ -247,19 +636,55 @@ class MethodsService:
                 f"service requires capability {capability.value!r}, got "
                 f"{selected.capability.value!r}"
             )
+        try:
+            service_contract = _SERVICE_METHOD_CONTRACTS[capability]
+        except KeyError as error:
+            raise DomainValidationError(
+                f"capability {capability.value!r} has no public service contract; "
+                "execute it through an explicit external recipe"
+            ) from error
+        descriptor = selected.descriptor
+        if descriptor.input_contract != service_contract.input_contract:
+            raise DomainValidationError(
+                f"method {capability.value}:{selected.name!r} declares input contract "
+                f"{descriptor.input_contract!r}; the service requires "
+                f"{service_contract.input_contract!r}"
+            )
+        declared_outputs = tuple(descriptor.output_contract.split("+"))
+        required_outputs = tuple(item.contract for item in service_contract.outputs)
+        if sorted(declared_outputs) != sorted(required_outputs):
+            raise DomainValidationError(
+                f"method {capability.value}:{selected.name!r} declares output contracts "
+                f"{declared_outputs!r}; the service requires {required_outputs!r}"
+            )
+        supplied = inputs or {}
+        supplied_inputs = tuple(supplied)
+        if set(supplied_inputs) != set(service_contract.input_names):
+            raise DomainValidationError(
+                f"service {capability.value!r} requires inputs "
+                f"{service_contract.input_names!r}, got {supplied_inputs!r}"
+            )
+        for name, value, expected_kind in zip(
+            service_contract.input_names,
+            (supplied[name] for name in service_contract.input_names),
+            service_contract.input_kinds,
+        ):
+            actual_kind = "resource" if isinstance(value, VersionedRef) else "artifact"
+            if expected_kind != "either" and actual_kind != expected_kind:
+                raise DomainValidationError(
+                    f"service input {name!r} must be an immutable {expected_kind}, "
+                    f"got {actual_kind}"
+                )
         self._platform.plugins.resolve_method(selected)
         operation_inputs = tuple(
             OperationInput(
                 name=name,
-                resource=value if isinstance(value, VersionedRef) else None,
-                artifact=value if isinstance(value, ArtifactRef) else None,
+                resource=supplied[name] if isinstance(supplied[name], VersionedRef) else None,
+                artifact=supplied[name] if isinstance(supplied[name], ArtifactRef) else None,
             )
-            for name, value in sorted((inputs or {}).items())
+            for name in service_contract.input_names
         )
-        output_requirements = tuple(
-            OperationOutputRequirement(name=name, contract=contract)
-            for name, contract in sorted(outputs.items())
-        )
+        output_requirements = service_contract.outputs
         identity_payload: dict[str, JSONValue] = {
             "method": selected.model_dump(mode="json"),
             "inputs": [item.model_dump(mode="json") for item in operation_inputs],
@@ -321,7 +746,6 @@ class ScenesService:
             method,
             config=config,
             arguments=request,
-            outputs={"scene_draft": "SceneDraft"},
         )
 
     def compose(
@@ -336,7 +760,6 @@ class ScenesService:
             method,
             inputs={"scene": scene},
             config=config,
-            outputs={"scene_spec": "SceneSpec", "constraint_report": "ConstraintReport"},
         )
 
 
@@ -367,7 +790,6 @@ class TasksService:
             inputs={"scene": scene},
             config=config,
             arguments={"instruction": instruction},
-            outputs={"task_spec": "TaskSpec"},
         )
 
     def validate(
@@ -382,7 +804,6 @@ class TasksService:
             method,
             inputs={"task": task},
             config=config,
-            outputs={"validation_report": "TaskValidationReport"},
         )
 
 
@@ -402,7 +823,6 @@ class TrajectoriesService:
             method,
             inputs={"instance": instance},
             config=config,
-            outputs={"trajectory": "Trajectory", "planning_report": "PlanningReport"},
         )
 
 
@@ -423,10 +843,6 @@ class SimulationsService:
             method,
             inputs={"scene": scene, "task": task},
             config=config,
-            outputs={
-                "state_trajectory": "StateTrajectory",
-                "simulation_report": "SimulationReport",
-            },
         )
 
 
@@ -446,10 +862,6 @@ class RendersService:
             method,
             inputs={"state_trajectory": trajectory},
             config=config,
-            outputs={
-                "render_streams": "RenderStreams",
-                "camera_metadata": "CameraMetadata",
-            },
         )
 
 
@@ -469,7 +881,6 @@ class EventsService:
             method,
             inputs={"rgb_stream": rgb_stream},
             config=config,
-            outputs={"event_stream": "EventStream"},
         )
 
 
@@ -489,7 +900,6 @@ class PointCloudsService:
             method,
             inputs={"depth": depth},
             config=config,
-            outputs={"point_cloud": "PointCloud"},
         )
 
 
@@ -509,10 +919,6 @@ class EpisodesService:
             method,
             inputs={"run": run},
             config=config,
-            outputs={
-                "episode_bundle": "EpisodeBundle",
-                "episode_manifest": "EpisodeManifest",
-            },
         )
 
 
@@ -563,7 +969,6 @@ class DatasetsService:
             method,
             inputs={"source": source},
             config=config,
-            outputs={"dataset": "DatasetBundle", "quality_report": "DataQualityReport"},
         )
 
     def snapshot(
@@ -578,7 +983,6 @@ class DatasetsService:
             method,
             inputs={"dataset": dataset},
             config=config,
-            outputs={"snapshot": "DatasetSnapshot", "snapshot_manifest": "SnapshotManifest"},
         )
 
 
@@ -612,7 +1016,6 @@ class ModelsService:
             method,
             inputs={"model": model},
             config=config,
-            outputs={"model_registration": "ModelRegistration"},
         )
 
 
@@ -632,9 +1035,8 @@ class WorldModelsService:
         return self._platform.methods.execute(
             MethodCapability.WORLD_MODEL_ROLLOUT,
             method,
-            inputs={"actions": actions, "context": context, "model": model},
+            inputs={"model": model, "context": context, "actions": actions},
             config=config,
-            outputs={"rollout": "WorldModelRollout", "uncertainty": "UncertaintyReport"},
         )
 
 
@@ -680,10 +1082,6 @@ class EvaluationsService:
             method,
             inputs={"model": model, "suite": suite},
             config=config,
-            outputs={
-                "evaluation_report": "EvaluationReport",
-                "episode_evidence": "EpisodeEvidence",
-            },
         )
 
 
@@ -704,10 +1102,6 @@ class DeploymentsService:
             method,
             inputs={"model": model, "robot": robot},
             config=config,
-            outputs={
-                "deployment_plan": "DeploymentPlan",
-                "safety_report": "SafetyReport",
-            },
         )
 
 
@@ -727,10 +1121,6 @@ class TelemetryService:
             method,
             inputs={"run": run},
             config=config,
-            outputs={
-                "telemetry": "TelemetryBundle",
-                "telemetry_manifest": "TelemetryManifest",
-            },
         )
 
 
@@ -750,7 +1140,6 @@ class FailuresService:
             method,
             inputs={"run": run},
             config=config,
-            outputs={"failure_report": "FailureReport"},
         )
 
 
@@ -770,7 +1159,6 @@ class FeedbackService:
             method,
             inputs={"query": query},
             config=config,
-            outputs={"dataset": "DatasetBundle", "selection_report": "SelectionReport"},
         )
 
 
@@ -787,6 +1175,7 @@ __all__ = [
     "ModelsService",
     "OperationsService",
     "PointCloudsService",
+    "ReadinessService",
     "RendersService",
     "RunsService",
     "ScenesService",

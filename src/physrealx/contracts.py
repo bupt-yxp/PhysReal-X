@@ -8,11 +8,8 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from physrealx.digital_twin import (
-    AssetValidationReport,
-    DigitalTwinBuildSpec,
     ObservationSetManifest,
     SourceInspection,
-    StageExecutionRecord,
 )
 from physrealx.domain import (
     ArtifactRef,
@@ -135,27 +132,6 @@ class ObservationImporter(Protocol):
         config: Mapping[str, JSONValue],
         artifacts: ArtifactWriter,
     ) -> ObservationSetManifest: ...
-
-
-@dataclass(frozen=True)
-class DigitalTwinPipelineOutput:
-    asset: AssetSpec
-    stages: tuple[StageExecutionRecord, ...]
-    validation: AssetValidationReport
-
-
-@runtime_checkable
-class DigitalTwinPipeline(Protocol):
-    """Composite worker adapter executing one versioned digital-twin recipe."""
-
-    descriptor: MethodDescriptor
-
-    def build(
-        self,
-        spec: DigitalTwinBuildSpec,
-        source: ObservationSetManifest,
-        artifacts: ArtifactStore,
-    ) -> DigitalTwinPipelineOutput: ...
 
 
 @dataclass(frozen=True)

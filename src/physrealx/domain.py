@@ -170,7 +170,9 @@ def _deep_freeze(value: Any) -> Any:
 def canonical_json_bytes(value: BaseModel | JsonValue) -> bytes:
     """Return deterministic UTF-8 JSON and reject NaN/Infinity."""
 
-    payload = value.model_dump(mode="json") if isinstance(value, BaseModel) else value
+    payload = (
+        value.model_dump(mode="json", by_alias=True) if isinstance(value, BaseModel) else value
+    )
     return json.dumps(
         payload,
         allow_nan=False,
@@ -189,6 +191,7 @@ class DomainModel(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
         frozen=True,
+        populate_by_name=True,
         str_strip_whitespace=True,
         validate_default=True,
     )
@@ -216,7 +219,6 @@ class DomainModel(BaseModel):
 
 class ResourceType(StrEnum):
     ASSET = "asset"
-    ASSET_BUILD = "asset_build"
     OBSERVATION_SET = "observation_set"
     SCENE = "scene"
     TASK = "task"
@@ -224,20 +226,22 @@ class ResourceType(StrEnum):
     MODEL = "model"
     EVALUATION = "evaluation"
     OPERATION = "operation"
+    RECIPE_EXECUTION = "recipe_execution"
 
 
 class MethodCapability(StrEnum):
     """One replaceable implementation boundary in the platform."""
 
     OBSERVATION_IMPORT = "observation.import"
-    ASSET_BUILD = "asset.build"
     ASSET_NORMALIZE = "asset.normalize"
     CAMERA_RECOVER = "camera.recover"
+    CAMERA_ALIGN_METRIC = "camera.align_metric"
     DEPTH_ENHANCE = "depth.enhance"
     GEOMETRY_RECONSTRUCT = "geometry.reconstruct"
     ARTICULATION_RECOVER = "articulation.recover"
     COLLISION_BUILD = "collision.build"
     PHYSICS_CALIBRATE = "physics.calibrate"
+    ASSET_ASSEMBLE = "asset.assemble"
     ASSET_GENERATE = "asset.generate"
     ASSET_PACKAGE = "asset.package"
     ASSET_VALIDATE = "asset.validate"
@@ -487,15 +491,42 @@ class OperationOutput(DomainModel):
 
 
 class OperationOutputRequirement(DomainModel):
-    """One exact output name and semantic contract required from a worker."""
+    """One output contract plus its declarative publication constraints.
+
+    Known platform contracts also have centrally maintained validators.  These
+    optional fields let new worker packages narrow media, size, and payload
+    shape before a core release adds a named contract validator.
+    """
 
     name: str
     contract: str = Field(min_length=1, max_length=127)
+    content_kind: Literal["auto", "binary", "json", "zip"] = "auto"
+    media_types: tuple[str, ...] = ()
+    max_size_bytes: int | None = Field(default=None, gt=0)
+    schema_discriminator: str | None = Field(default=None, min_length=1, max_length=255)
 
     @field_validator("name")
     @classmethod
     def validate_name(cls, value: str) -> str:
         return _identifier(value, "operation output requirement name")
+
+    @field_validator("media_types")
+    @classmethod
+    def validate_media_types(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(value) != len(set(value)):
+            raise ValueError("output media_types must be unique")
+        if any(
+            "/" not in item or not item.strip() or any(character.isspace() for character in item)
+            for item in value
+        ):
+            raise ValueError("output media_types must be normalized MIME types")
+        return value
+
+    @model_validator(mode="after")
+    def validate_content_constraints(self) -> OperationOutputRequirement:
+        if self.schema_discriminator is not None and self.content_kind not in {"auto", "json"}:
+            raise ValueError("schema_discriminator is only valid for JSON outputs")
+        return self
 
 
 class OperationSpec(DomainModel):
@@ -536,6 +567,12 @@ class OperationSpec(DomainModel):
         names = [item.name for item in self.inputs]
         if len(names) != len(set(names)):
             raise ValueError("operation input names must be unique")
+        declared_contracts = tuple(self.method.descriptor.output_contract.split("+"))
+        requested_contracts = tuple(item.contract for item in self.outputs)
+        if sorted(requested_contracts) != sorted(declared_contracts):
+            raise ValueError(
+                "operation outputs must exactly match the selected method output contract"
+            )
         return self
 
     def reference(self, digest: str | None = None) -> VersionedRef:

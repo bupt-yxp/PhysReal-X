@@ -1,0 +1,1 @@
+# COLMAP is an attested native executable; the adapter has no Python algorithm dependency.

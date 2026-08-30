@@ -190,8 +190,8 @@ class ReferenceDrawerBackend:
     descriptor = builtin_method(
         MethodCapability.SIMULATION_RUN,
         "reference_drawer",
-        input_contract="SceneSpec+TaskSpec+AssetSpec",
-        output_contract="SimulationSession",
+        input_contract="SceneSpec/1+TaskSpec/1+AssetSpec/1",
+        output_contract="SimulationSession/1",
     )
 
     def capabilities(self) -> BackendCapabilities:
@@ -224,8 +224,8 @@ class ScriptedDrawerPolicy:
     descriptor = builtin_method(
         MethodCapability.POLICY_INFERENCE,
         "scripted_drawer",
-        input_contract="Frame+TaskSpec",
-        output_contract="DataValue",
+        input_contract="Frame/1+TaskSpec/1",
+        output_contract="DataValue/1",
     )
 
     def __init__(self, config: Mapping[str, JSONValue]) -> None:

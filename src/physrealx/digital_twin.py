@@ -10,7 +10,6 @@ from __future__ import annotations
 import math
 import re
 import sys
-from datetime import datetime, timezone
 from enum import Enum
 from typing import Literal
 
@@ -18,10 +17,7 @@ from pydantic import Field, JsonValue, field_validator, model_validator
 
 from physrealx.domain import (
     ArtifactRef,
-    AssetSpec,
     DomainModel,
-    MethodCapability,
-    MethodSpec,
     ResourceType,
     VersionedRef,
 )
@@ -283,115 +279,6 @@ class ObservationSetManifest(DomainModel):
         )
 
 
-class DigitalTwinStage(StrEnum):
-    NORMALIZATION = "normalization"
-    CAMERA_RECOVERY = "camera_recovery"
-    DEPTH_ENHANCEMENT = "depth_enhancement"
-    GEOMETRY_RECONSTRUCTION = "geometry_reconstruction"
-    ARTICULATION_RECOVERY = "articulation_recovery"
-    COLLISION_BUILD = "collision_build"
-    PHYSICS_CALIBRATION = "physics_calibration"
-    ASSET_PACKAGING = "asset_packaging"
-    QUALITY_VALIDATION = "quality_validation"
-
-
-_STAGE_ORDER = {stage: index for index, stage in enumerate(DigitalTwinStage)}
-
-_STAGE_CAPABILITY = {
-    DigitalTwinStage.NORMALIZATION: MethodCapability.ASSET_NORMALIZE,
-    DigitalTwinStage.CAMERA_RECOVERY: MethodCapability.CAMERA_RECOVER,
-    DigitalTwinStage.DEPTH_ENHANCEMENT: MethodCapability.DEPTH_ENHANCE,
-    DigitalTwinStage.GEOMETRY_RECONSTRUCTION: MethodCapability.GEOMETRY_RECONSTRUCT,
-    DigitalTwinStage.ARTICULATION_RECOVERY: MethodCapability.ARTICULATION_RECOVER,
-    DigitalTwinStage.COLLISION_BUILD: MethodCapability.COLLISION_BUILD,
-    DigitalTwinStage.PHYSICS_CALIBRATION: MethodCapability.PHYSICS_CALIBRATE,
-    DigitalTwinStage.ASSET_PACKAGING: MethodCapability.ASSET_PACKAGE,
-    DigitalTwinStage.QUALITY_VALIDATION: MethodCapability.ASSET_VALIDATE,
-}
-
-
-class DigitalTwinStep(DomainModel):
-    stage: DigitalTwinStage
-    method: MethodSpec
-
-    @model_validator(mode="after")
-    def validate_method_capability(self) -> DigitalTwinStep:
-        expected = _STAGE_CAPABILITY[self.stage]
-        if self.method.capability is not expected:
-            raise ValueError(
-                f"stage {self.stage.value!r} requires method capability {expected.value!r}"
-            )
-        return self
-
-
-class DigitalTwinRecipe(DomainModel):
-    schema_version: Literal[1] = 1
-    name: str
-    version: str
-    pipeline: str
-    pipeline_version: str
-    steps: tuple[DigitalTwinStep, ...]
-
-    @field_validator("name", "pipeline")
-    @classmethod
-    def validate_identifiers(cls, value: str, info: object) -> str:
-        return _identifier(value, getattr(info, "field_name", "identifier"))
-
-    @field_validator("version", "pipeline_version")
-    @classmethod
-    def validate_versions(cls, value: str) -> str:
-        return _semver(value)
-
-    @model_validator(mode="after")
-    def validate_steps(self) -> DigitalTwinRecipe:
-        stages = [item.stage for item in self.steps]
-        if len(stages) != len(set(stages)):
-            raise ValueError("digital-twin recipe stages must be unique")
-        if stages != sorted(stages, key=_STAGE_ORDER.__getitem__):
-            raise ValueError("digital-twin recipe stages must follow execution order")
-        required = {
-            DigitalTwinStage.NORMALIZATION,
-            DigitalTwinStage.CAMERA_RECOVERY,
-            DigitalTwinStage.GEOMETRY_RECONSTRUCTION,
-            DigitalTwinStage.ARTICULATION_RECOVERY,
-            DigitalTwinStage.COLLISION_BUILD,
-            DigitalTwinStage.PHYSICS_CALIBRATION,
-            DigitalTwinStage.ASSET_PACKAGING,
-            DigitalTwinStage.QUALITY_VALIDATION,
-        }
-        missing = sorted(item.value for item in required - set(stages))
-        if missing:
-            raise ValueError(f"digital-twin recipe is missing required stages: {missing}")
-        return self
-
-
-class DigitalTwinBuildSpec(DomainModel):
-    schema_version: Literal[1] = 1
-    resource_id: str
-    version: str
-    source: VersionedRef
-    recipe: DigitalTwinRecipe
-
-    @field_validator("resource_id")
-    @classmethod
-    def validate_resource_id(cls, value: str) -> str:
-        return _identifier(value, "resource_id")
-
-    @field_validator("version")
-    @classmethod
-    def validate_version(cls, value: str) -> str:
-        return _semver(value)
-
-    @model_validator(mode="after")
-    def validate_source(self) -> DigitalTwinBuildSpec:
-        if (
-            self.source.resource_type is not ResourceType.OBSERVATION_SET
-            or not self.source.resolved
-        ):
-            raise ValueError("digital-twin build requires a resolved observation-set reference")
-        return self
-
-
 class AssetValidationProfile(StrEnum):
     SCHEMA = "schema"
     SIMULATION = "simulation"
@@ -427,111 +314,11 @@ class AssetValidationReport(DomainModel):
         return not any(item.severity is IssueSeverity.ERROR for item in self.issues)
 
 
-class StageExecutionRecord(DomainModel):
-    stage: DigitalTwinStage
-    method: MethodSpec
-    outputs: tuple[ArtifactRef, ...] = ()
-    metrics: dict[str, float] = Field(default_factory=dict)
-    started_at: datetime
-    completed_at: datetime
-
-    @model_validator(mode="after")
-    def validate_record(self) -> StageExecutionRecord:
-        if self.started_at.tzinfo is None or self.completed_at.tzinfo is None:
-            raise ValueError("stage timestamps must include a UTC offset")
-        if self.completed_at < self.started_at:
-            raise ValueError("stage completion cannot precede its start")
-        if any(not math.isfinite(value) for value in self.metrics.values()):
-            raise ValueError("stage metrics must be finite")
-        if len({item.digest for item in self.outputs}) != len(self.outputs):
-            raise ValueError("stage outputs must be unique")
-        return self
-
-
-class DigitalTwinBuildManifest(DomainModel):
-    schema_version: Literal[1] = 1
-    resource_id: str
-    version: str
-    source: VersionedRef
-    recipe: DigitalTwinRecipe
-    asset: VersionedRef
-    stages: tuple[StageExecutionRecord, ...]
-    validation: AssetValidationReport
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-    @field_validator("resource_id")
-    @classmethod
-    def validate_resource_id(cls, value: str) -> str:
-        return _identifier(value, "resource_id")
-
-    @field_validator("version")
-    @classmethod
-    def validate_version(cls, value: str) -> str:
-        return _semver(value)
-
-    @model_validator(mode="after")
-    def validate_manifest(self) -> DigitalTwinBuildManifest:
-        if (
-            self.source.resource_type is not ResourceType.OBSERVATION_SET
-            or not self.source.resolved
-        ):
-            raise ValueError("build manifest source must be a resolved observation set")
-        if self.asset.resource_type is not ResourceType.ASSET or not self.asset.resolved:
-            raise ValueError("build manifest asset must be a resolved asset")
-        if not self.validation.passed:
-            raise ValueError("a failed candidate cannot be published as a build manifest")
-        expected = tuple(item.stage for item in self.recipe.steps)
-        actual = tuple(item.stage for item in self.stages)
-        if actual != expected:
-            raise ValueError("stage records must exactly match the recipe")
-        for step, record in zip(self.recipe.steps, self.stages):
-            if record.method != step.method:
-                raise ValueError("stage record method must match the recipe")
-        return self
-
-    def reference(self, digest: str | None = None) -> VersionedRef:
-        return VersionedRef(
-            resource_type=ResourceType.ASSET_BUILD,
-            resource_id=self.resource_id,
-            version=self.version,
-            digest=digest,
-        )
-
-
-class DigitalTwinBuildResult(DomainModel):
-    asset: VersionedRef
-    build: VersionedRef
-    validation: AssetValidationReport
-
-    @model_validator(mode="after")
-    def validate_result(self) -> DigitalTwinBuildResult:
-        if self.asset.resource_type is not ResourceType.ASSET or not self.asset.resolved:
-            raise ValueError("build result asset must be resolved")
-        if self.build.resource_type is not ResourceType.ASSET_BUILD or not self.build.resolved:
-            raise ValueError("build result manifest must be resolved")
-        if not self.validation.passed:
-            raise ValueError("build result requires a passing validation report")
-        return self
-
-
-def ensure_pipeline_output_identity(spec: DigitalTwinBuildSpec, asset: AssetSpec) -> None:
-    """Reject plugins that return an asset outside the requested identity."""
-
-    if asset.resource_id != spec.resource_id or asset.version != spec.version:
-        raise ValueError("digital-twin pipeline returned an asset outside the requested identity")
-
-
 __all__ = [
     "AssetValidationIssue",
     "AssetValidationProfile",
     "AssetValidationReport",
     "AttachmentRole",
-    "DigitalTwinBuildManifest",
-    "DigitalTwinBuildResult",
-    "DigitalTwinBuildSpec",
-    "DigitalTwinRecipe",
-    "DigitalTwinStage",
-    "DigitalTwinStep",
     "IssueSeverity",
     "ObservationModality",
     "ObservationSetManifest",
@@ -541,6 +328,4 @@ __all__ = [
     "SourceInspection",
     "SourceIssue",
     "SourceStreamSummary",
-    "StageExecutionRecord",
-    "ensure_pipeline_output_identity",
 ]

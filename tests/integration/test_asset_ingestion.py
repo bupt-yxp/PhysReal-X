@@ -1,27 +1,12 @@
 from __future__ import annotations
 
 import struct
-from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
-from physrealx.contracts import ArtifactStore, DigitalTwinPipelineOutput
-from physrealx.digital_twin import (
-    AssetValidationProfile,
-    AssetValidationReport,
-    DigitalTwinBuildSpec,
-    DigitalTwinRecipe,
-    DigitalTwinStage,
-    DigitalTwinStep,
-    ObservationSetManifest,
-    StageExecutionRecord,
-)
-from physrealx.domain import MethodCapability
-from physrealx.errors import ResourceConflictError, SourcePackageError
-from physrealx.methods import builtin_method
+from physrealx.errors import SourcePackageError
 from physrealx.platform import PhysRealX
-from physrealx.reference import reference_asset
 
 
 def _write_npy(path: Path, count: int) -> None:
@@ -52,92 +37,6 @@ def _source(root: Path, *, start_count: int = 2, end_count: int = 3) -> Path:
     simulation.mkdir()
     (simulation / "candidate.usd").write_text("#usda 1.0\n", encoding="utf-8")
     return root
-
-
-def _recipe() -> DigitalTwinRecipe:
-    methods = {
-        DigitalTwinStage.NORMALIZATION: (MethodCapability.ASSET_NORMALIZE, "normalize"),
-        DigitalTwinStage.CAMERA_RECOVERY: (MethodCapability.CAMERA_RECOVER, "camera_recovery"),
-        DigitalTwinStage.GEOMETRY_RECONSTRUCTION: (
-            MethodCapability.GEOMETRY_RECONSTRUCT,
-            "open3d_fusion",
-        ),
-        DigitalTwinStage.ARTICULATION_RECOVERY: (
-            MethodCapability.ARTICULATION_RECOVER,
-            "ditto",
-        ),
-        DigitalTwinStage.COLLISION_BUILD: (MethodCapability.COLLISION_BUILD, "coacd"),
-        DigitalTwinStage.PHYSICS_CALIBRATION: (
-            MethodCapability.PHYSICS_CALIBRATE,
-            "mujoco_sysid",
-        ),
-        DigitalTwinStage.ASSET_PACKAGING: (MethodCapability.ASSET_PACKAGE, "openusd"),
-        DigitalTwinStage.QUALITY_VALIDATION: (
-            MethodCapability.ASSET_VALIDATE,
-            "physics_probe",
-        ),
-    }
-    return DigitalTwinRecipe(
-        name="cabinet_twin",
-        version="1.0.0",
-        pipeline="test_pipeline",
-        pipeline_version="1.0.0",
-        steps=tuple(
-            DigitalTwinStep(
-                stage=stage,
-                method=builtin_method(
-                    capability,
-                    name,
-                    input_contract="TestInput",
-                    output_contract="TestOutput",
-                ).bind(),
-            )
-            for stage, (capability, name) in methods.items()
-        ),
-    )
-
-
-class _Pipeline:
-    descriptor = builtin_method(
-        MethodCapability.ASSET_BUILD,
-        "test_pipeline",
-        input_contract="DigitalTwinBuildSpec+ObservationSetManifest",
-        output_contract="DigitalTwinPipelineOutput",
-    )
-
-    def __init__(self) -> None:
-        self.calls = 0
-
-    def build(
-        self,
-        spec: DigitalTwinBuildSpec,
-        source: ObservationSetManifest,
-        artifacts: ArtifactStore,
-    ) -> DigitalTwinPipelineOutput:
-        del source, artifacts
-        self.calls += 1
-        now = datetime.now(timezone.utc)
-        stages = tuple(
-            StageExecutionRecord(
-                stage=step.stage,
-                method=step.method,
-                started_at=now,
-                completed_at=now,
-            )
-            for step in spec.recipe.steps
-        )
-        asset = reference_asset().model_copy(
-            update={
-                "resource_id": spec.resource_id,
-                "version": spec.version,
-                "display_name": "Imported cabinet digital twin",
-            }
-        )
-        return DigitalTwinPipelineOutput(
-            asset=asset,
-            stages=stages,
-            validation=AssetValidationReport(profile=AssetValidationProfile.DIGITAL_TWIN),
-        )
 
 
 @pytest.mark.integration
@@ -201,41 +100,3 @@ def test_artmodeling_ingestion_rejects_incomplete_or_ambiguous_sources(
             display_name="Bad observations",
             config={"depth_unit": "mm", "coordinate_frame": "camera"},
         )
-
-
-@pytest.mark.integration
-def test_digital_twin_build_is_validated_persisted_and_idempotent(tmp_path: Path) -> None:
-    source_path = _source(tmp_path / "cabinet2")
-    platform = PhysRealX.open(tmp_path / "workspace", discover_plugins=False)
-    source = platform.assets.ingest(
-        source_path,
-        resource_id="cabinet2.observations",
-        version="1.0.0",
-        display_name="Cabinet 2 observations",
-        config={"depth_unit": "mm", "coordinate_frame": "camera"},
-    )
-    pipeline = _Pipeline()
-    platform.plugins.register_asset_pipeline(pipeline)
-    spec = DigitalTwinBuildSpec(
-        resource_id="cabinet2",
-        version="1.0.0",
-        source=source,
-        recipe=_recipe(),
-    )
-    for step in spec.recipe.steps:
-        platform.methods.register(step.method.descriptor)
-
-    result = platform.assets.build(spec)
-    assert result.validation.passed
-    assert platform.assets.get(result.asset).display_name == "Imported cabinet digital twin"
-    assert platform.assets.get_build(result.build).source == source
-    assert platform.assets.build(spec) == result
-    assert pipeline.calls == 1
-
-    changed = spec.model_copy(
-        update={
-            "recipe": spec.recipe.model_copy(update={"version": "1.0.1"}),
-        }
-    )
-    with pytest.raises(ResourceConflictError, match="different source or recipe"):
-        platform.assets.build(changed)

@@ -15,9 +15,9 @@ hide:
 
 <p class="prx-eyebrow">具身智能数据与实验平台</p>
 
-# 把真实资产、仿真数据与机器人学习连成一条生产链
+# 把真实资产、仿真数据与机器人学习连成一条实验链路
 
-PhysReal-X 统一管理数字孪生、场景任务、仿真执行、Episode 数据、策略训练、独立评测与真机反馈，让每一次实验都可运行、可追溯、可复现。
+PhysReal-X 统一描述和编排数字孪生、场景任务、仿真执行、Episode 数据、策略训练、独立评测与真机反馈；只有通过能力注册和证据门禁的阶段才能执行与发布。
 
 <div class="prx-actions">
   <a class="md-button md-button--primary" href="getting-started/quickstart/">快速开始</a>
@@ -44,7 +44,7 @@ PhysReal-X 统一管理数字孪生、场景任务、仿真执行、Episode 数�
 </section>
 
 <nav class="prx-entry-strip" aria-label="文档快捷入口">
-  <a href="getting-started/"><span>01</span><strong>入门</strong><small>完成安装、环境配置与首个闭环实验</small></a>
+  <a href="getting-started/"><span>01</span><strong>入门</strong><small>完成安装、环境配置与首个契约实验</small></a>
   <a href="user-guide/"><span>02</span><strong>用户指南</strong><small>掌握资产、仿真、数据、训练与部署流程</small></a>
   <a href="api/"><span>03</span><strong>API 文档</strong><small>查询资源模型、服务方法与错误语义</small></a>
 </nav>
@@ -53,8 +53,8 @@ PhysReal-X 统一管理数字孪生、场景任务、仿真执行、Episode 数�
 
 <div class="prx-section__heading">
   <span>平台能力</span>
-  <h2>覆盖从真实世界到真机反馈的完整链路</h2>
-  <p>每个环节都使用可验证的资源、明确的生命周期和可追溯的输入输出。</p>
+  <h2>面向从真实世界到真机反馈的完整链路</h2>
+  <p>各环节通过可验证资源、明确生命周期和可追溯输入输出组合；缺失 worker 或科学证据时会显式阻断。</p>
 </div>
 
 <div class="prx-capability-grid">
@@ -158,9 +158,9 @@ dataset = px.datasets.get(px.runs.wait(run).dataset)
 
 <p class="prx-eyebrow">开始使用</p>
 
-## 用一个完整项目认识 PhysReal-X
+## 用一个可复现实验认识 PhysReal-X
 
-从安装环境开始，注册资产、定义场景任务、生成多模态数据，并把结果交给训练与评测服务。
+从安装环境开始，注册资产、定义场景任务、运行确定性参考后端，并把结果交给参考训练与评测服务。
 
 <div class="prx-actions prx-final-cta__actions">
   <a class="md-button" href="getting-started/installation/">安装与环境</a>

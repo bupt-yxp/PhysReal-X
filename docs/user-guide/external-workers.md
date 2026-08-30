@@ -1,66 +1,71 @@
-# 外部方法与实验验证
+# 外部方法与证据门禁
 
-算法环境与 PhysReal-X 核心环境彻底分离。平台通过工作区的 `workers.d` 加载方法描述符、执行命令和环境锁；每次执行均验证输入摘要、输出契约、资源限制与环境就绪状态。
+外部算法与 PhysReal-X 核心环境完全分离。平台通过工作区 `workers.d` 加载固定的
+方法描述符、执行命令和环境证明，且只把完整、版本化、可验证的资源闭包交给 worker。
 
-## 安装和就绪检查
-
-```bash
-python workers/install.py \
-  --root /data/physrealx-workers/envs \
-  --workspace /data/physrealx-workspace \
-  --blender-runtime /data/blender/blender-4.2.1-linux-x64 \
-  coacd mujoco blenderproc lerobot
-```
+## 方法就绪不等于名称存在
 
 ```python
-from physrealx import PhysRealX
+from physrealx import MethodCapability, PhysRealX
 
 px = PhysRealX.open("/data/physrealx-workspace")
-for installation in px.methods.installations():
-    print(installation.descriptor.name, installation.ready, installation.detail)
+installation = px.methods.inspect(MethodCapability.CAMERA_RECOVER, "colmap")
+if not installation.ready:
+    raise RuntimeError(installation.detail)
 ```
 
-只有探测通过的 worker 才可执行。未安装方法、被篡改的环境锁或不匹配的 NumPy 版本都会在运行前失败。
+就绪判定同时要求：
 
-已有环境位于只读介质或镜像层时，可只重新生成环境证明和工作区部署绑定：
+1. 能力、方法名、版本、API 版本及输入输出契约一致；
+2. 固定源码 revision、权重摘要、Python/CUDA 与运行时文件摘要完整；
+3. `--probe` 实际加载关键依赖，有权重的方法还要执行固定小样本；
+4. 请求中的资源及全部 `ArtifactRef` 形成闭包，Schema、大小和 SHA-256 通过验证。
+
+因此，文档中的 `method="ditto"` 或 `method="omni_dc"` 是选择已安装方法，
+不是让核心包自动下载算法，更不是在算法缺失时使用占位结果。
+
+## 资产链参考 worker
+
+| 阶段 | 方法 | 不可省略的证据 |
+| --- | --- | --- |
+| 相机恢复 | `colmap` | 原始多视角图像、采样规则、已登记观测集；无米制尺度锚点时明确输出 `unresolved` |
+| 米制对齐 | `metric_alignment` | 绑定未定尺相机的实测 3D 对应、度量基准与独立留出集 |
+| 深度增强 | `omni_dc` | 米制标定、稀疏深度、互斥留出深度、固定官方权重 |
+| 几何重建 | 未注册 | 已解析米制相机、已验证深度与新生成的每 link 视觉 Mesh |
+| 关节恢复 | `ditto` | 同一米制坐标系的真实交互前后点云、静态/运动留出点、固定权重 |
+| 碰撞构建 | `coacd` | 已分部件视觉 Mesh；碰撞 Mesh 不得反向当作视觉几何 |
+| 单关节物性辨识 | `physrealx_mujoco_sysid_adapter` | 实测 q/qdot、作用量、训练-留出分割与充分激励；不辨识 link 质量惯量 |
+| 资产组装 | 未注册 | 每 link 视觉/碰撞几何、关节树、完整 body/joint 物性与闭包证据 |
+| USD 封装 | `openusd` | 已解析米制尺度、部件关节、视觉/碰撞几何、已辨识物性与所有依赖 |
+
+详细输入与探针要求见[米制对齐 worker](../api/metric-alignment-worker.md)、
+[OMNI-DC worker](../api/omnidc-worker.md) 和
+[Ditto worker](../api/ditto-worker.md)。
+
+## cabinet2 可执行证据实验
 
 ```bash
-python workers/install.py --register-only \
-  --root /data/physrealx-workers/envs \
+python experiments/run_cabinet2_evidence.py \
+  --source /data/ArtModeling/cabinet2 \
   --workspace /data/physrealx-workspace \
-  --blender-runtime /data/blender/blender-4.2.1-linux-x64 \
-  coacd mujoco blenderproc lerobot
+  --output /data/physrealx-experiment
 ```
 
-## cabinet2 验证链
+该实验会对源包预检、内容寻址导入、深度帧格式/覆盖率分析和真实 COLMAP 恢复生成
+机器可读报告与就绪可视化。它依据证据门禁停在第一个未满足的阶段：COLMAP
+只完成未定尺相机恢复；米制对齐必须另行提供 marker 字典、边长、布局或等价度量证据。
+未解析米制尺度会阻止深度、Ditto 和 USD 阶段。
 
-本项目使用 ArtModeling `cabinet2` 的已重建可视 Mesh 验证外部执行边界：
+固定抽样实验实际导入 `1,149` 个文件、`2,016,218,738` 字节；COLMAP 从
+`can.start` 选择 21 帧并注册 19 帧，注册率为 `90.48%`，生成 273 个稀疏点，
+平均轨迹长度为 `5.667`，平均重投影误差为 `0.994 px`。四组原始深度抽样的平均
+有效覆盖率分别为 `98.47%`、`98.47%`、`98.90%` 和 `89.48%`；这些数值只说明
+原始像素覆盖情况，不代表深度单位、米制尺度或补全精度已经验证。
 
-`whole_mesh.ply → CoACD 凸分解 → MuJoCo 抽屉关节轨迹 → BlenderProc RGB/Depth/Mask → LeRobot v2.1 Episode`
+![cabinet2 实测指标](../assets/images/experiments/cabinet2-measured-metrics.png)
 
-> **验证边界**：该链路验证外部算法的可执行性、协议一致性与制品可追溯性，不等价于 Ditto 部件/关节恢复或真机物性辨识。这些能力需要对应观测、检查点和独立 worker 才能声明完成。
+![cabinet2 生命周期证据门禁](../assets/images/experiments/cabinet2-lifecycle-readiness.png)
 
-## 实验结果
-
-以下数值来自空操作缓存的冷启动验证；输入 Mesh 的 SHA-256 为
-`eea9dbfb…b4ac`。完整机器可读证据见
-[`cabinet2-external-workers.json`](https://github.com/bupt-yxp/PhysReal-X/blob/main/experiments/results/cabinet2-external-workers.json)。
-
-| 阶段 | 实际输出与定量结果 | 冷启动耗时 |
-| --- | --- | ---: |
-| CoACD 1.0.14 | 117,327 顶点、230,828 面输入生成 24 个凸体；输出 2,215 顶点、4,334 面 | 56.02 s |
-| MuJoCo 3.12.0 | 2.002 s 仿真、201 个样本；稳定且未越界，末端关节误差 1.03 mm | 1.57 s |
-| BlenderProc 2.8.0 | 512×384 RGB/Depth/Segmentation；3 个标签，有效深度 75.89%，范围 1.733–4.953 m | 17.29 s |
-| LeRobot 0.3.3 | 1 个 v2.1 Episode、201 帧、100 Hz；Parquet 与元数据经 LeRobot 重新加载验证 | 12.14 s |
-
-源网格不是封闭流形，因此不报告无物理意义的源体积比；CoACD 结果仍需在最终关节模型和真实接触任务中继续验证。
-
-![外部 worker 执行摘要](../assets/images/experiments/external-workers-summary.png)
-
-![CoACD 可视网格与碰撞体对比](../assets/images/experiments/coacd-collision.png)
-
-![MuJoCo 关节轨迹](../assets/images/experiments/mujoco-trajectory.png)
-
-![BlenderProc 同步模态](../assets/images/experiments/blenderproc-modalities.png)
-
-实验页只展示可由证据 JSON、操作引用和制品 SHA-256 重建的结果。BlenderProc 图验证的是同一状态轨迹下的同步模态渲染适配器，不代表 cabinet2 已完成 Ditto 关节恢复、物性辨识或真机一致性验收。
+`sim/`、历史 USD、人工运动轨迹和固定标量 Episode 只能作为候选先验，不能冒充真实
+关节恢复、物性辨识、多模态生成或策略训练结果。缺失证据时的正确结果是可解释的
+`BLOCKED`，而不是发布半成品。

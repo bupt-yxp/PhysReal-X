@@ -1,6 +1,6 @@
 ---
 title: 用户指南
-description: 按完整业务工作流使用 PhysReal-X 生成数据、训练策略并建立真机反馈闭环
+description: 按业务工作流使用 PhysReal-X 组织数据、训练策略和真机反馈
 hide:
   - toc
 ---
@@ -12,7 +12,7 @@ hide:
 本指南按照真实工作顺序组织，不要求预先理解平台内部模块。无论底层选择 Isaac Sim、Genesis、MuJoCo 还是真实机器人，资产、场景、任务、运行、Episode、数据集、模型和评测都使用同一套语义。
 
 [从资产开始](assets.md){ .md-button .md-button--primary }
-[查看完整项目](../getting-started/first-project.md){ .md-button }
+[查看可复现实验](../getting-started/first-project.md){ .md-button }
 
 </div>
 

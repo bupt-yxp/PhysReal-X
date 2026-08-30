@@ -28,6 +28,8 @@ px = PhysRealX.open(".physrealx")
 
 ## 服务命名空间
 
+以下命名空间统一公共语义，不代表所列外部算法已随核心包安装。方法型操作只会调用当前工作区已登记且探针通过的 worker。
+
 | 命名空间 | 主要操作 |
 | --- | --- |
 | `px.methods` | `list`、`inspect`、`installations`、`bind`；查询方法身份与真实就绪状态 |
@@ -42,7 +44,7 @@ px = PhysRealX.open(".physrealx")
 | `px.failures`、`px.feedback` | 证据化失败归因与新的定向数据集 |
 | `px.artifacts` | 内容寻址制品写入、读取与完整性验证 |
 
-## 可执行闭环
+## 可执行契约参考链
 
 ```python
 from physrealx import MethodCapability, TrainingSpec
@@ -78,6 +80,9 @@ model = px.training.submit(
     )
 )
 ```
+
+上例使用内置确定性 Reference backend 和小型 `torch_bc` 回归基线，仅用于检验公共
+API、资源引用和原子发布；外部仿真、实际训练与真机能力以已安装方法及其证据为准。
 
 ## 稳定性规则
 

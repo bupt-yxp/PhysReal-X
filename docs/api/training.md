@@ -72,7 +72,7 @@ rollout = px.world_models.rollout(
 
 | 目标 | 能力方法 |
 | --- | --- |
-| 可执行参考闭环 | `torch_bc` |
+| 可执行契约/数值回归参考 | `torch_bc` |
 | 通用示范学习 | `lerobot_act`、`robomimic_bc` |
 | 多峰连续控制 | `diffusion_policy` |
 | 离散意图与连续动作 | `vqbet` |
@@ -81,6 +81,7 @@ rollout = px.world_models.rollout(
 
 外部方法通过独立扩展包注册；是否可用以 `px.methods.list(...)` 为准。方法名称不能替代版本、源码、
 镜像、许可证、权重和配置证据。
+`torch_bc` 不是 LeRobot/ACT 或真机策略的替代实现，其结果不能作为机器人任务成功证据。
 
 ## 主要错误
 

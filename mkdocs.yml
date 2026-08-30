@@ -53,7 +53,7 @@ nav:
       - 平台概览: getting-started/index.md
       - 安装与环境: getting-started/installation.md
       - 快速开始: getting-started/quickstart.md
-      - 第一个完整项目: getting-started/first-project.md
+      - 第一个可复现契约实验: getting-started/first-project.md
   - 用户指南:
       - 指南总览: user-guide/index.md
       - 资产与数字孪生: user-guide/assets.md
@@ -68,6 +68,10 @@ nav:
       - API 总览: api/index.md
       - 客户端与公共约定: api/client.md
       - 技术能力与方法 API: api/capability-methods.md
+      - 外部 worker:
+          - 米制相机对齐: api/metric-alignment-worker.md
+          - OMNI-DC 深度增强: api/omnidc-worker.md
+          - Ditto 关节恢复: api/ditto-worker.md
       - 资产 API: api/assets.md
       - 场景与任务 API: api/scenes-and-tasks.md
       - 运行与数据生成 API: api/runs.md

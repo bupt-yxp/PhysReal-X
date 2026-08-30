@@ -1,6 +1,8 @@
 # 运行与数据生成 API
 
 运行服务编译场景、任务、仿真后端和策略方法，逐 Episode 执行并将合格结果原子发布为数据集。
+核心包不携带仿真、渲染或 Episode 转换的占位 worker；本页中的方法参数必须指向
+当前工作区已安装且探针通过的真实适配器。
 
 ## `runs.submit`
 
@@ -17,7 +19,7 @@ from physrealx import MethodCapability, RunSpec
 
 backend = px.methods.bind(
     MethodCapability.SIMULATION_RUN,
-    "mujoco",
+    "<installed-simulation-method>",
     config={"physics_dt": 0.002},
 )
 policy = px.methods.bind(
@@ -66,13 +68,29 @@ px.runs.episodes(run: str | RunRecord) -> tuple[Episode, ...]
 `runs.submit` 用于策略在环仿真闭环；需要先生成物理状态轨迹、再离线生成多模态时，使用：
 
 ```python
-simulation = px.simulations.run(scene_ref, task_ref, method="mujoco")
+simulation = px.simulations.run(
+    scene_ref,
+    task_ref,
+    method="<installed-simulation-method>",
+)
 trajectory = simulation.outputs[0].artifact
 
-render = px.renders.generate(trajectory, method="blenderproc")
-events = px.events.synthesize(render.outputs[0].artifact, method="v2e")
-points = px.pointclouds.project(depth_artifact, method="open3d")
-episode = px.episodes.pack(trajectory, method="lerobot_v2_1")
+render = px.renders.generate(
+    trajectory,
+    method="<installed-render-method>",
+)
+events = px.events.synthesize(
+    render.outputs[0].artifact,
+    method="<installed-event-method>",
+)
+points = px.pointclouds.project(
+    depth_artifact,
+    method="<installed-point-cloud-method>",
+)
+episode = px.episodes.pack(
+    trajectory,
+    method="<installed-episode-packer>",
+)
 ```
 
 | API | 输出 |
@@ -85,6 +103,12 @@ episode = px.episodes.pack(trajectory, method="lerobot_v2_1")
 
 渲染 worker 必须消费 `state_trajectory`，不得重新执行物理。时间戳、相机参数和轨迹摘要必须进入
 模态清单，否则 RGB、深度、接触和关节状态不具备同步证据。
+上述尖括号是部署方法名的占位说明，不是平台内置默认值。调用前应通过
+`px.methods.installations(...)` 查询实际部署，并校验输入资源的版本、Schema 与依赖闭包。
+
+## 外部执行证据闭包
+
+`ExecutionLifecycle` 不执行仿真器、渲染器或 Episode packer；它只校验这些独立 worker 返回的真实制品证据。`StateTrajectoryEvidence` 与 `RenderStreamEvidence` 必须逐帧匹配 index、纳秒时间戳和 state-frame 摘要，packer 还必须绑定同一轨迹、渲染结果、场景、任务、方法和种子。通过后先得到 `VerifiedEpisodeBundle`，实际物化并校验摘要后再聚合为 `VerifiedEpisodeCollection` (`physrealx.verified-episode-collection/1`, `FINALIZED`)；它是数据集就绪门禁唯一接受的 `episodes` 上游契约。测试夹具中的方法名不表示仓库内置了相应 worker。
 
 ## 发布语义
 

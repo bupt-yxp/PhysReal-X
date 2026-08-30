@@ -175,8 +175,8 @@ class ArtModelingImporter:
     descriptor = builtin_method(
         MethodCapability.OBSERVATION_IMPORT,
         "artmodeling",
-        input_contract="ArtModelingCaptureDirectory",
-        output_contract="ObservationSetManifest",
+        input_contract="ArtModelingCaptureDirectory/1",
+        output_contract="ObservationSetManifest/1",
     )
 
     @staticmethod

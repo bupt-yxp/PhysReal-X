@@ -2,6 +2,8 @@
 
 评测使用冻结模型、任务和独立种子生成报告；真机部署与失败反馈通过能力方法接入，并共享
 Episode、制品和方法证据，不共享仿真后端对象。
+核心包提供这些领域服务与证据契约，但不附带 LIBERO、ROS 2、MCAP、故障归因或反馈构建
+worker；下文方法名均是独立部署候选，只有当前工作区安装且探针通过后才能执行。
 
 ## `evaluations.submit`
 
@@ -56,7 +58,7 @@ deployment = px.deployments.stage(model_ref, robot_ref, method="ros2_control")
 telemetry = px.telemetry.record(robot_run_artifact, method="rosbag2_mcap")
 ```
 
-`ros2` 方法使用 ros2_control/MoveIt 2 接入机器人，`rosbag2_mcap` 记录观测、动作、TF、诊断、
+`ros2_control` 方法使用 ros2_control/MoveIt 2 接入机器人，`rosbag2_mcap` 记录观测、动作、TF、诊断、
 接触和任务判据。学习策略只输出期望动作或轨迹；急停、工作空间、速度、力矩、力和 watchdog
 由确定性安全监督器执行。
 
@@ -70,7 +72,7 @@ targeted = px.feedback.build_dataset(
 )
 ```
 
-默认 `rules` 方法根据任务时间线、命令—状态误差、接触/力、TF/时钟和诊断产生证据；RoboFAC
+候选 `rules_v1` 适配器根据任务时间线、命令—状态误差、接触/力、TF/时钟和诊断产生证据；RoboFAC
 只能作为二级 critic。输出至少包含原因代码、起始时刻、置信度、证据引用和确认状态，证据不足时
 保留 `unknown`。
 

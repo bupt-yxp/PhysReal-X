@@ -14,7 +14,7 @@ for method in px.methods.list(MethodCapability.POLICY_TRAIN):
 
 | 任务 | 推荐开源方法 |
 | --- | --- |
-| 可执行参考闭环 | `torch_bc` |
+| 可执行契约/数值回归参考 | `torch_bc` |
 | 低成本示范学习 | `lerobot_act`、`robomimic_bc` |
 | 多峰、接触丰富动作 | `diffusion_policy` |
 | 离散意图与连续动作 | `vqbet` |
@@ -23,6 +23,7 @@ for method in px.methods.list(MethodCapability.POLICY_TRAIN):
 | 动作条件未来视频 | `irasim` |
 
 未出现在方法目录中的名称不能提交；代码开源但权重使用其他许可证的方法需要单独登记和审核。
+`torch_bc` 只检验平台训练契约，不代表 LeRobot/ACT、VLA 或真机策略已训练。
 
 ## 提交训练
 

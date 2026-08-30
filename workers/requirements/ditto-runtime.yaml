@@ -1,0 +1,31 @@
+# Reproducible compatibility environment for official Ditto revision f69579f.
+# The upstream requirements.txt pins NumPy 1.9.5, which cannot run on its own
+# declared Python 3.8 runtime; this lock keeps the algorithm source unchanged
+# while selecting the last compatible scientific/CUDA generation.
+name: physrealx-ditto
+channels:
+  - pytorch
+  - pyg
+  - conda-forge
+dependencies:
+  - python=3.8
+  - pip<24.1
+  - setuptools=59.5.0
+  - cudatoolkit=11.3
+  - pytorch=1.10.2
+  - torchvision=0.11.3
+  - pytorch-scatter=2.0.9
+  - numpy=1.21.6
+  - scipy=1.10.1
+  - scikit-learn=1.3.2
+  - cython=0.29.37
+  - pykdtree=1.3.11
+  - trimesh=3.9.35
+  - tqdm=4.66.5
+  - pip:
+      - pytorch-lightning==1.5.4
+      - torchmetrics==0.4.1
+      - hydra-core==1.1.0
+      - hydra-colorlog==1.1.0
+      - rich==12.6.0
+      - wandb==0.12.21

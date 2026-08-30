@@ -21,8 +21,8 @@
 | `version` | `str` | 显式语义版本 |
 | `digest` | `str | None` | 解析后必须存在 |
 
-`ResourceType` 包含 `observation_set`、`asset_build`、`asset`、`scene`、`task`、`dataset`、`model`、
-`evaluation` 和 `operation`。
+`ResourceType` 包含 `observation_set`、`asset`、`scene`、`task`、`dataset`、`model`、
+`evaluation`、`operation` 和 `recipe_execution`。
 
 ## 空间与信号
 
@@ -85,7 +85,7 @@ ScalarParameter(
 
 物理量单位由字段名固定，例如 `mass_kg` 和 `inertia_kg_m2`，不接受隐式或自由文本单位。
 
-## 观测集与数字孪生
+## 观测集与配方执行
 
 ### `ObservationSetManifest`
 
@@ -100,26 +100,27 @@ ScalarParameter(
 
 `ObservationStream.artifacts` 只允许一个打包制品，或与 `frame_count` 一致的逐帧制品。
 
-### `DigitalTwinRecipe`
+### `ExternalMethodRecipe`
 
 ```python
-DigitalTwinRecipe(
+ExternalMethodRecipe(
     name: str,
     version: str,
-    pipeline: str,
-    pipeline_version: str,
-    steps: tuple[DigitalTwinStep, ...],
+    steps: tuple[RecipeStep, ...],
+    outputs: tuple[RecipeFinalOutput, ...],
 )
 ```
 
-`DigitalTwinStep` 将有序 `DigitalTwinStage` 绑定到能力匹配的 `MethodSpec`。`MethodSpec`
-包含完整 `MethodDescriptor`、可选权重 `ArtifactRef` 和冻结配置；描述符固定源码 revision、
-许可证、运行环境以及输入输出契约。独立进程必须固定 `environment_digest`，
-容器必须固定 `image_digest`。
+`RecipeStep` 将一个进程或容器 `MethodSpec` 绑定到显式输入与输出契约。
+`InitialRecipeInput` 引用初始不可变证据，`CompletedStepOutput` 只能引用已排在前面的阶段输出；
+因此配方在构造时就拒绝前向引用、重复步骤名和未声明输入。
 
-### `DigitalTwinBuildSpec` / `DigitalTwinBuildManifest`
+### `RecipeExecutionSpec` / `RecipeExecutionManifest`
 
-`DigitalTwinBuildSpec` 需要带摘要的 `observation_set` 引用、目标资产身份和完整配方；发布后的 manifest 增加逐阶段方法、时间、指标、制品、最终资产和验证报告。
+`RecipeExecutionSpec` 固定执行身份、配方与初始 `OperationInput`。只有终端阶段成功后才发布
+`RecipeExecutionManifest`，其中按顺序保存每个 `OperationManifest` 的精确引用及最终制品。
+`MethodSpec` 包含完整 `MethodDescriptor`、可选权重摘要和冻结配置；进程 worker 必须固定
+`environment_digest`，容器 worker 必须固定 `image_digest`。
 
 ### `AssetValidationReport`
 

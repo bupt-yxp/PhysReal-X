@@ -1,6 +1,7 @@
 # 多模态数据生成
 
 数据生成不是“把仿真截图保存下来”，而是生成具有统一时间语义、完整监督信号、精确来源记录和可验证质量的机器人交互 Episode。
+本页定义 Episode 和多模态质量契约；核心仓库不附带真实仿真、离线渲染或 LeRobot 转换 worker。只有已安装方法生成并通过制品闭包校验的输出，才能作为运行证据。
 
 ## 轨迹来源
 
@@ -129,9 +130,15 @@ budget:
 result = px.runs.wait(run)
 dataset = px.datasets.get(result.dataset)
 
-normalized = px.datasets.ingest(result.dataset, method="lerobot_v2_1")
+normalized = px.datasets.ingest(
+    result.dataset,
+    method="<installed-dataset-ingest-method>",
+)
 snapshot = px.datasets.snapshot(normalized.outputs[0].artifact, method="dvc")
 ```
 
 `datasets.ingest` 的 `quality_report` 通过后再创建快照和固定切分。不要让训练脚本
 直接遍历运行临时目录。
+尖括号必须替换为真实部署的转换方法；核心仓库不提供硬编码 Episode 的
+LeRobot 占位 worker。例如接入 LeRobot v3 时，适配器必须完成全部模态转换、重读验证、
+质量报告和源 Episode 摘要关联后才能发布。

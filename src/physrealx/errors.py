@@ -78,12 +78,6 @@ class SourcePackageError(PhysRealXError):
     code = "source_package_error"
 
 
-class AssetBuildError(PhysRealXError):
-    """A digital-twin pipeline failed its contract or quality gate."""
-
-    code = "asset_build_error"
-
-
 class MethodExecutionError(PhysRealXError):
     """A capability worker failed or returned invalid execution evidence."""
 
@@ -98,7 +92,6 @@ class WorkerUnavailableError(MethodExecutionError):
 
 __all__ = [
     "ArtifactIntegrityError",
-    "AssetBuildError",
     "DomainValidationError",
     "InvalidStateTransitionError",
     "MethodExecutionError",

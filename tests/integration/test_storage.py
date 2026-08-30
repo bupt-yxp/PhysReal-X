@@ -176,6 +176,23 @@ def test_repository_enables_durable_sqlite_settings_and_schema(tmp_path: Path) -
 
 
 @pytest.mark.integration
+def test_repository_rejects_sqlite_without_strict_tables(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "unsupported.sqlite3"
+    monkeypatch.setattr(sqlite3, "sqlite_version_info", (3, 36, 0))
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"SQLite >= 3\.37\.0 .*detected 3\.36\.0",
+    ):
+        SQLiteRepository(database)
+
+    assert not database.exists()
+
+
+@pytest.mark.integration
 def test_repository_rejects_unknown_schema_version(tmp_path: Path) -> None:
     database = tmp_path / "future.sqlite3"
     with sqlite3.connect(database) as connection:
@@ -210,13 +227,17 @@ def test_group_registration_is_atomic_on_conflict(tmp_path: Path) -> None:
     repository = SQLiteRepository(tmp_path / "metadata.sqlite3")
     existing = _reference("asset", "cabinet", f"sha256:{'a' * 64}")
     repository.register_resource(existing)
-    new_build = _reference("asset_build", "cabinet", f"sha256:{'b' * 64}")
+    new_observations = _reference(
+        "observation_set",
+        "cabinet.observations",
+        f"sha256:{'b' * 64}",
+    )
     conflict = existing.model_copy(update={"digest": f"sha256:{'c' * 64}"})
 
     with pytest.raises(ResourceConflictError):
-        repository.register_resources((new_build, conflict))
+        repository.register_resources((new_observations, conflict))
 
-    assert repository.list_resources(resource_type="asset_build") == []
+    assert repository.list_resources(resource_type="observation_set") == []
 
 
 @pytest.mark.integration
