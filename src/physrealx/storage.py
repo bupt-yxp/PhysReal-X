@@ -1,18 +1,17 @@
 """Durable local artifact and metadata storage.
 
 The storage layer deliberately has no knowledge of a simulation backend.  It
-persists immutable, content-addressed artifacts and the small amount of
+persists immutable, identifier-addressed artifacts and the small amount of
 transactional metadata needed by the application layer.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
-import re
 import sqlite3
 import tempfile
+import uuid
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager, suppress
 from datetime import datetime, timezone
@@ -39,9 +38,8 @@ from .errors import (
     ResourceNotFoundError,
 )
 
-_SCHEMA_VERSION: Final = 1
-_DIGEST_PATTERN: Final = re.compile(r"\Asha256:[0-9a-f]{64}\Z")
-_HASH_CHUNK_SIZE: Final = 1024 * 1024
+_SCHEMA_VERSION: Final = 2
+_COPY_CHUNK_SIZE: Final = 1024 * 1024
 _DEFAULT_BUSY_TIMEOUT_MS: Final = 5_000
 _MINIMUM_SQLITE_VERSION: Final = (3, 37, 0)
 _T = TypeVar("_T", bound=BaseModel)
@@ -69,16 +67,14 @@ def _enum_value(value: str | Enum) -> str:
     return str(value.value if isinstance(value, Enum) else value)
 
 
-def _validate_digest(digest: str) -> str:
-    if not isinstance(digest, str) or _DIGEST_PATTERN.fullmatch(digest) is None:
-        raise DomainValidationError(
-            "artifact digest must be 'sha256:' followed by 64 lowercase hex digits"
-        )
-    return digest
-
-
-def _digest_bytes(data: bytes) -> str:
-    return f"sha256:{hashlib.sha256(data).hexdigest()}"
+def _validate_artifact_id(artifact_id: str) -> str:
+    if not isinstance(artifact_id, str) or not artifact_id.startswith("art_"):
+        raise DomainValidationError("artifact_id must use the platform-generated 'art_' form")
+    try:
+        uuid.UUID(hex=artifact_id[4:])
+    except ValueError as error:
+        raise DomainValidationError("artifact_id is malformed") from error
+    return artifact_id
 
 
 def _model_from_json(model: type[_T], payload: str) -> _T:
@@ -86,12 +82,11 @@ def _model_from_json(model: type[_T], payload: str) -> _T:
 
 
 class LocalArtifactStore:
-    """Immutable SHA-256 addressed objects stored on a local filesystem.
+    """Immutable objects addressed by platform-generated identifiers.
 
-    Objects are written to a temporary file in the destination directory,
-    synced, and atomically published with :func:`os.replace`.  The containing
-    directory is also synced so a successful return denotes a durable publish
-    on filesystems that implement the usual POSIX guarantees.
+    Files are atomically published and never overwritten.  The platform does
+    not calculate or expose file hashes; backend durability and the
+    immutable identifier are the storage contract.
     """
 
     def __init__(self, root: str | os.PathLike[str]) -> None:
@@ -100,7 +95,7 @@ class LocalArtifactStore:
         if not root_path.is_dir():
             raise DomainValidationError(f"artifact root is not a directory: {root_path}")
         self._root = root_path.resolve()
-        self._objects = self._root / "objects" / "sha256"
+        self._objects = self._root / "objects"
         self._objects.mkdir(parents=True, exist_ok=True)
 
     @property
@@ -113,22 +108,14 @@ class LocalArtifactStore:
         *,
         media_type: str = "application/octet-stream",
     ) -> ArtifactRef:
-        """Store bytes and return their immutable content reference."""
-
         if not isinstance(data, (bytes, bytearray, memoryview)):
             raise TypeError("data must be bytes-like")
         if not isinstance(media_type, str) or not media_type.strip():
             raise DomainValidationError("media_type must be a non-empty string")
-
         content = bytes(data)
-        digest = _digest_bytes(content)
-        destination = self._path_for_digest(digest)
+        artifact_id = self._new_artifact_id()
+        destination = self._path_for_artifact_id(artifact_id)
         destination.parent.mkdir(parents=True, exist_ok=True)
-
-        if destination.exists():
-            self._assert_valid_file(destination, digest, len(content))
-            return ArtifactRef(digest=digest, size_bytes=len(content), media_type=media_type)
-
         descriptor, temporary_name = tempfile.mkstemp(
             dir=destination.parent,
             prefix=f".{destination.name}.",
@@ -140,26 +127,18 @@ class LocalArtifactStore:
                 stream.write(content)
                 stream.flush()
                 os.fsync(stream.fileno())
-
-            # Replacing an object concurrently written under the same digest is
-            # harmless: both files necessarily contain the same bytes.  A
-            # corrupt pre-existing object is repaired by this publish.
             os.replace(temporary, destination)
             self._fsync_directory(destination.parent)
-            self._assert_valid_file(destination, digest, len(content))
         finally:
             with suppress(FileNotFoundError):
                 temporary.unlink()
-
-        return ArtifactRef(digest=digest, size_bytes=len(content), media_type=media_type)
+        return ArtifactRef(
+            artifact_id=artifact_id,
+            size_bytes=len(content),
+            media_type=media_type,
+        )
 
     def put_json(self, value: Any, *, media_type: str = "application/json") -> ArtifactRef:
-        """Canonicalize and store a JSON value.
-
-        Canonical encoding makes logically identical mappings content-identical
-        regardless of insertion order.  NaN and infinity are rejected.
-        """
-
         encoded = _canonical_json(value).encode("utf-8")
         return self.put_bytes(encoded, media_type=media_type)
 
@@ -169,12 +148,6 @@ class LocalArtifactStore:
         *,
         media_type: str = "application/octet-stream",
     ) -> ArtifactRef:
-        """Stream a regular file into the content-addressed store.
-
-        The source is checked before and after the copy so a concurrently
-        modified source file cannot be published under an ambiguous snapshot.
-        """
-
         if not isinstance(source, Path):
             raise TypeError("source must be a pathlib.Path")
         if not isinstance(media_type, str) or not media_type.strip():
@@ -187,23 +160,23 @@ class LocalArtifactStore:
             raise DomainValidationError(f"artifact source is not a regular file: {source_path}")
 
         before = source_path.stat()
+        artifact_id = self._new_artifact_id()
+        destination = self._path_for_artifact_id(artifact_id)
+        destination.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary_name = tempfile.mkstemp(
-            dir=self._objects,
-            prefix=".ingest.",
+            dir=destination.parent,
+            prefix=f".{destination.name}.",
             suffix=".tmp",
         )
         temporary = Path(temporary_name)
-        hasher = hashlib.sha256()
         size = 0
         try:
             with source_path.open("rb") as source_stream, os.fdopen(descriptor, "wb") as output:
-                for chunk in iter(lambda: source_stream.read(_HASH_CHUNK_SIZE), b""):
-                    hasher.update(chunk)
+                for chunk in iter(lambda: source_stream.read(_COPY_CHUNK_SIZE), b""):
                     size += len(chunk)
                     output.write(chunk)
                 output.flush()
                 os.fsync(output.fileno())
-
             after = source_path.stat()
             identity_before = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
             identity_after = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
@@ -211,51 +184,38 @@ class LocalArtifactStore:
                 raise ArtifactIntegrityError(
                     f"artifact source changed during ingestion: {source_path}"
                 )
-
-            digest = f"sha256:{hasher.hexdigest()}"
-            destination = self._path_for_digest(digest)
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            if destination.exists():
-                self._assert_valid_file(destination, digest, size)
-            else:
-                os.replace(temporary, destination)
-                self._fsync_directory(destination.parent)
-                self._assert_valid_file(destination, digest, size)
-            return ArtifactRef(digest=digest, size_bytes=size, media_type=media_type)
+            os.replace(temporary, destination)
+            self._fsync_directory(destination.parent)
+            return ArtifactRef(
+                artifact_id=artifact_id,
+                size_bytes=size,
+                media_type=media_type,
+            )
         finally:
             with suppress(FileNotFoundError):
                 temporary.unlink()
 
     def get_bytes(self, reference: ArtifactRef | str) -> bytes:
-        """Read an object, verifying its digest and declared size first."""
-
-        digest, expected_size = self._reference_parts(reference)
-        path = self._path_for_digest(digest)
+        artifact_id, expected_size = self._reference_parts(reference)
+        path = self._path_for_artifact_id(artifact_id)
         if not path.is_file():
-            raise ResourceNotFoundError(f"artifact not found: {digest}")
-
+            raise ResourceNotFoundError(f"artifact not found: {artifact_id}")
         content = path.read_bytes()
-        actual_digest = _digest_bytes(content)
-        if actual_digest != digest:
-            raise ArtifactIntegrityError(
-                f"artifact digest mismatch: expected {digest}, got {actual_digest}"
-            )
         if expected_size is not None and len(content) != expected_size:
             raise ArtifactIntegrityError(
-                f"artifact size mismatch for {digest}: expected {expected_size}, got {len(content)}"
+                f"artifact size mismatch for {artifact_id}: "
+                f"expected {expected_size}, got {len(content)}"
             )
         return content
 
     def materialize(self, reference: ArtifactRef | str, destination: Path) -> None:
-        """Stream a verified object to a new regular file without loading it in memory."""
-
         if not isinstance(destination, Path):
             raise TypeError("destination must be a pathlib.Path")
-        digest, expected_size = self._reference_parts(reference)
-        source = self._path_for_digest(digest)
+        artifact_id, expected_size = self._reference_parts(reference)
+        source = self._path_for_artifact_id(artifact_id)
         if not source.is_file():
-            raise ResourceNotFoundError(f"artifact not found: {digest}")
-        self._assert_valid_file(source, digest, expected_size)
+            raise ResourceNotFoundError(f"artifact not found: {artifact_id}")
+        self._assert_valid_file(source, artifact_id, expected_size)
         if destination.is_symlink() or destination.exists():
             raise DomainValidationError(
                 f"artifact materialization destination must not exist: {destination}"
@@ -265,21 +225,17 @@ class LocalArtifactStore:
             raise DomainValidationError(
                 f"artifact materialization parent is not a directory: {parent}"
             )
-
-        hasher = hashlib.sha256()
         size = 0
         try:
             with source.open("rb") as source_stream, destination.open("xb") as output:
-                for chunk in iter(lambda: source_stream.read(_HASH_CHUNK_SIZE), b""):
-                    hasher.update(chunk)
+                for chunk in iter(lambda: source_stream.read(_COPY_CHUNK_SIZE), b""):
                     size += len(chunk)
                     output.write(chunk)
                 output.flush()
                 os.fsync(output.fileno())
-            actual_digest = f"sha256:{hasher.hexdigest()}"
-            if actual_digest != digest or (expected_size is not None and size != expected_size):
+            if expected_size is not None and size != expected_size:
                 raise ArtifactIntegrityError(
-                    f"materialized artifact does not match its reference: {digest}"
+                    f"materialized artifact size does not match {artifact_id}"
                 )
         except Exception:
             with suppress(FileNotFoundError):
@@ -287,31 +243,31 @@ class LocalArtifactStore:
             raise
 
     def verify(self, reference: ArtifactRef | str) -> bool:
-        """Return whether an object exists and matches its reference.
-
-        A malformed digest is a caller error and is therefore raised rather
-        than represented as a failed integrity check.
-        """
-
-        digest, expected_size = self._reference_parts(reference)
-        path = self._path_for_digest(digest)
+        artifact_id, expected_size = self._reference_parts(reference)
+        path = self._path_for_artifact_id(artifact_id)
         if not path.is_file():
             return False
         try:
-            self._assert_valid_file(path, digest, expected_size)
+            self._assert_valid_file(path, artifact_id, expected_size)
         except ArtifactIntegrityError:
             return False
         return True
 
     def _reference_parts(self, reference: ArtifactRef | str) -> tuple[str, int | None]:
         if isinstance(reference, ArtifactRef):
-            return _validate_digest(reference.digest), reference.size_bytes
-        return _validate_digest(reference), None
+            return _validate_artifact_id(reference.artifact_id), reference.size_bytes
+        return _validate_artifact_id(reference), None
 
-    def _path_for_digest(self, digest: str) -> Path:
-        digest = _validate_digest(digest)
-        hexadecimal = digest[len("sha256:") :]
-        return self._objects / hexadecimal[:2] / hexadecimal
+    def _path_for_artifact_id(self, artifact_id: str) -> Path:
+        artifact_id = _validate_artifact_id(artifact_id)
+        hexadecimal = artifact_id[4:]
+        return self._objects / hexadecimal[:2] / artifact_id
+
+    def _new_artifact_id(self) -> str:
+        while True:
+            artifact_id = f"art_{uuid.uuid4().hex}"
+            if not self._path_for_artifact_id(artifact_id).exists():
+                return artifact_id
 
     @staticmethod
     def _fsync_directory(directory: Path) -> None:
@@ -323,25 +279,17 @@ class LocalArtifactStore:
             os.close(descriptor)
 
     @staticmethod
-    def _assert_valid_file(path: Path, digest: str, expected_size: int | None) -> None:
-        hasher = hashlib.sha256()
-        actual_size = 0
+    def _assert_valid_file(path: Path, artifact_id: str, expected_size: int | None) -> None:
         try:
-            with path.open("rb") as stream:
-                for chunk in iter(lambda: stream.read(_HASH_CHUNK_SIZE), b""):
-                    actual_size += len(chunk)
-                    hasher.update(chunk)
+            actual_size = path.stat().st_size
         except OSError as error:
-            raise ArtifactIntegrityError(f"cannot read artifact {digest}: {error}") from error
-
-        actual_digest = f"sha256:{hasher.hexdigest()}"
-        if actual_digest != digest:
             raise ArtifactIntegrityError(
-                f"artifact digest mismatch: expected {digest}, got {actual_digest}"
-            )
+                f"cannot inspect artifact {artifact_id}: {error}"
+            ) from error
         if expected_size is not None and actual_size != expected_size:
             raise ArtifactIntegrityError(
-                f"artifact size mismatch for {digest}: expected {expected_size}, got {actual_size}"
+                f"artifact size mismatch for {artifact_id}: "
+                f"expected {expected_size}, got {actual_size}"
             )
 
 
@@ -392,14 +340,14 @@ class SQLiteRepository:
     def register_resource(self, reference: VersionedRef) -> VersionedRef:
         """Idempotently register an immutable versioned resource."""
 
-        resource_type, resource_id, version, digest = self._versioned_parts(reference)
+        resource_type, resource_id, version, artifact_id = self._versioned_parts(reference)
         with self._transaction() as connection:
             self._insert_versioned(
                 connection,
                 resource_type=resource_type,
                 resource_id=resource_id,
                 version=version,
-                digest=digest,
+                artifact_id=artifact_id,
             )
         return reference
 
@@ -412,13 +360,13 @@ class SQLiteRepository:
         items = tuple(references)
         parts = tuple(self._versioned_parts(reference) for reference in items)
         with self._transaction() as connection:
-            for resource_type, resource_id, version, digest in parts:
+            for resource_type, resource_id, version, artifact_id in parts:
                 self._insert_versioned(
                     connection,
                     resource_type=resource_type,
                     resource_id=resource_id,
                     version=version,
-                    digest=digest,
+                    artifact_id=artifact_id,
                 )
         return items
 
@@ -426,7 +374,7 @@ class SQLiteRepository:
         with self._connect() as connection:
             row = connection.execute(
                 """
-                SELECT resource_type, resource_id, version, digest
+                SELECT resource_type, resource_id, version, artifact_id
                 FROM resources
                 WHERE resource_type = ? AND resource_id = ? AND version = ?
                 """,
@@ -456,7 +404,7 @@ class SQLiteRepository:
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT resource_type, resource_id, version, digest
+                SELECT resource_type, resource_id, version, artifact_id
                 FROM resources
                 """
                 + where
@@ -572,7 +520,7 @@ class SQLiteRepository:
     ) -> RunRecord:
         """Publish a Dataset and terminal Run state in one SQLite transaction."""
 
-        resource_type, resource_id, version, digest = self._versioned_parts(dataset)
+        resource_type, resource_id, version, artifact_id = self._versioned_parts(dataset)
         if resource_type != "dataset":
             raise DomainValidationError("finalize_success requires a dataset reference")
         if result.dataset != dataset:
@@ -583,7 +531,7 @@ class SQLiteRepository:
                 resource_type=resource_type,
                 resource_id=resource_id,
                 version=version,
-                digest=digest,
+                artifact_id=artifact_id,
             )
             return self._transition_run(
                 connection,
@@ -671,7 +619,7 @@ class SQLiteRepository:
         run_id = summary.run_id
         serialized = _canonical_json(summary)
         if summary.artifact is not None:
-            _validate_digest(summary.artifact.digest)
+            _validate_artifact_id(summary.artifact.artifact_id)
         with self._transaction() as connection:
             run = self._get_run(connection, run_id)
             if run.status is not RunStatus.RUNNING:
@@ -704,7 +652,7 @@ class SQLiteRepository:
             connection.execute(
                 """
                 INSERT INTO episodes(
-                    run_id, episode_id, episode_index, summary_json, artifact_digest, created_at
+                    run_id, episode_id, episode_index, summary_json, artifact_id, created_at
                 ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
@@ -712,7 +660,7 @@ class SQLiteRepository:
                     summary.episode_id,
                     summary.index,
                     serialized,
-                    summary.artifact.digest if summary.artifact is not None else None,
+                    summary.artifact.artifact_id if summary.artifact is not None else None,
                     _utc_now().isoformat(),
                 ),
             )
@@ -744,7 +692,7 @@ class SQLiteRepository:
         return [_model_from_json(EpisodeSummary, row["summary_json"]) for row in rows]
 
     def _register_specialized(self, expected_type: str, reference: VersionedRef) -> VersionedRef:
-        resource_type, resource_id, version, digest = self._versioned_parts(reference)
+        resource_type, resource_id, version, artifact_id = self._versioned_parts(reference)
         if resource_type != expected_type:
             raise DomainValidationError(
                 f"expected a {expected_type!r} reference, got {resource_type!r}"
@@ -755,7 +703,7 @@ class SQLiteRepository:
                 resource_type=resource_type,
                 resource_id=resource_id,
                 version=version,
-                digest=digest,
+                artifact_id=artifact_id,
             )
         return reference
 
@@ -768,13 +716,13 @@ class SQLiteRepository:
     @staticmethod
     def _versioned_parts(reference: VersionedRef) -> tuple[str, str, str, str]:
         resource_type = _enum_value(reference.resource_type)
-        if reference.digest is None:
-            raise DomainValidationError("registered resources require an immutable digest")
+        if reference.artifact_id is None:
+            raise DomainValidationError("registered resources require a manifest artifact_id")
         return (
             resource_type,
             reference.resource_id,
             reference.version,
-            _validate_digest(reference.digest),
+            _validate_artifact_id(reference.artifact_id),
         )
 
     @staticmethod
@@ -784,10 +732,10 @@ class SQLiteRepository:
         resource_type: str,
         resource_id: str,
         version: str,
-        digest: str,
+        artifact_id: str,
     ) -> None:
         select_query = """
-            SELECT digest FROM resources
+            SELECT artifact_id FROM resources
             WHERE resource_type = ? AND resource_id = ? AND version = ?
             """
         row = connection.execute(
@@ -795,19 +743,19 @@ class SQLiteRepository:
             (resource_type, resource_id, version),
         ).fetchone()
         if row is not None:
-            if row["digest"] != digest:
+            if row["artifact_id"] != artifact_id:
                 raise ResourceConflictError(
                     f"{resource_type}/{resource_id}@{version} is already registered "
-                    "with a different digest"
+                    "with a different manifest artifact"
                 )
             return
         insert_query = """
-            INSERT INTO resources(resource_type, resource_id, version, digest, created_at)
+            INSERT INTO resources(resource_type, resource_id, version, artifact_id, created_at)
             VALUES (?, ?, ?, ?, ?)
             """
         connection.execute(
             insert_query,
-            (resource_type, resource_id, version, digest, _utc_now().isoformat()),
+            (resource_type, resource_id, version, artifact_id, _utc_now().isoformat()),
         )
 
     @staticmethod
@@ -816,7 +764,7 @@ class SQLiteRepository:
             resource_type=row["resource_type"],
             resource_id=row["resource_id"],
             version=row["version"],
-            digest=row["digest"],
+            artifact_id=row["artifact_id"],
         )
 
     @staticmethod
@@ -898,7 +846,7 @@ class SQLiteRepository:
                         resource_type TEXT NOT NULL,
                         resource_id TEXT NOT NULL,
                         version TEXT NOT NULL,
-                        digest TEXT NOT NULL,
+                        artifact_id TEXT NOT NULL,
                         created_at TEXT NOT NULL,
                         PRIMARY KEY(resource_type, resource_id, version)
                     ) STRICT;
@@ -921,7 +869,7 @@ class SQLiteRepository:
                         episode_id TEXT NOT NULL,
                         episode_index INTEGER NOT NULL CHECK(episode_index >= 0),
                         summary_json TEXT NOT NULL,
-                        artifact_digest TEXT,
+                        artifact_id TEXT,
                         created_at TEXT NOT NULL,
                         PRIMARY KEY(run_id, episode_id),
                         UNIQUE(run_id, episode_index),

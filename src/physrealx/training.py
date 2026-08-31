@@ -251,11 +251,11 @@ class TorchBehaviorCloningPolicy:
         torch, nn, safetensors_torch = _torch_modules()
         _reject_unknown(
             config,
-            frozenset({"model_digest", "device"}),
+            frozenset({"model_artifact_id", "device"}),
             label="torch_bc policy",
         )
-        digest = _string(config, "model_digest", "")
-        manifest = ModelManifest.model_validate_json(artifacts.get_bytes(digest))
+        artifact_id = _string(config, "model_artifact_id", "")
+        manifest = ModelManifest.model_validate_json(artifacts.get_bytes(artifact_id))
         training = manifest.training_config
         input_dim = _json_int(training, "input_dim")
         hidden_dim = _json_int(training, "hidden_dim")

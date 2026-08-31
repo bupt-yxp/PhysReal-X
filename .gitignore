@@ -1,6 +1,8 @@
 # Python caches and tooling
 __pycache__/
 *.py[cod]
+*.o
+*.so
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/
@@ -26,6 +28,7 @@ venv/
 # Editors and operating systems
 .idea/
 .vscode/
+.ipynb_checkpoints/
 *.swp
 .DS_Store
 
@@ -38,3 +41,7 @@ venv/
 /data/
 /logs/
 /runs/
+
+# Local example datasets and generated receipts
+/examples/real_assets_and_digital_twin/input/ArtModeling/
+/examples/*/output/

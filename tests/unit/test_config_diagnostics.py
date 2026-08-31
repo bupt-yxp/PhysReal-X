@@ -82,6 +82,25 @@ def test_load_mapping_reports_a_missing_file(tmp_path: Path) -> None:
         load_mapping(tmp_path / "missing.yaml")
 
 
+@pytest.mark.parametrize(
+    ("name", "content"),
+    [
+        ("duplicate.json", '{"method": "one", "method": "two"}'),
+        ("duplicate.yml", "method: one\nmethod: two\n"),
+    ],
+)
+def test_load_mapping_rejects_duplicate_keys(
+    name: str,
+    content: str,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / name
+    path.write_text(content, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="duplicate key"):
+        load_mapping(path)
+
+
 def test_runtime_diagnostics_reports_ready_cu121_devices(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

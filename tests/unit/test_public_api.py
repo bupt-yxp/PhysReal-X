@@ -5,18 +5,21 @@ from pathlib import Path
 
 import physrealx
 from physrealx.domain import EvaluationReport as DomainEvaluationReport
-from physrealx.training_lifecycle import EvaluationReport as TrainingEvaluationReport
+from physrealx.training_lifecycle import BenchmarkReport
 
 
 def test_public_api_is_explicit_and_stable() -> None:
     assert physrealx.__all__ == [
         "ActionSpec",
+        "ArtGSInputManifest",
+        "ArtGSRunConfig",
         "ArtifactRef",
         "AssetEvidenceState",
         "AssetSpec",
         "AssetValidationProfile",
         "AssetValidationReport",
         "BenchmarkEpisode",
+        "BenchmarkReport",
         "BenchmarkSuite",
         "CodePin",
         "CommandDisposition",
@@ -42,7 +45,6 @@ def test_public_api_is_explicit_and_stable() -> None:
         "ExecutionLifecycle",
         "ExecutionPlan",
         "ExecutionValidationReport",
-        "ExternalMethodRecipe",
         "FailureLifecycle",
         "FailureRecord",
         "FailureReport",
@@ -51,7 +53,6 @@ def test_public_api_is_explicit_and_stable() -> None:
         "FeedbackLifecycle",
         "InitialRecipeInput",
         "JointSafetyLimit",
-        "LifecycleEvaluationReport",
         "LifecycleEvidence",
         "LifecycleEvidenceKey",
         "LifecyclePlan",
@@ -64,6 +65,7 @@ def test_public_api_is_explicit_and_stable() -> None:
         "MethodDescriptor",
         "MethodExecutionMode",
         "MethodMaturity",
+        "MethodRecipe",
         "MethodRuntime",
         "MethodSpec",
         "ModelKind",
@@ -123,13 +125,14 @@ def test_public_api_is_explicit_and_stable() -> None:
         "WorldModelBundle",
         "WorldModelTrainingPlan",
         "__version__",
+        "package_artgs_input",
     ]
 
 
 def test_evaluation_contract_names_are_unambiguous() -> None:
     assert physrealx.EvaluationReport is DomainEvaluationReport
-    assert physrealx.LifecycleEvaluationReport is TrainingEvaluationReport
-    assert physrealx.LifecycleEvaluationReport is not physrealx.EvaluationReport
+    assert physrealx.BenchmarkReport is BenchmarkReport
+    assert physrealx.BenchmarkReport is not physrealx.EvaluationReport
 
 
 def test_public_protocol_and_lifecycle_entrypoints_are_callable(tmp_path: Path) -> None:

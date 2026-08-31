@@ -136,22 +136,22 @@ class ObservationImporter(Protocol):
 
 @dataclass(frozen=True)
 class MethodExecutionOutput:
-    """Unpublished outputs returned by one capability worker."""
+    """Unpublished outputs returned by one capability adapter."""
 
     outputs: tuple[OperationOutput, ...]
     metrics: Mapping[str, float]
 
 
 @dataclass(frozen=True)
-class WorkerProbe:
-    """Side-effect-free local readiness result for one installed worker."""
+class MethodProbe:
+    """Side-effect-free local readiness result for one installed method."""
 
     ready: bool
     detail: str
 
 
 @runtime_checkable
-class MethodWorker(Protocol):
+class MethodAdapter(Protocol):
     """Executable adapter for one and only one ``MethodCapability``."""
 
     descriptor: MethodDescriptor

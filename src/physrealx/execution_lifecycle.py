@@ -1,8 +1,8 @@
 """Evidence contracts for scene execution, rendering, and episode packing.
 
 This module does not run a simulator, renderer, policy, or episode converter.
-It accepts content-addressed evidence produced by separately installed workers
-and finalizes an episode only when every immutable pin and every frame agrees.
+It accepts versioned evidence produced by registered in-process methods and
+finalizes an episode only when every immutable pin and every frame agrees.
 """
 
 from __future__ import annotations
@@ -27,11 +27,11 @@ from physrealx.domain import (
     SignalDType,
     VersionedRef,
     canonical_json_bytes,
-    sha256_digest,
+    canonical_record_id,
 )
 
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9_.-]{0,127}$")
-_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_RECORD_ID = re.compile(r"^rec_[0-9a-f]{32}$")
 _CONTRACT = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,95}/[1-9][0-9]*$")
 _MAX_SEED = 2**63 - 1
 
@@ -42,9 +42,9 @@ def _identifier(value: str, label: str) -> str:
     return value
 
 
-def _digest(value: str, label: str) -> str:
-    if _DIGEST.fullmatch(value) is None:
-        raise ValueError(f"{label} must be a SHA-256 digest")
+def _record_id(value: str, label: str) -> str:
+    if _RECORD_ID.fullmatch(value) is None:
+        raise ValueError(f"{label} must use the platform record-ID format")
     return value
 
 
@@ -68,14 +68,14 @@ def _require_artifact(value: ArtifactRef, label: str) -> None:
 def _require_evidence(values: tuple[ArtifactRef, ...], label: str) -> None:
     if not values:
         raise ValueError(f"{label} requires at least one evidence artifact")
-    if len({item.digest for item in values}) != len(values):
-        raise ValueError(f"{label} evidence artifact digests must be unique")
+    if len({item.artifact_id for item in values}) != len(values):
+        raise ValueError(f"{label} evidence artifact identifiers must be unique")
     for item in values:
         _require_artifact(item, label)
 
 
-def _method_digest(value: MethodSpec) -> str:
-    return sha256_digest(value)
+def _method_record_id(value: MethodSpec) -> str:
+    return canonical_record_id(value)
 
 
 def _seconds_to_nanoseconds(value: float, label: str) -> int:
@@ -128,8 +128,8 @@ class ExecutionInput(DomainModel):
         return self
 
 
-def _input_set_digest(values: tuple[ExecutionInput, ...]) -> str:
-    return sha256_digest(
+def _input_set_record_id(values: tuple[ExecutionInput, ...]) -> str:
+    return canonical_record_id(
         {
             "schema": "physrealx.execution-input-set/1",
             "inputs": [item.model_dump(mode="json", by_alias=True) for item in values],
@@ -138,7 +138,7 @@ def _input_set_digest(values: tuple[ExecutionInput, ...]) -> str:
 
 
 class ExecutionPlan(DomainModel):
-    """Fully pinned request; workers may not substitute any field."""
+    """Fully pinned request; methods may not substitute any field."""
 
     schema_name: Literal["physrealx.execution-plan/1"] = Field(
         default="physrealx.execution-plan/1", alias="schema", serialization_alias="schema"
@@ -199,12 +199,12 @@ class ExecutionPlan(DomainModel):
         return self
 
     @property
-    def input_digest(self) -> str:
-        return _input_set_digest(self.inputs)
+    def input_record_id(self) -> str:
+        return _input_set_record_id(self.inputs)
 
     @property
-    def digest(self) -> str:
-        return sha256_digest(self)
+    def record_id(self) -> str:
+        return canonical_record_id(self)
 
 
 class StateFrameEvidence(DomainModel):
@@ -228,8 +228,8 @@ class StateFrameEvidence(DomainModel):
         return self
 
     @property
-    def digest(self) -> str:
-        return sha256_digest(self)
+    def record_id(self) -> str:
+        return canonical_record_id(self)
 
 
 class StateTrajectoryEvidence(DomainModel):
@@ -241,23 +241,23 @@ class StateTrajectoryEvidence(DomainModel):
         serialization_alias="schema",
     )
     schema_version: Literal[1] = 1
-    plan_digest: str
+    plan_record_id: str
     scene: VersionedRef
     task: VersionedRef
-    simulator_digest: str
-    policy_digest: str
+    simulator_record_id: str
+    policy_record_id: str
     seed: int = Field(ge=0, le=_MAX_SEED)
-    input_digest: str
+    input_record_id: str
     trajectory: ArtifactRef
     frames: tuple[StateFrameEvidence, ...]
     evidence: tuple[ArtifactRef, ...]
     started_at: datetime
     completed_at: datetime
 
-    @field_validator("plan_digest", "simulator_digest", "policy_digest", "input_digest")
+    @field_validator("plan_record_id", "simulator_record_id", "policy_record_id", "input_record_id")
     @classmethod
-    def validate_digests(cls, value: str, info: object) -> str:
-        return _digest(value, getattr(info, "field_name", "trajectory digest"))
+    def validate_record_ids(cls, value: str, info: object) -> str:
+        return _record_id(value, getattr(info, "field_name", "trajectory record ID"))
 
     @model_validator(mode="after")
     def validate_trajectory(self) -> StateTrajectoryEvidence:
@@ -295,8 +295,8 @@ class StateTrajectoryEvidence(DomainModel):
         return self
 
     @property
-    def digest(self) -> str:
-        return sha256_digest(self)
+    def record_id(self) -> str:
+        return canonical_record_id(self)
 
 
 class RenderedModality(DomainModel):
@@ -320,18 +320,18 @@ class RenderedModality(DomainModel):
 
 
 class RenderedFrameEvidence(DomainModel):
-    """Rendered modalities tied to one exact state-frame digest."""
+    """Rendered modalities tied to one exact state-frame record."""
 
     schema_version: Literal[1] = 1
     index: int = Field(ge=0)
     timestamp_ns: int = Field(ge=0)
-    state_frame_digest: str
+    state_frame_id: str
     modalities: tuple[RenderedModality, ...]
 
-    @field_validator("state_frame_digest")
+    @field_validator("state_frame_id")
     @classmethod
-    def validate_state_frame_digest(cls, value: str) -> str:
-        return _digest(value, "state_frame_digest")
+    def validate_state_frame_id(cls, value: str) -> str:
+        return _record_id(value, "state_frame_id")
 
     @model_validator(mode="after")
     def validate_frame(self) -> RenderedFrameEvidence:
@@ -356,23 +356,25 @@ class RenderStreamEvidence(DomainModel):
         serialization_alias="schema",
     )
     schema_version: Literal[1] = 1
-    plan_digest: str
-    trajectory_evidence_digest: str
+    plan_record_id: str
+    trajectory_evidence_id: str
     scene: VersionedRef
     task: VersionedRef
-    renderer_digest: str
+    renderer_record_id: str
     seed: int = Field(ge=0, le=_MAX_SEED)
-    input_digest: str
+    input_record_id: str
     stream: ArtifactRef
     frames: tuple[RenderedFrameEvidence, ...]
     evidence: tuple[ArtifactRef, ...]
     started_at: datetime
     completed_at: datetime
 
-    @field_validator("plan_digest", "trajectory_evidence_digest", "renderer_digest", "input_digest")
+    @field_validator(
+        "plan_record_id", "trajectory_evidence_id", "renderer_record_id", "input_record_id"
+    )
     @classmethod
-    def validate_digests(cls, value: str, info: object) -> str:
-        return _digest(value, getattr(info, "field_name", "render digest"))
+    def validate_record_ids(cls, value: str, info: object) -> str:
+        return _record_id(value, getattr(info, "field_name", "render record ID"))
 
     @model_validator(mode="after")
     def validate_stream(self) -> RenderStreamEvidence:
@@ -401,8 +403,8 @@ class RenderStreamEvidence(DomainModel):
         return self
 
     @property
-    def digest(self) -> str:
-        return sha256_digest(self)
+    def record_id(self) -> str:
+        return canonical_record_id(self)
 
 
 class EpisodePackResult(DomainModel):
@@ -414,15 +416,15 @@ class EpisodePackResult(DomainModel):
         serialization_alias="schema",
     )
     schema_version: Literal[1] = 1
-    plan_digest: str
-    trajectory_evidence_digest: str
-    render_evidence_digest: str
-    packer_digest: str
-    input_digest: str
+    plan_record_id: str
+    trajectory_evidence_id: str
+    render_evidence_id: str
+    packer_record_id: str
+    input_record_id: str
     scene: VersionedRef
     task: VersionedRef
     seed: int = Field(ge=0, le=_MAX_SEED)
-    episode_payload_digest: str
+    episode_payload_id: str
     episode: Episode
     artifact: ArtifactRef
     evidence: tuple[ArtifactRef, ...]
@@ -430,16 +432,16 @@ class EpisodePackResult(DomainModel):
     completed_at: datetime
 
     @field_validator(
-        "plan_digest",
-        "trajectory_evidence_digest",
-        "render_evidence_digest",
-        "packer_digest",
-        "input_digest",
-        "episode_payload_digest",
+        "plan_record_id",
+        "trajectory_evidence_id",
+        "render_evidence_id",
+        "packer_record_id",
+        "input_record_id",
+        "episode_payload_id",
     )
     @classmethod
-    def validate_digests(cls, value: str, info: object) -> str:
-        return _digest(value, getattr(info, "field_name", "episode-pack digest"))
+    def validate_record_ids(cls, value: str, info: object) -> str:
+        return _record_id(value, getattr(info, "field_name", "episode-pack record ID"))
 
     @model_validator(mode="after")
     def validate_result(self) -> EpisodePackResult:
@@ -447,15 +449,15 @@ class EpisodePackResult(DomainModel):
         _require_resolved(self.task, ResourceType.TASK, "packed episode task")
         _require_artifact(self.artifact, "packed episode")
         _require_evidence(self.evidence, "episode packing")
-        if self.episode_payload_digest != self.episode.digest:
-            raise ValueError("episode_payload_digest does not match the canonical episode")
+        if self.episode_payload_id != self.episode.record_id:
+            raise ValueError("episode_payload_id does not match the canonical episode")
         if self.completed_at < self.started_at:
             raise ValueError("episode packing completed_at cannot precede started_at")
         return self
 
     @property
-    def digest(self) -> str:
-        return sha256_digest(self)
+    def record_id(self) -> str:
+        return canonical_record_id(self)
 
 
 class ExecutionValidationReport(DomainModel):
@@ -468,26 +470,26 @@ class ExecutionValidationReport(DomainModel):
     )
     schema_version: Literal[1] = 1
     status: Literal["VALIDATED"] = "VALIDATED"
-    plan_digest: str
-    input_digest: str
-    trajectory_evidence_digest: str
-    render_evidence_digest: str
-    pack_result_digest: str
-    episode_digest: str
+    plan_record_id: str
+    input_record_id: str
+    trajectory_evidence_id: str
+    render_evidence_id: str
+    pack_result_id: str
+    episode_record_id: str
     checks: tuple[str, ...]
     validated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     @field_validator(
-        "plan_digest",
-        "input_digest",
-        "trajectory_evidence_digest",
-        "render_evidence_digest",
-        "pack_result_digest",
-        "episode_digest",
+        "plan_record_id",
+        "input_record_id",
+        "trajectory_evidence_id",
+        "render_evidence_id",
+        "pack_result_id",
+        "episode_record_id",
     )
     @classmethod
-    def validate_digests(cls, value: str, info: object) -> str:
-        return _digest(value, getattr(info, "field_name", "validation digest"))
+    def validate_record_ids(cls, value: str, info: object) -> str:
+        return _record_id(value, getattr(info, "field_name", "validation record ID"))
 
     @field_validator("checks")
     @classmethod
@@ -501,8 +503,8 @@ class ExecutionValidationReport(DomainModel):
         return values
 
     @property
-    def digest(self) -> str:
-        return sha256_digest(self)
+    def record_id(self) -> str:
+        return canonical_record_id(self)
 
 
 _VALIDATION_CHECKS = (
@@ -518,26 +520,26 @@ _VALIDATION_CHECKS = (
 def _require_common_binding(
     plan: ExecutionPlan,
     *,
-    plan_digest: str,
+    plan_record_id: str,
     scene: VersionedRef,
     task: VersionedRef,
     seed: int,
-    input_digest: str,
+    input_record_id: str,
     label: str,
 ) -> None:
     expected = {
-        "plan_digest": plan.digest,
+        "plan_record_id": plan.record_id,
         "scene": plan.scene,
         "task": plan.task,
         "seed": plan.seed,
-        "input_digest": plan.input_digest,
+        "input_record_id": plan.input_record_id,
     }
     actual = {
-        "plan_digest": plan_digest,
+        "plan_record_id": plan_record_id,
         "scene": scene,
         "task": task,
         "seed": seed,
-        "input_digest": input_digest,
+        "input_record_id": input_record_id,
     }
     for field_name, expected_value in expected.items():
         if actual[field_name] != expected_value:
@@ -552,30 +554,30 @@ def _validate_chain(
 ) -> None:
     _require_common_binding(
         plan,
-        plan_digest=trajectory.plan_digest,
+        plan_record_id=trajectory.plan_record_id,
         scene=trajectory.scene,
         task=trajectory.task,
         seed=trajectory.seed,
-        input_digest=trajectory.input_digest,
+        input_record_id=trajectory.input_record_id,
         label="trajectory",
     )
-    if trajectory.simulator_digest != _method_digest(plan.simulator):
+    if trajectory.simulator_record_id != _method_record_id(plan.simulator):
         raise ValueError("trajectory changed pinned simulator")
-    if trajectory.policy_digest != _method_digest(plan.policy):
+    if trajectory.policy_record_id != _method_record_id(plan.policy):
         raise ValueError("trajectory changed pinned policy")
 
     _require_common_binding(
         plan,
-        plan_digest=rendering.plan_digest,
+        plan_record_id=rendering.plan_record_id,
         scene=rendering.scene,
         task=rendering.task,
         seed=rendering.seed,
-        input_digest=rendering.input_digest,
+        input_record_id=rendering.input_record_id,
         label="rendering",
     )
-    if rendering.trajectory_evidence_digest != trajectory.digest:
+    if rendering.trajectory_evidence_id != trajectory.record_id:
         raise ValueError("rendering does not consume the exact trajectory evidence")
-    if rendering.renderer_digest != _method_digest(plan.renderer):
+    if rendering.renderer_record_id != _method_record_id(plan.renderer):
         raise ValueError("rendering changed pinned renderer")
     if len(rendering.frames) != len(trajectory.frames):
         raise ValueError("rendering frame count does not match the state trajectory")
@@ -583,26 +585,26 @@ def _validate_chain(
         if (
             rendered_frame.index,
             rendered_frame.timestamp_ns,
-            rendered_frame.state_frame_digest,
-        ) != (state_frame.index, state_frame.timestamp_ns, state_frame.digest):
+            rendered_frame.state_frame_id,
+        ) != (state_frame.index, state_frame.timestamp_ns, state_frame.record_id):
             raise ValueError("rendering timeline does not exactly replay the state trajectory")
         if tuple(item.name for item in rendered_frame.modalities) != plan.modalities:
             raise ValueError("rendering modalities do not match the execution plan")
 
     _require_common_binding(
         plan,
-        plan_digest=packed.plan_digest,
+        plan_record_id=packed.plan_record_id,
         scene=packed.scene,
         task=packed.task,
         seed=packed.seed,
-        input_digest=packed.input_digest,
+        input_record_id=packed.input_record_id,
         label="episode packer",
     )
-    if packed.trajectory_evidence_digest != trajectory.digest:
+    if packed.trajectory_evidence_id != trajectory.record_id:
         raise ValueError("episode packer did not consume the exact trajectory evidence")
-    if packed.render_evidence_digest != rendering.digest:
+    if packed.render_evidence_id != rendering.record_id:
         raise ValueError("episode packer did not consume the exact render evidence")
-    if packed.packer_digest != _method_digest(plan.packer):
+    if packed.packer_record_id != _method_record_id(plan.packer):
         raise ValueError("episode packer changed pinned method")
 
     episode = packed.episode
@@ -668,21 +670,21 @@ class VerifiedEpisodeBundle(DomainModel):
     def validate_bundle(self) -> VerifiedEpisodeBundle:
         _validate_chain(self.plan, self.trajectory, self.rendering, self.packed)
         expected = (
-            self.plan.digest,
-            self.plan.input_digest,
-            self.trajectory.digest,
-            self.rendering.digest,
-            self.packed.digest,
-            self.packed.episode.digest,
+            self.plan.record_id,
+            self.plan.input_record_id,
+            self.trajectory.record_id,
+            self.rendering.record_id,
+            self.packed.record_id,
+            self.packed.episode.record_id,
             _VALIDATION_CHECKS,
         )
         actual = (
-            self.validation.plan_digest,
-            self.validation.input_digest,
-            self.validation.trajectory_evidence_digest,
-            self.validation.render_evidence_digest,
-            self.validation.pack_result_digest,
-            self.validation.episode_digest,
+            self.validation.plan_record_id,
+            self.validation.input_record_id,
+            self.validation.trajectory_evidence_id,
+            self.validation.render_evidence_id,
+            self.validation.pack_result_id,
+            self.validation.episode_record_id,
             self.validation.checks,
         )
         if actual != expected:
@@ -694,8 +696,8 @@ class VerifiedEpisodeBundle(DomainModel):
         return self.packed.episode
 
     @property
-    def digest(self) -> str:
-        return sha256_digest(self)
+    def record_id(self) -> str:
+        return canonical_record_id(self)
 
 
 class VerifiedEpisodeArtifact(DomainModel):
@@ -721,8 +723,6 @@ class VerifiedEpisodeArtifact(DomainModel):
         if self.episode_id != self.bundle.episode.episode_id:
             raise ValueError("verified episode artifact id does not match its bundle")
         payload = canonical_json_bytes(self.bundle)
-        if self.artifact.digest != sha256_digest(payload):
-            raise ValueError("verified episode artifact digest does not match canonical JSON")
         if self.artifact.size_bytes != len(payload):
             raise ValueError("verified episode artifact size does not match canonical JSON")
         if self.artifact.media_type != "application/json":
@@ -751,18 +751,18 @@ class VerifiedEpisodeCollection(DomainModel):
             raise ValueError("verified episode collection ids must be unique")
         if episode_ids != tuple(sorted(episode_ids)):
             raise ValueError("verified episodes must use canonical episode-id order")
-        artifact_digests = tuple(item.artifact.digest for item in self.episodes)
-        if len(artifact_digests) != len(set(artifact_digests)):
+        artifact_ids = tuple(item.artifact.artifact_id for item in self.episodes)
+        if len(artifact_ids) != len(set(artifact_ids)):
             raise ValueError("verified episode artifacts must be unique")
         return self
 
     @property
-    def digest(self) -> str:
-        return sha256_digest(self)
+    def record_id(self) -> str:
+        return canonical_record_id(self)
 
 
 class ExecutionLifecycle:
-    """Validate external execution evidence; never execute an algorithm itself."""
+    """Validate registered execution evidence; never execute an algorithm itself."""
 
     @staticmethod
     def validate(
@@ -773,12 +773,12 @@ class ExecutionLifecycle:
     ) -> ExecutionValidationReport:
         _validate_chain(plan, trajectory, rendering, packed)
         return ExecutionValidationReport(
-            plan_digest=plan.digest,
-            input_digest=plan.input_digest,
-            trajectory_evidence_digest=trajectory.digest,
-            render_evidence_digest=rendering.digest,
-            pack_result_digest=packed.digest,
-            episode_digest=packed.episode.digest,
+            plan_record_id=plan.record_id,
+            input_record_id=plan.input_record_id,
+            trajectory_evidence_id=trajectory.record_id,
+            render_evidence_id=rendering.record_id,
+            pack_result_id=packed.record_id,
+            episode_record_id=packed.episode.record_id,
             checks=_VALIDATION_CHECKS,
         )
 

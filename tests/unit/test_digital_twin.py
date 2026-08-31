@@ -24,7 +24,7 @@ def test_removed_composite_pipeline_models_are_not_available() -> None:
 
 def test_depth_observation_requires_explicit_unit() -> None:
     artifact = ArtifactRef(
-        digest=f"sha256:{'b' * 64}",
+        artifact_id=f"art_{'b' * 32}",
         size_bytes=1,
         media_type="application/x-npy",
     )

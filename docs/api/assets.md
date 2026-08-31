@@ -34,7 +34,8 @@ px.assets.ingest(
 ) -> VersionedRef
 ```
 
-文件经流式 SHA-256 校验后写入内容寻址存储，再原子发布不可变 `ObservationSetManifest`。
+文件以平台生成的 `artifact_id` 原子写入私有制品存储，再发布不可变
+`ObservationSetManifest`；读取时检查标识、声明大小和媒体类型。
 ArtModeling 导入必须显式提供深度单位和坐标系，平台不猜测尺度或 frame。
 
 ```python
@@ -72,11 +73,9 @@ px.assets.recover_cameras(
 ) -> OperationManifest
 ```
 
-从观测集的 RGB 制品闭包执行 COLMAP 特征提取、时序匹配、稀疏重建和模型转换，返回
-`CameraRigCalibration/1`、`SparseReconstructionBundle/1` 与 `CameraRecoveryReport/1`。
-`execution_device` 可设为 `cpu`、`cuda` 或 `auto`；只有明确的 CUDA/GPU 故障且
-`allow_cpu_fallback=true` 时才重建干净 CPU 工作区重试。纯单目 COLMAP 结果一律标记
-`scale_status="unresolved"`，不根据深度单位猜测米制尺度。
+调用已注册的 `camera.recover` 方法，并固定返回 `CameraRigCalibration/1`、
+`SparseReconstructionBundle/1` 与 `CameraRecoveryReport/1`。当前发行版未内嵌 COLMAP
+适配器；集成实现必须保持纯单目结果的 `scale_status="unresolved"`，不得根据深度单位猜测尺度。
 
 ### `assets.align_cameras_metric`
 
@@ -92,7 +91,26 @@ px.assets.align_cameras_metric(
 
 使用 `MetricAlignmentEvidence/1` 中的独立米制 3D–3D 对应解析 COLMAP
 Sim(3) 模糊性；只有 RANSAC 内点、尺度稳定性和留出误差全部通过才发布米制相机标定。
-证据格式与 marker 证据边界见[米制相机与重建对齐](metric-alignment-worker.md)。
+证据格式与 Marker 边界见[能力与方法](capability-methods.md)。
+
+### `assets.reconstruct_geometry`
+
+```python
+px.assets.reconstruct_geometry(
+    source: ArtifactRef,
+    *,
+    method: str | MethodSpec,
+    config: Mapping[str, JSONValue] | None = None,
+) -> OperationManifest
+```
+
+执行 `geometry.reconstruct` 的稳定服务契约。`source` 必须是
+`MetricMultiStateRGBDBundle/1` ZIP；服务固定发布 `VisualGeometryBundle/1` 与
+`GeometryReconstructionReport/1`，调用方不能改写输出名、媒体类型或大小上限。
+
+内置 `artgs` 输入由 `package_artgs_input(...)` 创建；该函数验证米制相机、增强深度闭包、
+两状态刚体位姿、RGBA 图像和训练/留出划分，并把 float32 米制 NPY 转为 uint16 毫米 PNG。
+具体配置见 [ArtGS 视觉几何重建](artgs.md)。
 
 ## 方法目录
 
@@ -105,33 +123,35 @@ px.methods.bind(capability, name, *, checkpoint=None, config=None) -> MethodSpec
 ```
 
 扩展包安装并注册方法后，用户按能力选择实现。`bind` 会冻结完整方法描述符、配置和可选权重
-摘要；未写入本工作区制品存储的权重会被拒绝。
+制品引用；未写入本工作区制品存储的权重会被拒绝。
 
 ## 数字孪生配方执行
 
-数字孪生是由多个独立 worker 组成的有向配方，不存在可跳过阶段证据的“整体构建
-worker”。每个 `RecipeStep` 必须绑定一个可执行的进程或容器 `MethodSpec`，且显式声明输入
+数字孪生是由多个项目内方法组成的有向配方，不存在可跳过阶段证据的“整体构建方法”。
+每个 `RecipeStep` 必须绑定一个已注册的 `MethodSpec`，且显式声明输入
 来源和输出契约。
 
-| 阶段 | 所需能力 | 典型方法 |
+| 阶段 | 所需能力 | 候选实现 |
 | --- | --- | --- |
 | `normalization` | `asset.normalize` | 单位、坐标、命名和状态对齐 |
 | `camera_recovery` | `camera.recover` | COLMAP 或可信现成标定 |
 | `metric_alignment` | `camera.align_metric` | 独立度量证据与留出验收 |
 | `depth_enhancement`（可选） | `depth.enhance` | OMNI-DC、CompletionFormer |
-| `geometry_reconstruction` | `geometry.reconstruct` | Open3D TSDF/点云融合 |
+| `geometry_reconstruction` | `geometry.reconstruct` | 内嵌 ArtGS 多状态视觉几何重建 |
 | `articulation_recovery` | `articulation.recover` | Ditto、ScrewSplat |
 | `collision_build` | `collision.build` | CoACD |
 | `physics_calibration` | `physics.calibrate` | 实测证据驱动的单关节有界系统辨识 |
 | `asset_packaging` | `asset.package` | OpenUSD |
 | `quality_validation` | `asset.validate` | 结构、碰撞、动力学与回放门禁 |
 
+上表只有 `artgs` 随当前发行版提供。其余名称用于说明契约对应的算法类型；必须先将源码、依赖和
+适配器纳入项目并通过 `px.methods.inspect(...)`，才能写入配方。
+
 ```python
 from physrealx import (
     CompletedStepOutput,
-    ExternalMethodRecipe,
+    MethodRecipe,
     InitialRecipeInput,
-    MethodCapability,
     OperationInput,
     OperationOutputRequirement,
     RecipeExecutionSpec,
@@ -140,13 +160,13 @@ from physrealx import (
     RecipeStep,
 )
 
-recipe = ExternalMethodRecipe(
+recipe = MethodRecipe(
     name="cabinet2.metric-camera",
     version="1.0.0",
     steps=(
         RecipeStep(
             name="camera",
-            method=px.methods.bind(MethodCapability.CAMERA_RECOVER, "colmap"),
+            method=camera_method,
             inputs=(
                 RecipeInputBinding(
                     name="observations",
@@ -171,10 +191,7 @@ recipe = ExternalMethodRecipe(
         ),
         RecipeStep(
             name="metric_alignment",
-            method=px.methods.bind(
-                MethodCapability.CAMERA_ALIGN_METRIC,
-                "metric_alignment",
-            ),
+            method=metric_alignment_method,
             inputs=(
                 RecipeInputBinding(
                     name="camera_rig",
@@ -229,33 +246,36 @@ result = px.recipes.execute(
 示例只连接已定义严格契约的“相机恢复 → 米制对齐”；`metric_alignment_evidence`
 必须是先行发布的 `MetricAlignmentEvidence/1` 制品。完整资产链继续以相同方式连接
 深度增强、几何重建、关节恢复、碰撞代理、物性辨识、
-OpenUSD 打包和质量验收。执行前会校验全部 worker 身份、环境、权重和初始证据；任一步失败时
+OpenUSD 打包和质量验收。执行前会校验全部方法身份、环境、权重和初始证据；任一步失败时
 不发布 `RecipeExecutionManifest`。每个 `RecipeInputBinding.contract` 必须与当前方法的输入契约及
 上游实际输出同时一致，禁止通过重标签跨过不兼容阶段。成功后每步对应一个可查的
 `OperationManifest`，相同规格重试复用同一不可变执行证据。
 
 ## 独立资产处理 API
 
-需要单独运行或比较某个阶段时，使用与能力一一对应的服务：
+需要单独运行或比较某个阶段时，使用与能力一一对应的服务。下列 `*_method` 来自用户配置中
+已经通过 `px.methods.inspect(...)` 的方法选择，不是平台隐式默认值：
 
 ```python
-depth = px.assets.enhance_depth(calibrated_rgbd, method="omni_dc")
-articulation = px.assets.articulate(interaction_pair, method="ditto")
+depth = px.assets.enhance_depth(calibrated_rgbd, method=depth_method)
+geometry = px.assets.reconstruct_geometry(artgs_input, method=geometry_method)
+articulation = px.assets.articulate(interaction_pair, method=articulation_method)
 collision = px.assets.build_collision(
     visual_mesh,
-    method="coacd",
+    method=collision_method,
     config={"source_unit": "m", "link": "drawer"},
 )
 identified = px.assets.calibrate_physics(
     system_identification_evidence,
-    method="physrealx_mujoco_sysid_adapter",
+    method=physics_method,
 )
-package = px.assets.package(asset_assembly, method="openusd")
+package = px.assets.package(asset_assembly, method=package_method)
 ```
 
 | API | 不可变输入 | 精确输出契约 |
 | --- | --- | --- |
 | `assets.enhance_depth` | `rgbd` 资源：`CalibratedRGBDBundle/1` | `EnhancedDepthBundle/1` ZIP；`DepthEnhancementReport/1` JSON |
+| `assets.reconstruct_geometry` | `source` 制品：`MetricMultiStateRGBDBundle/1` | `VisualGeometryBundle/1` ZIP；`GeometryReconstructionReport/1` JSON |
 | `assets.articulate` | `pair` 资源：`PairedInteractionPointCloudBundle/1` | `ArticulationModel/1` JSON；`ArticulationRecoveryReport/1` JSON |
 | `assets.build_collision` | `asset` 制品：`VisualMesh/1` | `CollisionGeometry/1` GLB；`CollisionBuildReport/1` JSON |
 | `assets.calibrate_physics` | `evidence` 资源：`JointSystemIdentificationEvidence/1` | `IdentifiedJointPhysics/1` JSON；`PhysicsIdentificationReport/1` JSON |
@@ -263,26 +283,27 @@ package = px.assets.package(asset_assembly, method="openusd")
 
 服务拥有输入名、资源/制品传输形式、Schema、输出名、媒体类型和大小上限；
 调用方不能用 `outputs` 重定义公共能力。所选 `MethodDescriptor` 必须与该契约完全
-相符，否则在启动 worker 前失败。
+相符，否则在启动方法前失败。
 
-`calibrated_rgbd` 必须已经具备米制相机标定和独立留出深度；`interaction_pair` 必须包含
+`calibrated_rgbd` 必须已经具备米制相机标定和独立留出深度；`artgs_input` 必须由
+`package_artgs_input(...)` 从米制相机、通过验收的增强深度和显式 frame 绑定生成；`interaction_pair` 必须包含
 同一米制对象坐标系下的交互前后点云；物性辨识输入必须包含实测时序、执行器作用量和隔离的
 训练/留出采集。`IdentifiedJointPhysics/1` 只表示单关节辨识结果；资产组装阶段必须将每个关节
 结果与独立实测的 link 质量、质心和惯量合并为完整 `IdentifiedPhysics/1` 制品。OpenUSD 打包输入
 同时绑定视觉网格、碰撞网格、已识别关节、完整物性制品和证据闭包。
 
-CoACD 不负责估计尺度。调用方必须用 `source_unit="m"` 明确声明上游视觉 Mesh 已完成米制定尺，
-并用 `link` 标识其所属刚体。结果报告绑定输入 Mesh 与实际生成 GLB 的 SHA-256、大小和媒体类型；
-缺少单位或 link 时 worker 会拒绝执行。
+碰撞构建方法不负责估计尺度。调用方必须用 `source_unit="m"` 明确声明上游视觉 Mesh 已完成
+米制定尺，并用 `link` 标识其所属刚体；缺少单位或 link 时方法必须拒绝执行。CoACD 是该能力
+的候选实现，不是当前发行版已注册的方法。
 核心另外定义 `asset.assemble` 就绪能力，但不提供伪默认实现：它必须将米制视觉几何、每 link 碰撞代理、关节模型、
-全部 body 物性与每个 joint 辨识结果闭包为 `AssetAssemblyBundle/1`。实现并注册该 worker 之前，就绪检查会如实返回 `BLOCKED`。
-任一前提缺失时对应 worker 直接失败，不从已有仿真文件或默认参数回填。
+全部 body 物性与每个 joint 辨识结果闭包为 `AssetAssemblyBundle/1`。实现并注册该方法之前，就绪检查会如实返回 `BLOCKED`。
+任一前提缺失时对应方法直接失败，不从已有仿真文件或默认参数回填。
 
 这些方法返回 `OperationManifest`，而不是未校验的文件路径。每份 manifest 包含精确
-`MethodSpec`、输入摘要、输出制品、指标与时间证据，可通过 `px.operations.get(...)` 重新读取。
+`MethodSpec`、输入引用、输出制品、指标与时间证据，可通过 `px.operations.get(...)` 重新读取。
 
 `AssetSpec.evidence_state` 明确区分 `prior → identified → validated`；`identified` 和 `validated`
-必须携带内容寻址证据。估计参数不能写成实测，训练变体也不能覆盖特定实物的数字孪生。
+必须携带明确制品证据。估计参数不能写成实测，训练变体也不能覆盖特定实物的数字孪生。
 
 ## 资产发布与校验
 
@@ -309,6 +330,6 @@ px.assets.validate(
 ## 主要错误
 
 - `SourcePackageError`：数据包缺项、帧数冲突、单位不明或包含符号链接；
-- `MethodExecutionError`：worker 退出异常、超时或返回了不符合契约的证据；
-- `ArtifactIntegrityError`：导入期间文件变化或存储制品摘要不符；
+- `MethodExecutionError`：方法执行异常、超时或返回了不符合契约的证据；
+- `ArtifactIntegrityError`：导入期间文件变化、存储制品缺失或声明大小不符；
 - `ResourceConflictError`：资源身份或已注册方法对应了不同内容。

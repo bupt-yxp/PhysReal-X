@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from physrealx.contracts import ArtifactStore, MethodExecutionOutput, WorkerProbe
+from physrealx.contracts import ArtifactStore, MethodExecutionOutput, MethodProbe
 from physrealx.digital_twin import (
     ObservationModality,
     ObservationSetManifest,
@@ -66,13 +66,13 @@ def _methods() -> dict[LifecycleStage | str, MethodSpec]:
     return methods
 
 
-class _ReadyWorker:
+class _ReadyAdapter:
     def __init__(self, method: MethodSpec, ready: bool = True) -> None:
         self.descriptor = method.descriptor
         self._ready = ready
 
-    def probe(self) -> WorkerProbe:
-        return WorkerProbe(self._ready, "worker ready" if self._ready else "runtime unavailable")
+    def probe(self) -> MethodProbe:
+        return MethodProbe(self._ready, "adapter ready" if self._ready else "runtime unavailable")
 
     def execute(
         self,
@@ -83,16 +83,16 @@ class _ReadyWorker:
         return MethodExecutionOutput(outputs=(), metrics={})
 
 
-def _register_workers(
+def _register_adapters(
     platform: PhysRealX,
     methods: Mapping[LifecycleStage | str, MethodSpec],
 ) -> None:
     for method in methods.values():
-        platform.plugins.register_worker(_ReadyWorker(method))
+        platform.plugins.register_adapter(_ReadyAdapter(method))
 
 
-def _body_parameter(value: float, unit: str, evidence_digest: str) -> dict[str, object]:
-    return {"value": value, "unit": unit, "evidence_digest": evidence_digest}
+def _body_parameter(value: float, unit: str, evidence_artifact_id: str) -> dict[str, object]:
+    return {"value": value, "unit": unit, "evidence_artifact_id": evidence_artifact_id}
 
 
 def _joint_parameter(value: float, unit: str) -> dict[str, object]:
@@ -134,21 +134,21 @@ _VALID_SEMANTIC_EVIDENCE: Mapping[LifecycleEvidenceKey, dict[str, object]] = {
         "bodies": [
             {
                 "link": link,
-                "mass_kg": _body_parameter(mass, "kg", digest),
+                "mass_kg": _body_parameter(mass, "kg", artifact_id),
                 "center_of_mass_m": [0.0, 0.0, 0.0],
                 "inertia_kg_m2": [
                     [0.08, 0.0, 0.0],
                     [0.0, 0.09, 0.0],
                     [0.0, 0.0, 0.1],
                 ],
-                "static_friction": _body_parameter(0.35, "1", digest),
-                "dynamic_friction": _body_parameter(0.28, "1", digest),
-                "restitution": _body_parameter(0.02, "1", digest),
-                "evidence_digest": digest,
+                "static_friction": _body_parameter(0.35, "1", artifact_id),
+                "dynamic_friction": _body_parameter(0.28, "1", artifact_id),
+                "restitution": _body_parameter(0.02, "1", artifact_id),
+                "evidence_artifact_id": artifact_id,
             }
-            for link, mass, digest in (
-                ("base", 8.0, f"sha256:{'a' * 64}"),
-                ("drawer", 2.0, f"sha256:{'b' * 64}"),
+            for link, mass, artifact_id in (
+                ("base", 8.0, f"art_{'a' * 32}"),
+                ("drawer", 2.0, f"art_{'b' * 32}"),
             )
         ],
     },
@@ -162,7 +162,7 @@ _VALID_SEMANTIC_EVIDENCE: Mapping[LifecycleEvidenceKey, dict[str, object]] = {
             "viscous_damping": _joint_parameter(0.7, "N*s/m"),
             "coulomb_friction": _joint_parameter(0.24, "N"),
         },
-        "evidence_digest": f"sha256:{'c' * 64}",
+        "evidence_artifact_id": f"art_{'c' * 32}",
     },
     LifecycleEvidenceKey.USD_ASSET: {
         "schema": "physrealx.asset-package-manifest/1",
@@ -216,7 +216,7 @@ _VALID_SEMANTIC_EVIDENCE: Mapping[LifecycleEvidenceKey, dict[str, object]] = {
 }
 
 
-def _metric_alignment_evidence(camera_rig_digest: str) -> dict[str, object]:
+def _metric_alignment_evidence(camera_rig_artifact_id: str) -> dict[str, object]:
     train = [
         {
             "id": f"train-{index}",
@@ -238,7 +238,7 @@ def _metric_alignment_evidence(camera_rig_digest: str) -> dict[str, object]:
     return {
         "schema": "physrealx.metric-alignment-evidence/1",
         "unit": "m",
-        "camera_rig_digest": camera_rig_digest,
+        "camera_rig_artifact_id": camera_rig_artifact_id,
         "component_id": "0",
         "source_frame": "colmap_component_0",
         "target_frame": "capture_world",
@@ -281,7 +281,7 @@ def _observation_resource(platform: PhysRealX) -> VersionedRef:
         ),
     )
     artifact = platform.artifacts.put_json(manifest.model_dump(mode="json"))
-    return platform.repository.register_resource(manifest.reference(artifact.digest))
+    return platform.repository.register_resource(manifest.reference(artifact.artifact_id))
 
 
 def _complete_roots(
@@ -311,17 +311,17 @@ def _complete_roots(
         "bodies": [
             {
                 "link": link,
-                "mass_kg": _body_parameter(mass, "kg", measurement.digest),
+                "mass_kg": _body_parameter(mass, "kg", measurement.artifact_id),
                 "center_of_mass_m": [0.0, 0.0, 0.0],
                 "inertia_kg_m2": [
                     [0.08, 0.0, 0.0],
                     [0.0, 0.09, 0.0],
                     [0.0, 0.0, 0.1],
                 ],
-                "static_friction": _body_parameter(0.35, "1", measurement.digest),
-                "dynamic_friction": _body_parameter(0.28, "1", measurement.digest),
-                "restitution": _body_parameter(0.02, "1", measurement.digest),
-                "evidence_digest": measurement.digest,
+                "static_friction": _body_parameter(0.35, "1", measurement.artifact_id),
+                "dynamic_friction": _body_parameter(0.28, "1", measurement.artifact_id),
+                "restitution": _body_parameter(0.02, "1", measurement.artifact_id),
+                "evidence_artifact_id": measurement.artifact_id,
             }
             for (link, measurement), mass in zip(body_measurements.items(), (8.0, 2.0))
         ],
@@ -336,7 +336,7 @@ def _complete_roots(
             "viscous_damping": _joint_parameter(0.7, "N*s/m"),
             "coulomb_friction": _joint_parameter(0.24, "N"),
         },
-        "evidence_digest": joint_measurement.digest,
+        "evidence_artifact_id": joint_measurement.artifact_id,
     }
     roots.update(
         {key: platform.artifacts.put_json(document) for key, document in semantic_documents.items()}
@@ -344,7 +344,7 @@ def _complete_roots(
     camera_reconstruction = roots[LifecycleEvidenceKey.CAMERA_RECONSTRUCTION]
     assert isinstance(camera_reconstruction, ArtifactRef)
     roots[LifecycleEvidenceKey.METRIC_ALIGNMENT_EVIDENCE] = platform.artifacts.put_json(
-        _metric_alignment_evidence(camera_reconstruction.digest)
+        _metric_alignment_evidence(camera_reconstruction.artifact_id)
     )
     camera_solution = roots[LifecycleEvidenceKey.CAMERA_SOLUTION]
     enhanced_depth = roots[LifecycleEvidenceKey.ENHANCED_DEPTH]
@@ -377,8 +377,8 @@ def _complete_roots(
             "schema": "physrealx.geometry-reconstruction-report/1",
             "status": "PASSED",
             "unit": "m",
-            "source_camera_digest": camera_solution.digest,
-            "source_depth_digest": enhanced_depth.digest,
+            "source_camera_artifact_id": camera_solution.artifact_id,
+            "source_depth_artifact_id": enhanced_depth.artifact_id,
             "method": {
                 "name": "fixture_tsdf",
                 "version": "1.0.0",
@@ -431,7 +431,7 @@ def _complete_roots(
                 {
                     **joint_document["joint"],
                     "parameters": joint_document["parameters"],
-                    "evidence_digest": joint_document["evidence_digest"],
+                    "evidence_artifact_id": joint_document["evidence_artifact_id"],
                 }
             ],
         }
@@ -456,7 +456,7 @@ def _complete_roots(
             "metric_scale": {
                 "status": "resolved",
                 "meters_per_unit": 1.0,
-                "evidence_digest": scale_evidence.digest,
+                "evidence_artifact_id": scale_evidence.artifact_id,
             },
             "up_axis": "Z",
             "root_link": "base",
@@ -576,7 +576,7 @@ def test_plan_rejects_missing_stage(tmp_path: Path) -> None:
 def test_preflight_does_not_infer_planned_upstream_outputs(tmp_path: Path) -> None:
     platform = PhysRealX.open(tmp_path / "workspace", discover_plugins=False)
     methods = _methods()
-    _register_workers(platform, methods)
+    _register_adapters(platform, methods)
     capture = tmp_path / "cabinet2"
     capture.mkdir()
     (capture / "frame.png").write_bytes(b"captured-frame")
@@ -600,7 +600,7 @@ def test_preflight_requires_executable_ready_exact_methods(tmp_path: Path) -> No
         if stage is LifecycleStage.CAMERA:
             platform.plugins.register_method(method.descriptor)
         elif stage is LifecycleStage.DEPTH:
-            platform.plugins.register_worker(_ReadyWorker(method, ready=False))
+            platform.plugins.register_adapter(_ReadyAdapter(method, ready=False))
 
     report = platform.readiness.preflight(platform.readiness.plan(methods), roots={})
 
@@ -615,7 +615,7 @@ def test_preflight_requires_executable_ready_exact_methods(tmp_path: Path) -> No
 def test_all_stages_ready_only_with_verified_concrete_evidence(tmp_path: Path) -> None:
     platform = PhysRealX.open(tmp_path, discover_plugins=False)
     methods = _methods()
-    _register_workers(platform, methods)
+    _register_adapters(platform, methods)
     capture = tmp_path / "cabinet2"
     capture.mkdir()
     (capture / "frame.png").write_bytes(b"captured-frame")
@@ -635,7 +635,7 @@ def test_all_stages_ready_only_with_verified_concrete_evidence(tmp_path: Path) -
 def test_unresolved_metric_scale_blocks_depth_and_articulation(tmp_path: Path) -> None:
     platform = PhysRealX.open(tmp_path, discover_plugins=False)
     methods = _methods()
-    _register_workers(platform, methods)
+    _register_adapters(platform, methods)
     unresolved = platform.artifacts.put_json(
         {
             "schema": "physrealx.camera-rig-calibration/1",
@@ -665,16 +665,16 @@ def test_unresolved_metric_scale_blocks_depth_and_articulation(tmp_path: Path) -
         assert LifecycleEvidenceKey.CAMERA_SOLUTION not in result.satisfied_evidence
 
 
-def test_metric_alignment_stage_requires_evidence_bound_to_camera_digest(
+def test_metric_alignment_stage_requires_evidence_bound_to_camera_artifact(
     tmp_path: Path,
 ) -> None:
     platform = PhysRealX.open(tmp_path, discover_plugins=False)
     methods = _methods()
-    _register_workers(platform, methods)
+    _register_adapters(platform, methods)
     camera = platform.artifacts.put_json(
         _VALID_SEMANTIC_EVIDENCE[LifecycleEvidenceKey.CAMERA_RECONSTRUCTION]
     )
-    evidence = platform.artifacts.put_json(_metric_alignment_evidence(f"sha256:{'f' * 64}"))
+    evidence = platform.artifacts.put_json(_metric_alignment_evidence(f"art_{'f' * 32}"))
 
     report = platform.readiness.preflight(
         platform.readiness.plan(methods),
@@ -693,7 +693,7 @@ def test_metric_alignment_stage_requires_evidence_bound_to_camera_digest(
 def test_failed_depth_report_cannot_satisfy_articulation_gate(tmp_path: Path) -> None:
     platform = PhysRealX.open(tmp_path, discover_plugins=False)
     methods = _methods()
-    _register_workers(platform, methods)
+    _register_adapters(platform, methods)
     failed_depth = platform.artifacts.put_json(
         {
             "schema": "physrealx.depth-enhancement-report/1",
@@ -724,9 +724,9 @@ def test_geometry_collision_and_assembly_gates_reject_unbound_or_incomplete_evid
 ) -> None:
     platform = PhysRealX.open(tmp_path, discover_plugins=False)
     methods = _methods()
-    _register_workers(platform, methods)
+    _register_adapters(platform, methods)
     missing_mesh = ArtifactRef(
-        digest=f"sha256:{'d' * 64}",
+        artifact_id=f"art_{'d' * 32}",
         size_bytes=128,
         media_type="model/obj",
     )
@@ -735,8 +735,8 @@ def test_geometry_collision_and_assembly_gates_reject_unbound_or_incomplete_evid
             "schema": "physrealx.geometry-reconstruction-report/1",
             "status": "PASSED",
             "unit": "m",
-            "source_camera_digest": f"sha256:{'a' * 64}",
-            "source_depth_digest": f"sha256:{'b' * 64}",
+            "source_camera_artifact_id": f"art_{'a' * 32}",
+            "source_depth_artifact_id": f"art_{'b' * 32}",
             "method": {
                 "name": "fixture_tsdf",
                 "version": "1.0.0",
@@ -789,7 +789,7 @@ def test_unknown_or_binary_artifact_cannot_satisfy_scientific_gate(
 ) -> None:
     platform = PhysRealX.open(tmp_path, discover_plugins=False)
     methods = _methods()
-    _register_workers(platform, methods)
+    _register_adapters(platform, methods)
     evidence = platform.artifacts.put_bytes(payload, media_type=media_type)
 
     report = platform.readiness.preflight(
@@ -807,10 +807,10 @@ def test_unknown_or_binary_artifact_cannot_satisfy_scientific_gate(
 def test_observations_require_registered_manifest_and_verified_closure(tmp_path: Path) -> None:
     platform = PhysRealX.open(tmp_path, discover_plugins=False)
     methods = _methods()
-    _register_workers(platform, methods)
+    _register_adapters(platform, methods)
     resource = _observation_resource(platform)
     manifest_artifact = platform.artifacts.put_bytes(
-        platform.artifacts.get_bytes(resource.digest or ""),
+        platform.artifacts.get_bytes(resource.artifact_id or ""),
         media_type="application/json",
     )
 
@@ -822,14 +822,16 @@ def test_observations_require_registered_manifest_and_verified_closure(tmp_path:
     assert camera.blockers[0].code is ReadinessBlockerCode.EVIDENCE_GATE_FAILED
     assert "registered immutable observation_set" in camera.blockers[0].message
 
-    missing_digest = f"sha256:{'f' * 64}"
+    missing_artifact_id = f"art_{'f' * 32}"
     manifest = ObservationSetManifest.model_validate_json(
-        platform.artifacts.get_bytes(resource.digest or "")
+        platform.artifacts.get_bytes(resource.artifact_id or "")
     )
     invalid_stream = manifest.streams[0].model_copy(
         update={
             "artifacts": (
-                manifest.streams[0].artifacts[0].model_copy(update={"digest": missing_digest}),
+                manifest.streams[0]
+                .artifacts[0]
+                .model_copy(update={"artifact_id": missing_artifact_id}),
             )
         }
     )
@@ -838,7 +840,7 @@ def test_observations_require_registered_manifest_and_verified_closure(tmp_path:
     )
     invalid_artifact = platform.artifacts.put_json(invalid_manifest.model_dump(mode="json"))
     invalid_resource = platform.repository.register_resource(
-        invalid_manifest.reference(invalid_artifact.digest)
+        invalid_manifest.reference(invalid_artifact.artifact_id)
     )
 
     missing_closure = platform.readiness.preflight(
@@ -853,12 +855,12 @@ def test_observations_require_registered_manifest_and_verified_closure(tmp_path:
 def test_empty_path_and_unpublished_artifact_are_blocked(tmp_path: Path) -> None:
     platform = PhysRealX.open(tmp_path / "workspace", discover_plugins=False)
     methods = _methods()
-    _register_workers(platform, methods)
+    _register_adapters(platform, methods)
     empty = tmp_path / "empty"
     empty.mkdir()
     missing = platform.artifacts.put_bytes(b"temporary", media_type="application/octet-stream")
-    # A different declared digest is well-formed but absent from the local object store.
-    missing = missing.model_copy(update={"digest": f"sha256:{'f' * 64}"})
+    # A different object ID is well-formed but absent from the local object store.
+    missing = missing.model_copy(update={"artifact_id": f"art_{'f' * 32}"})
 
     report = platform.readiness.preflight(
         platform.readiness.plan(methods),
@@ -875,7 +877,7 @@ def test_empty_path_and_unpublished_artifact_are_blocked(tmp_path: Path) -> None
 def test_robot_target_rejects_an_ordinary_path(tmp_path: Path) -> None:
     platform = PhysRealX.open(tmp_path / "workspace", discover_plugins=False)
     methods = _methods()
-    _register_workers(platform, methods)
+    _register_adapters(platform, methods)
     robot_directory = tmp_path / "robot"
     robot_directory.mkdir()
     (robot_directory / "robot.urdf").write_text("<robot name='unbound'/>", encoding="utf-8")

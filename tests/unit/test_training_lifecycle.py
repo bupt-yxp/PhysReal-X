@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import uuid
 from datetime import datetime, timezone
 
@@ -17,8 +16,7 @@ from physrealx.domain import (
     MethodRuntime,
     ResourceType,
     VersionedRef,
-    canonical_json_bytes,
-    sha256_digest,
+    canonical_record_id,
 )
 from physrealx.training_lifecycle import (
     BenchmarkSuite,
@@ -42,12 +40,16 @@ from physrealx.training_lifecycle import (
 )
 
 
-def _digest(label: str) -> str:
-    return f"sha256:{hashlib.sha256(label.encode()).hexdigest()}"
+def _record_id(label: str) -> str:
+    return canonical_record_id(label)
+
+
+def _artifact_id(label: str) -> str:
+    return f"art_{uuid.uuid5(uuid.NAMESPACE_URL, label).hex}"
 
 
 def _artifact(label: str, media_type: str = "application/octet-stream") -> ArtifactRef:
-    return ArtifactRef(digest=_digest(label), size_bytes=128, media_type=media_type)
+    return ArtifactRef(artifact_id=_artifact_id(label), size_bytes=128, media_type=media_type)
 
 
 def _episode_id(index: int) -> str:
@@ -61,13 +63,12 @@ def _method(capability: MethodCapability, name: str):  # type: ignore[no-untyped
         version="1.0.0",
         api_version="2",
         source_uri=f"https://example.test/{name}",
-        source_revision=_digest(f"revision-{name}")[7:],
+        source_revision=f"revision-{name}",
         license_spdx="MIT",
         runtime=MethodRuntime(
-            mode=MethodExecutionMode.CONTAINER,
+            mode=MethodExecutionMode.IN_PROCESS,
             accelerator=MethodAccelerator.CPU,
             python="3.11",
-            image_digest=_digest(f"image-{name}"),
         ),
         input_contract="input/1",
         output_contract="output/1",
@@ -78,7 +79,7 @@ def _method(capability: MethodCapability, name: str):  # type: ignore[no-untyped
 def _code(label: str = "code") -> CodePin:
     return CodePin(
         source_uri="https://github.com/example/implementation",
-        revision=_digest(label)[7:],
+        revision=f"revision-{label}",
         source_tree=_artifact(f"{label}-tree", "application/x-tar"),
     )
 
@@ -87,7 +88,7 @@ def _environment(label: str = "environment") -> EnvironmentPin:
     return EnvironmentPin(
         runtime="python-3.11-cpu",
         lockfile=_artifact(f"{label}-lock", "text/plain"),
-        environment_digest=_digest(label),
+        environment_record_id=_record_id(label),
     )
 
 
@@ -106,7 +107,7 @@ def _snapshot(
             resource_type=ResourceType.DATASET,
             resource_id="cabinet-episodes",
             version=version,
-            digest=_digest(f"dataset-{version}-{manifest_label}"),
+            artifact_id=_artifact_id(f"dataset-{version}-{manifest_label}"),
         ),
         manifest=_artifact(manifest_label, "application/json"),
         episodes=tuple(
@@ -126,7 +127,7 @@ def _policy_plan(snapshot: DatasetSnapshot) -> PolicyTrainingPlan:
         model_id="cabinet-policy",
         version="1.0.0",
         dataset=snapshot,
-        trainer=_method(MethodCapability.POLICY_TRAIN, "lerobot-act-worker"),
+        trainer=_method(MethodCapability.POLICY_TRAIN, "lerobot-act-adapter"),
         inference=_method(MethodCapability.POLICY_INFERENCE, "act-runtime"),
         code=_code("policy-code"),
         environment=_environment("policy-env"),
@@ -139,7 +140,7 @@ def _world_plan(snapshot: DatasetSnapshot) -> WorldModelTrainingPlan:
         model_id="cabinet-world-model",
         version="1.0.0",
         dataset=snapshot,
-        trainer=_method(MethodCapability.WORLD_MODEL_TRAIN, "dino-wm-worker"),
+        trainer=_method(MethodCapability.WORLD_MODEL_TRAIN, "dino-wm-adapter"),
         rollout=_method(MethodCapability.WORLD_MODEL_ROLLOUT, "dino-wm-rollout"),
         code=_code("world-code"),
         environment=_environment("world-env"),
@@ -156,13 +157,13 @@ def _training_result(plan: PolicyTrainingPlan | WorldModelTrainingPlan) -> Train
             resource_type=ResourceType.MODEL,
             resource_id=plan.model_id,
             version=plan.version,
-            digest=_digest(f"{plan.model_id}-manifest"),
+            artifact_id=_artifact_id(f"{plan.model_id}-manifest"),
         ),
-        dataset_snapshot_digest=plan.dataset.digest,
-        trainer_digest=sha256_digest(canonical_json_bytes(plan.trainer)),
-        code_digest=plan.code.digest,
-        environment_digest=plan.environment.digest,
-        split_digest=plan.dataset.split.digest,
+        dataset_snapshot_id=plan.dataset.record_id,
+        trainer_record_id=canonical_record_id(plan.trainer),
+        code_record_id=plan.code.record_id,
+        environment_record_id=plan.environment.record_id,
+        split_record_id=plan.dataset.split.record_id,
         seed=plan.seed,
         checkpoint=_artifact(f"{plan.model_id}-checkpoint", "application/vnd.safetensors"),
         auxiliary_artifacts=(_artifact(f"{plan.model_id}-config", "application/json"),),
@@ -186,8 +187,8 @@ def test_dataset_snapshot_freezes_data_code_environment_seed_and_split() -> None
     assert snapshot.status == "VALIDATED"
     assert snapshot.model_dump(mode="json", by_alias=True)["schema"] == snapshot.schema_name
     assert snapshot.dataset.resolved
-    assert snapshot.digest.startswith("sha256:")
-    assert snapshot.split.digest.startswith("sha256:")
+    assert snapshot.record_id.startswith("rec_")
+    assert snapshot.split.record_id.startswith("rec_")
     with pytest.raises(ValidationError, match="frozen"):
         snapshot.seed = 99  # type: ignore[misc]
 
@@ -204,7 +205,9 @@ def test_snapshot_rejects_mutable_or_incomplete_reproducibility_pins() -> None:
         _environment().model_copy(
             update={
                 "lockfile": ArtifactRef(
-                    digest=_digest("empty-lock"), size_bytes=0, media_type="text/plain"
+                    artifact_id=_artifact_id("empty-lock"),
+                    size_bytes=0,
+                    media_type="text/plain",
                 )
             }
         )
@@ -247,10 +250,10 @@ def test_training_lifecycle_rejects_any_changed_execution_pin() -> None:
 
     for field_name, replacement in (
         ("seed", plan.seed + 1),
-        ("dataset_snapshot_digest", _digest("other-dataset")),
-        ("trainer_digest", _digest("other-trainer")),
-        ("environment_digest", _digest("other-env")),
-        ("split_digest", _digest("other-split")),
+        ("dataset_snapshot_id", _record_id("other-dataset")),
+        ("trainer_record_id", _record_id("other-trainer")),
+        ("environment_record_id", _record_id("other-env")),
+        ("split_record_id", _record_id("other-split")),
     ):
         with pytest.raises(ValueError, match="changed pinned"):
             TrainingLifecycle.finalize_policy(
@@ -261,7 +264,7 @@ def test_training_lifecycle_rejects_any_changed_execution_pin() -> None:
 
 def test_benchmark_suite_is_the_exact_frozen_test_split_with_stable_seeds() -> None:
     snapshot = _snapshot()
-    evaluator = _method(MethodCapability.EVALUATION_RUN, "libero-worker")
+    evaluator = _method(MethodCapability.EVALUATION_RUN, "libero-adapter")
     suite = BenchmarkSuite.from_snapshot(
         suite_id="cabinet-fixed",
         version="1.0.0",
@@ -285,7 +288,7 @@ def test_benchmark_suite_is_the_exact_frozen_test_split_with_stable_seeds() -> N
     assert tuple(item.seed for item in suite.episodes) == tuple(
         item.seed for item in repeated.episodes
     )
-    assert suite.digest == repeated.digest
+    assert suite.record_id == repeated.record_id
 
     payload = suite.model_dump(round_trip=True)
     payload["episodes"] = tuple(reversed(payload["episodes"]))
@@ -299,7 +302,7 @@ def _suite_and_results():  # type: ignore[no-untyped-def]
         suite_id="cabinet-fixed",
         version="1.0.0",
         dataset=snapshot,
-        evaluator=_method(MethodCapability.EVALUATION_RUN, "libero-worker"),
+        evaluator=_method(MethodCapability.EVALUATION_RUN, "libero-adapter"),
         global_seed=123,
         timeout_s=10.0,
     )
@@ -412,7 +415,7 @@ def test_feedback_requires_new_version_and_explicit_immutable_lineage() -> None:
         message="timeout",
         evidence=(report.episodes[1].evidence,),
     )
-    method = _method(MethodCapability.FEEDBACK_BUILD_DATASET, "hard-negative-worker")
+    method = _method(MethodCapability.FEEDBACK_BUILD_DATASET, "hard-negative-adapter")
     code = _code("feedback-code")
     environment = _environment("feedback-env")
     spec = FeedbackDatasetSpec(
@@ -432,7 +435,7 @@ def test_feedback_requires_new_version_and_explicit_immutable_lineage() -> None:
         version="1.1.0",
         manifest_label="manifest-v2",
         lineage=SnapshotLineage(
-            parent_snapshot_digest=base.digest,
+            parent_snapshot_id=base.record_id,
             method=method,
             evidence=(_artifact("feedback-build-log", "text/plain"),),
         ),
@@ -446,8 +449,8 @@ def test_feedback_requires_new_version_and_explicit_immutable_lineage() -> None:
     assert finalized.schema_name == "physrealx.feedback-dataset/1"
     assert finalized.status == "VALIDATED"
     assert finalized.snapshot.dataset.version == "1.1.0"
-    assert finalized.snapshot.dataset.digest != base.dataset.digest
-    assert finalized.parent_snapshot_digest == base.digest
+    assert finalized.snapshot.dataset.artifact_id != base.dataset.artifact_id
+    assert finalized.parent_snapshot_id == base.record_id
     assert base.dataset.version == "1.0.0"
 
 
@@ -467,7 +470,7 @@ def test_feedback_fails_closed_on_in_place_target_or_missing_parent_lineage() ->
         message="timeout",
         evidence=(report.episodes[1].evidence,),
     )
-    method = _method(MethodCapability.FEEDBACK_BUILD_DATASET, "hard-negative-worker")
+    method = _method(MethodCapability.FEEDBACK_BUILD_DATASET, "hard-negative-adapter")
     with pytest.raises(ValidationError, match="new dataset version"):
         FeedbackDatasetSpec(
             base=base,

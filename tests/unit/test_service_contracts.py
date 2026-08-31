@@ -21,7 +21,7 @@ from physrealx.platform import PhysRealX
 from physrealx.reference import reference_asset
 
 
-class _CanonicalWorker:
+class _CanonicalAdapter:
     def __init__(self, descriptor: MethodDescriptor) -> None:
         self.descriptor = descriptor
 
@@ -48,7 +48,7 @@ class _CanonicalWorker:
         return MethodExecutionOutput(outputs=tuple(outputs), metrics={"executed": 1.0})
 
 
-class _WrongMediaCollisionWorker:
+class _WrongMediaCollisionAdapter:
     descriptor = builtin_method(
         MethodCapability.COLLISION_BUILD,
         "wrong_media_collision",
@@ -99,7 +99,7 @@ def _install(
         input_contract=input_contract,
         output_contract=output_contract,
     )
-    platform.plugins.register_worker(_CanonicalWorker(descriptor))
+    platform.plugins.register_adapter(_CanonicalAdapter(descriptor))
     return name
 
 
@@ -122,6 +122,29 @@ AssetInvocation = Callable[[PhysRealX, str, VersionedRef, ArtifactRef], Operatio
                 (
                     "enhancement_report",
                     "DepthEnhancementReport/1",
+                    "json",
+                    "application/json",
+                ),
+            ),
+        ),
+        (
+            MethodCapability.GEOMETRY_RECONSTRUCT,
+            "MetricMultiStateRGBDBundle/1",
+            "VisualGeometryBundle/1+GeometryReconstructionReport/1",
+            lambda px, method, resource, artifact: px.assets.reconstruct_geometry(
+                artifact,
+                method=method,
+            ),
+            (
+                (
+                    "visual_geometry_bundle",
+                    "VisualGeometryBundle/1",
+                    "zip",
+                    "application/zip",
+                ),
+                (
+                    "geometry_reconstruction_report",
+                    "GeometryReconstructionReport/1",
                     "json",
                     "application/json",
                 ),
@@ -217,7 +240,7 @@ AssetInvocation = Callable[[PhysRealX, str, VersionedRef, ArtifactRef], Operatio
         ),
     ),
 )
-def test_asset_services_own_exact_versioned_worker_contracts(
+def test_asset_services_own_exact_versioned_adapter_contracts(
     tmp_path: Path,
     capability: MethodCapability,
     input_contract: str,
@@ -275,7 +298,7 @@ def test_service_rejects_a_method_that_redefines_its_schema(tmp_path: Path) -> N
     assert platform.operations.list() == []
 
 
-def test_service_rejects_artifact_when_worker_requires_resource_closure(tmp_path: Path) -> None:
+def test_service_rejects_artifact_when_adapter_requires_resource_closure(tmp_path: Path) -> None:
     platform = PhysRealX.open(tmp_path, discover_plugins=False)
     descriptor = builtin_method(
         MethodCapability.ASSET_PACKAGE,
@@ -295,9 +318,9 @@ def test_service_rejects_artifact_when_worker_requires_resource_closure(tmp_path
     assert platform.operations.list() == []
 
 
-def test_in_process_worker_cannot_bypass_service_media_contract(tmp_path: Path) -> None:
+def test_in_process_adapter_cannot_bypass_service_media_contract(tmp_path: Path) -> None:
     platform = PhysRealX.open(tmp_path, discover_plugins=False)
-    platform.plugins.register_worker(_WrongMediaCollisionWorker())
+    platform.plugins.register_adapter(_WrongMediaCollisionAdapter())
     mesh = platform.artifacts.put_bytes(b"glTF fixture", media_type="model/gltf-binary")
 
     with pytest.raises(MethodExecutionError, match="media type"):

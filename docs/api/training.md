@@ -1,7 +1,7 @@
 # 训练 API
 
 训练服务消费不可变数据集，在已注册训练方法中执行，并发布带完整来源的模型清单。大型训练框架应
-运行在隔离 worker 中，不能成为核心包的导入依赖。
+通过项目可选依赖启用，未安装时不能成为核心包的导入依赖。
 
 ## `training.submit`
 
@@ -34,7 +34,7 @@ model = px.training.submit(
 )
 ```
 
-提交时平台核对数据集摘要、训练方法完整描述符与可选检查点，再将 Episode 流交给训练适配器。
+提交时平台核对数据集版本、训练方法完整描述符与可选检查点，再将 Episode 流交给训练适配器。
 训练器不得改变输入动作 Schema，权重必须先进入制品存储，模型清单通过校验后才原子发布。
 
 ## `training.get_model`
@@ -43,7 +43,7 @@ model = px.training.submit(
 px.training.get_model(model: VersionedRef) -> ModelManifest
 ```
 
-`ModelManifest` 保存训练方法与推理方法 `MethodSpec`、数据集精确引用、权重摘要、观测/动作
+`ModelManifest` 保存训练方法与推理方法 `MethodSpec`、数据集精确引用、权重制品、观测/动作
 Schema、规范化训练配置和有限指标。推理方法必须已在当前工作区注册。
 
 ## `training.list_models`
@@ -64,7 +64,7 @@ rollout = px.world_models.rollout(
 )
 ```
 
-`models.register` 产生与数据、代码、环境、配置、指标和权重摘要绑定的登记证据；
+`models.register` 产生与数据、代码、环境、配置、指标和权重制品绑定的登记证据；
 `world_models.rollout` 产生 `rollout` 和 `uncertainty` 制品。方法只能返回已声明的特征、
 视频、状态或价值输出，平台不伪造缺失模态。
 
@@ -86,5 +86,5 @@ rollout = px.world_models.rollout(
 ## 主要错误
 
 - `ResourceNotFoundError`：数据集、训练方法或推理方法未注册；
-- `ResourceConflictError`：数据摘要、方法描述符或输出模型身份冲突；
+- `ResourceConflictError`：数据版本、方法描述符或输出模型身份冲突；
 - `DomainValidationError`：信号 Schema、检查点、权重或模型清单不符合契约。

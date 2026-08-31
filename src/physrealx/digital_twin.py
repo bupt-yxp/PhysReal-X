@@ -9,8 +9,6 @@ from __future__ import annotations
 
 import math
 import re
-import sys
-from enum import Enum
 from typing import Literal
 
 from pydantic import Field, JsonValue, field_validator, model_validator
@@ -19,19 +17,9 @@ from physrealx.domain import (
     ArtifactRef,
     DomainModel,
     ResourceType,
+    StrEnum,
     VersionedRef,
 )
-
-if sys.version_info >= (3, 11):
-    from enum import StrEnum
-else:
-
-    class StrEnum(str, Enum):
-        """Python 3.8-3.10 equivalent of :class:`enum.StrEnum`."""
-
-        def __str__(self) -> str:
-            return str.__str__(self)
-
 
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9_.-]{0,127}$")
 _VERSION = re.compile(
@@ -270,12 +258,12 @@ class ObservationSetManifest(DomainModel):
             raise ValueError("an observation-set manifest cannot publish source errors")
         return self
 
-    def reference(self, digest: str | None = None) -> VersionedRef:
+    def reference(self, artifact_id: str | None = None) -> VersionedRef:
         return VersionedRef(
             resource_type=ResourceType.OBSERVATION_SET,
             resource_id=self.resource_id,
             version=self.version,
-            digest=digest,
+            artifact_id=artifact_id,
         )
 
 

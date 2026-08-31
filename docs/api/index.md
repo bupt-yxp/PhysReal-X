@@ -28,12 +28,13 @@ px = PhysRealX.open(".physrealx")
 
 ## 服务命名空间
 
-以下命名空间统一公共语义，不代表所列外部算法已随核心包安装。方法型操作只会调用当前工作区已登记且探针通过的 worker。
+以下命名空间统一公共语义，不代表所列算法依赖已随核心包安装。方法型操作只会调用当前项目
+已登记且探针通过的适配器。
 
 | 命名空间 | 主要操作 |
 | --- | --- |
 | `px.methods` | `list`、`inspect`、`installations`、`bind`；查询方法身份与真实就绪状态 |
-| `px.operations` | 读取和列出能力 worker 的不可变执行证据 |
+| `px.operations` | 读取和列出能力方法的不可变执行证据 |
 | `px.assets` | 观测导入、数字孪生、关节、碰撞、物性、封装与验收 |
 | `px.scenes`、`px.tasks`、`px.trajectories` | 场景生成/组合、任务编译/校验和轨迹生成 |
 | `px.simulations`、`px.renders`、`px.events`、`px.pointclouds` | 物理轨迹与严格同步的多模态派生 |
@@ -42,7 +43,7 @@ px = PhysRealX.open(".physrealx")
 | `px.training`、`px.models`、`px.world_models` | 训练、模型登记和动作条件 rollout |
 | `px.evaluations`、`px.deployments`、`px.telemetry` | 冻结评测、分级部署和 MCAP 留证 |
 | `px.failures`、`px.feedback` | 证据化失败归因与新的定向数据集 |
-| `px.artifacts` | 内容寻址制品写入、读取与完整性验证 |
+| `px.artifacts` | 标识符寻址制品的原子写入、读取与大小检查 |
 
 ## 可执行契约参考链
 
@@ -87,7 +88,7 @@ API、资源引用和原子发布；外部仿真、实际训练与真机能力�
 ## 稳定性规则
 
 - 公共模型冻结、拒绝未知字段、NaN/Inf、非法单位和未解析引用；
-- 方法必须固定能力、版本、源码 revision、许可证、环境、输入输出契约和可选权重摘要；
+- 方法必须固定能力、版本、源码 revision、许可证、环境、输入输出契约和可选权重制品；
 - 资源发布后不可变，所有结果可追溯到精确输入与方法；
 - 后端对象不穿透服务边界，核心包不隐式加载 GPU 依赖；
 - 本地工作区与远程控制面使用不同客户端生命周期，不以端点字符串切换实现。

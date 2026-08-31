@@ -65,13 +65,13 @@ def test_reference_run_publishes_replayable_dataset(
     assert len(dataset.episodes) == 4
     assert all(item.success for item in dataset.episodes)
     assert platform.assets.get(asset_ref) == asset
-    assert dataset.metadata["scene_digest"] == scene_ref.digest
-    assert dataset.metadata["task_digest"] == task_ref.digest
+    assert dataset.metadata["scene_artifact_id"] == scene_ref.artifact_id
+    assert dataset.metadata["task_artifact_id"] == task_ref.artifact_id
     assert dataset.metadata["backend_method"]["descriptor"]["version"] == "1.0.0"
     assert dataset.metadata["policy_method"]["descriptor"]["version"] == "1.0.0"
     episodes = platform.runs.episodes(run.run_id)
-    assert tuple(item.digest for item in episodes) == tuple(
-        item.digest for item in platform.runs.episodes(run.run_id)
+    assert tuple(item.record_id for item in episodes) == tuple(
+        item.record_id for item in platform.runs.episodes(run.run_id)
     )
     invalid_episode = episodes[0].model_dump(mode="json")
     invalid_episode["steps"][-1]["observations"]["drawer.position"]["unit"] = "cm"
@@ -135,7 +135,7 @@ def test_dataset_trains_and_evaluates_torch_policy(tmp_path: Path) -> None:
         episode_count=1,
         base_seed=50_000,
     )
-    assert second_evaluation.digest != evaluation_ref.digest
+    assert second_evaluation.artifact_id != evaluation_ref.artifact_id
 
     incompatible_task_payload = task.model_dump(mode="json")
     incompatible_task_payload["version"] = "1.1.0"

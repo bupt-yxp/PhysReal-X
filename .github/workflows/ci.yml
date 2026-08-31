@@ -79,12 +79,6 @@ jobs:
       - name: Validate distributions
         run: python -m twine check dist/*
 
-      - name: Build and validate external worker distribution
-        if: matrix.python-version == '3.11'
-        run: |
-          python -m build workers
-          python -m twine check workers/dist/*
-
       - name: Smoke-test installed wheel
         run: |
           python -m venv .wheel-smoke

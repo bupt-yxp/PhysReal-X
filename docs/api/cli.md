@@ -41,7 +41,7 @@ physrealx add asset assets/drawer.asset.yaml --workspace .physrealx
 physrealx list asset --workspace .physrealx
 ```
 
-`validate` 只解析和校验文件；`add` 将规范化清单写入内容寻址存储，并发布带摘要的不可变引用。
+`validate` 只解析和校验文件；`add` 将规范化清单原子写入制品存储，并发布带制品标识的不可变引用。
 
 ## 运行、训练与评测
 

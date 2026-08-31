@@ -23,7 +23,7 @@ from physrealx.robot_agent import (
 
 
 def _artifact(fill: str, media_type: str = "application/octet-stream") -> ArtifactRef:
-    return ArtifactRef(digest=f"sha256:{fill * 64}", size_bytes=64, media_type=media_type)
+    return ArtifactRef(artifact_id=f"art_{fill * 32}", size_bytes=64, media_type=media_type)
 
 
 def _plan(
@@ -80,7 +80,7 @@ def _plan(
             resource_type=ResourceType.MODEL,
             resource_id="drawer-policy",
             version="1.0.0",
-            digest=f"sha256:{'c' * 64}",
+            artifact_id=f"art_{'c' * 32}",
         ),
         robot=robot,
         safety=safety,
@@ -122,8 +122,8 @@ def test_plan_pins_robot_model_and_complete_joint_safety_contract() -> None:
     assert plan.robot.requires_ros2
     assert plan.robot.requires_hardware
     assert plan.model.resolved
-    assert plan.digest.startswith("sha256:")
-    assert plan.digest == _plan().digest
+    assert plan.record_id.startswith("rec_")
+    assert plan.record_id == _plan().record_id
 
     payload = plan.model_dump(round_trip=True)
     payload["safety"]["joints"] = tuple(reversed(payload["safety"]["joints"]))
@@ -314,7 +314,7 @@ def test_revoke_is_terminal_and_execution_evidence_only_accepts_artifacts() -> N
 
 def test_telemetry_manifest_requires_complete_indexed_mcap_evidence() -> None:
     manifest = TelemetryManifest(
-        deployment_digest=_plan().digest,
+        deployment_record_id=_plan().record_id,
         robot_id="cabinet-arm",
         clock_domain="ros_time",
         started_at_ns=1,

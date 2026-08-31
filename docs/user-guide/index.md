@@ -1,6 +1,6 @@
 ---
 title: 用户指南
-description: 按业务工作流使用 PhysReal-X 组织数据、训练策略和真机反馈
+description: 按六个业务模块完成从真实资产到真机反馈的可追溯实验
 hide:
   - toc
 ---
@@ -9,62 +9,58 @@ hide:
 
 <div class="prx-page-lead" markdown>
 
-本指南按照真实工作顺序组织，不要求预先理解平台内部模块。无论底层选择 Isaac Sim、Genesis、MuJoCo 还是真实机器人，资产、场景、任务、运行、Episode、数据集、模型和评测都使用同一套语义。
+本指南按用户实际完成任务的顺序组织。每个模块说明输入要求、操作步骤、方法选择、输出产物和
+质量门禁；底层算法以项目可选依赖安装，并通过已注册且探针通过的方法适配器执行。
 
-[从资产开始](assets.md){ .md-button .md-button--primary }
-[查看可复现实验](../getting-started/first-project.md){ .md-button }
+[从真实资产开始](real-assets-and-digital-twin.md){ .md-button .md-button--primary }
+[查看 API 总览](../api/index.md){ .md-button }
 
 </div>
 
-## 标准工作流
+## 六个业务模块
 
 <div class="prx-flow">
-  <div class="prx-flow__step"><span class="prx-flow__number">01</span><strong>准备资产</strong><small>采集、导入、重建、结构解析、物理校准与质量检查</small></div>
-  <div class="prx-flow__step"><span class="prx-flow__number">02</span><strong>定义场景任务</strong><small>组合机器人和物体，声明观测、动作、初始与成功条件</small></div>
-  <div class="prx-flow__step"><span class="prx-flow__number">03</span><strong>生成数据</strong><small>选择后端与策略，批量执行、同步记录和发布 Episode</small></div>
-  <div class="prx-flow__step"><span class="prx-flow__number">04</span><strong>管理数据集</strong><small>校验、查询、切分、统计、导出和冻结版本</small></div>
-  <div class="prx-flow__step"><span class="prx-flow__number">05</span><strong>训练评测</strong><small>IL、RL、VLA、世界模型训练与独立评测</small></div>
-  <div class="prx-flow__step"><span class="prx-flow__number">06</span><strong>真机闭环</strong><small>部署、记录失败、归因、校准和定向再生成</small></div>
+  <div class="prx-flow__step"><span class="prx-flow__number">01</span><strong>真实资产接入与数字孪生</strong><small>导入、标定、深度、几何与关节</small></div>
+  <div class="prx-flow__step"><span class="prx-flow__number">02</span><strong>物理可信资产构建</strong><small>碰撞、物性、组装、USD 与验证</small></div>
+  <div class="prx-flow__step"><span class="prx-flow__number">03</span><strong>场景与任务生成</strong><small>布局、谓词、随机化与轨迹</small></div>
+  <div class="prx-flow__step"><span class="prx-flow__number">04</span><strong>物理仿真与多模态数据生成</strong><small>执行、渲染、传感器与 Episode</small></div>
+  <div class="prx-flow__step"><span class="prx-flow__number">05</span><strong>数据管理与模型训练</strong><small>质检、版本、策略、VLA 与世界模型</small></div>
+  <div class="prx-flow__step"><span class="prx-flow__number">06</span><strong>评测与真机反馈闭环</strong><small>基准、部署、遥测、归因与回流</small></div>
 </div>
 
-## 使用教程
+## 如何使用本指南
 
-<div class="prx-route-grid">
-  <a class="prx-route-link" href="assets/"><strong>资产与数字孪生</strong><span>把已采集 RGB-D、多状态观测和几何制品转换为可训练资产。</span></a>
-  <a class="prx-route-link" href="scenes-and-tasks/"><strong>场景与任务</strong><span>构建环境、编译任务并定义可判定的目标与约束。</span></a>
-  <a class="prx-route-link" href="simulation/"><strong>仿真运行与后端</strong><span>选择后端、配置并行执行并管理完整运行生命周期。</span></a>
-  <a class="prx-route-link" href="data-generation/"><strong>多模态数据生成</strong><span>生成包含图像、深度、状态、动作、接触和力觉的 Episode。</span></a>
-  <a class="prx-route-link" href="datasets/"><strong>数据集管理</strong><span>版本化、查询、切分、质量分析和导出训练数据。</span></a>
-  <a class="prx-route-link" href="training/"><strong>策略训练</strong><span>训练模仿学习、强化学习、VLA 与世界模型并登记模型。</span></a>
-  <a class="prx-route-link" href="evaluation-and-deployment/"><strong>评测、部署与反馈闭环</strong><span>建立独立评测、真机部署、失败归因和定向再生成闭环。</span></a>
-</div>
+按顺序阅读时，上一个模块的已验证产物就是下一个模块的输入。只处理某一阶段时，可直接进入对应章节，但必须自行提供满足契约的上游资源。
 
-## 三条使用原则
+| 模块 | 完成后得到 | 继续阅读 |
+| --- | --- | --- |
+| 真实资产接入与数字孪生 | 观测集、米制视觉几何和关节模型 | [开始接入](real-assets-and-digital-twin.md) |
+| 物理可信资产构建 | 通过验证的物理 USD 资产 | [构建资产](physical-assets.md) |
+| 场景与任务生成 | `SceneSpec` 与 `TaskSpec` | [定义任务](scenes-and-tasks.md) |
+| 物理仿真与多模态数据生成 | `VerifiedEpisodeCollection` | [生成数据](simulation-and-data-generation.md) |
+| 数据管理与模型训练 | 数据集快照和可加载模型包 | [管理与训练](data-management-and-training.md) |
+| 评测与真机反馈闭环 | 评测、部署、故障与反馈数据证据 | [评测与回流](evaluation-and-feedback.md) |
 
-### 规格进入 Git，制品进入制品库
+## 可执行 Demo
 
-YAML/JSON 规格、测试和小型配置进入版本控制。图像、点云、USD、Gaussian、Episode、数据集和模型权重通过 `ArtifactRef` 引用，避免大文件和易变路径进入 Git。
+仓库的 `examples/` 为六个模块各提供一个中文 `demo.ipynb`。Notebook 按功能
+说明输入、API、产物和门禁；方法与参数直接出现在对应 API 单元格中。输入或方法
+不满足条件时返回 `BLOCKED`，不会绕过质量门禁。
 
-### 先校验，再运行
-
-资产图、单位、坐标系、信号模式、后端能力和任务条件应在创建昂贵仿真会话前完成校验。运行时只处理已经编译和解析的规格。
-
-### 失败也是数据
-
-不要只保存成功轨迹。失败 Episode 必须保留完整观测、动作、状态、事件和失败类别，才能用于失败恢复、对比学习、评测和定向补数。
-
-## 资源引用
-
-人可读引用使用：
-
-```text
-resource_id@semantic_version
+```console
+python -m jupyter lab examples/real_assets_and_digital_twin/demo.ipynb
 ```
 
-执行时平台将其解析为：
+## 统一操作规则
 
-```text
-resource_type + resource_id + version + sha256 digest
-```
+1. **先检查方法。** `px.methods.inspect(capability, name).ready` 为真，才表示当前工作区具备可执行环境、固定源码或权重及自检证据。
+2. **先验证输入。** 路径、方法名或历史结果不能代替版本化资源；单位、坐标系、时间戳和制品引用必须明确。
+3. **只发布完整结果。** 阶段通过输出契约与质量门后才发布；失败保留审计记录，但不生成可供下游使用的成功资源。
+4. **不覆盖历史版本。** 数据、模型和评测变化时创建新版本，并保留父版本及完整来源。
 
-同名同版本不能被不同内容覆盖。修改任何影响行为或数据语义的字段时，发布新版本。
+## 公共底座
+
+资源引用由类型、资源 ID、语义版本和平台生成的制品标识共同确定；图像、点云、USD、Episode 和权重进入制品库，Git 只保存规格、代码和小型清单。
+
+方法选择采用 `capability + method`。核心平台负责契约、编排、证据和发布；算法源码统一置于
+`algorithms/`，使用项目可选依赖安装并注册。未安装的方法会明确阻断，不会回退为占位实现。

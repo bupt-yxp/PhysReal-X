@@ -37,7 +37,7 @@ from physrealx.domain import (
     TaskSpec,
     TrainingSpec,
     VersionedRef,
-    sha256_digest,
+    canonical_record_id,
 )
 from physrealx.errors import DomainValidationError
 from physrealx.plugins import MethodInstallation
@@ -169,6 +169,28 @@ _SERVICE_METHOD_CONTRACTS: dict[MethodCapability, _ServiceMethodContract] = {
             ),
         ),
         input_kinds=("resource",),
+    ),
+    MethodCapability.GEOMETRY_RECONSTRUCT: _ServiceMethodContract(
+        "MetricMultiStateRGBDBundle/1",
+        ("source",),
+        (
+            _output(
+                "visual_geometry_bundle",
+                "VisualGeometryBundle/1",
+                content_kind="zip",
+                media_types=("application/zip",),
+                max_size_bytes=32 * _GIB,
+            ),
+            _output(
+                "geometry_reconstruction_report",
+                "GeometryReconstructionReport/1",
+                content_kind="json",
+                media_types=("application/json",),
+                max_size_bytes=32 * _MIB,
+                schema_discriminator="physrealx.geometry-reconstruction-report/1",
+            ),
+        ),
+        input_kinds=("artifact",),
     ),
     MethodCapability.ARTICULATION_RECOVER: _ServiceMethodContract(
         "PairedInteractionPointCloudBundle/1",
@@ -501,6 +523,22 @@ class AssetsService:
             config=config,
         )
 
+    def reconstruct_geometry(
+        self,
+        source: ArtifactRef,
+        *,
+        method: str | MethodSpec,
+        config: Mapping[str, JSONValue] | None = None,
+    ) -> OperationManifest:
+        """Reconstruct metric per-link visual geometry from a validated source bundle."""
+
+        return self._platform.methods.execute(
+            MethodCapability.GEOMETRY_RECONSTRUCT,
+            method,
+            inputs={"source": source},
+            config=config,
+        )
+
     def validate(
         self,
         asset: AssetSpec | VersionedRef,
@@ -641,7 +679,7 @@ class MethodsService:
         except KeyError as error:
             raise DomainValidationError(
                 f"capability {capability.value!r} has no public service contract; "
-                "execute it through an explicit external recipe"
+                "execute it through an explicit method recipe"
             ) from error
         descriptor = selected.descriptor
         if descriptor.input_contract != service_contract.input_contract:
@@ -692,7 +730,7 @@ class MethodsService:
             "outputs": [item.model_dump(mode="json") for item in output_requirements],
         }
         identity = resource_id or (
-            f"operation.{capability.value}.{sha256_digest(identity_payload)[-16:]}"
+            f"operation.{capability.value}.{canonical_record_id(identity_payload)[-16:]}"
         )
         return self._platform._execute_operation(
             OperationSpec(

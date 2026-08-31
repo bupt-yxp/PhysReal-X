@@ -34,7 +34,6 @@ from physrealx.domain import (
     SceneSpec,
     TaskSpec,
     VersionedRef,
-    sha256_digest,
 )
 from physrealx.errors import DomainValidationError, PhysRealXError, ResourceConflictError
 from physrealx.plugins import PluginRegistry
@@ -58,8 +57,8 @@ class RunExecutor:
         task_ref, task = self._resolve(spec.task, TaskSpec)
         if task.scene.resource_id != scene.resource_id or task.scene.version != scene.version:
             raise DomainValidationError("task scene does not match the run scene")
-        if task.scene.digest is not None and task.scene.digest != scene_ref.digest:
-            raise DomainValidationError("task scene digest does not match the catalog scene")
+        if task.scene.artifact_id is not None and task.scene.artifact_id != scene_ref.artifact_id:
+            raise DomainValidationError("task scene artifact does not match the catalog scene")
         assets = self._resolve_scene_assets(scene)
         if task.subject_entity not in assets:
             raise DomainValidationError("task subject_entity does not exist in the scene")
@@ -118,17 +117,12 @@ class RunExecutor:
                         episode,
                         media_type="application/vnd.physrealx.episode+json",
                     )
-                    if artifact.digest != episode.digest:
-                        raise DomainValidationError(
-                            "published Episode bytes changed canonical digest"
-                        )
                     summary = EpisodeSummary(
                         episode_id=episode.episode_id,
                         run_id=episode.run_id,
                         index=episode.index,
                         success=episode.success,
                         step_count=len(episode.steps),
-                        digest=episode.digest,
                         artifact=artifact,
                         failure_reason=episode.failure_reason,
                     )
@@ -146,8 +140,8 @@ class RunExecutor:
                 action_schema=task.action.signal,
                 total_steps=sum(item.step_count for item in summaries),
                 metadata={
-                    "scene_digest": resolved.scene.digest or "",
-                    "task_digest": resolved.task.digest or "",
+                    "scene_artifact_id": resolved.scene.artifact_id or "",
+                    "task_artifact_id": resolved.task.artifact_id or "",
                     "backend_method": resolved.backend.model_dump(mode="json"),
                     "policy_method": resolved.policy.model_dump(mode="json"),
                 },
@@ -156,7 +150,7 @@ class RunExecutor:
                 dataset,
                 media_type="application/vnd.physrealx.dataset+json",
             )
-            dataset_ref = dataset.reference(dataset_artifact.digest)
+            dataset_ref = dataset.reference(dataset_artifact.artifact_id)
             result = RunResult(
                 run_id=resolved.run_id,
                 status=RunStatus.SUCCEEDED,
@@ -195,14 +189,12 @@ class RunExecutor:
         if summary.artifact is None:
             raise DomainValidationError("Episode summary has no published artifact")
         episode = Episode.model_validate_json(self._artifacts.get_bytes(summary.artifact))
-        if episode.digest != summary.digest:
-            raise DomainValidationError("Episode manifest digest does not match its summary")
         return episode
 
     def load_dataset(self, reference: VersionedRef) -> DatasetManifest:
-        if reference.resource_type is not ResourceType.DATASET or reference.digest is None:
+        if reference.resource_type is not ResourceType.DATASET or reference.artifact_id is None:
             raise DomainValidationError("load_dataset requires a resolved dataset reference")
-        return DatasetManifest.model_validate_json(self._artifacts.get_bytes(reference.digest))
+        return DatasetManifest.model_validate_json(self._artifacts.get_bytes(reference.artifact_id))
 
     def _resolve(
         self, reference: VersionedRef, model: type[_ModelT]
@@ -212,29 +204,30 @@ class RunExecutor:
             reference.resource_id,
             reference.version,
         )
-        if reference.digest is not None and reference.digest != registered.digest:
+        if reference.artifact_id is not None and reference.artifact_id != registered.artifact_id:
             raise ResourceConflictError(
                 f"requested {reference.resource_type.value}/{reference.resource_id}@"
-                f"{reference.version} has a different catalog digest"
+                f"{reference.version} has a different catalog artifact"
             )
-        if registered.digest is None:
+        if registered.artifact_id is None:
             raise DomainValidationError("catalog returned an unresolved resource")
-        resolved = model.model_validate_json(self._artifacts.get_bytes(registered.digest))
+        resolved = model.model_validate_json(self._artifacts.get_bytes(registered.artifact_id))
         resource_id = getattr(resolved, "resource_id", None)
         version = getattr(resolved, "version", None)
         if resource_id != registered.resource_id or version != registered.version:
             raise DomainValidationError("catalog reference and resource payload disagree")
-        if sha256_digest(resolved) != registered.digest:
-            raise DomainValidationError("resource payload digest does not match the catalog")
         return registered, resolved
 
     def _resolve_scene_assets(self, scene: SceneSpec) -> dict[str, AssetSpec]:
         assets: dict[str, AssetSpec] = {}
         for entity in scene.entities:
             asset_ref, asset = self._resolve(entity.asset, AssetSpec)
-            if entity.asset.digest is not None and entity.asset.digest != asset_ref.digest:
+            if (
+                entity.asset.artifact_id is not None
+                and entity.asset.artifact_id != asset_ref.artifact_id
+            ):
                 raise ResourceConflictError(
-                    f"scene entity {entity.name!r} asset digest does not match the catalog"
+                    f"scene entity {entity.name!r} asset does not match the catalog"
                 )
             assets[entity.name] = asset
         return assets

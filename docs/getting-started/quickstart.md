@@ -26,8 +26,8 @@ scene_ref = px.scenes.register(scene)
 task_ref = px.tasks.register(task)
 ```
 
-注册过程把场景中的资产和任务中的场景解析为带摘要的精确引用。重复注册相同内容是幂等的，
-同一 `resource_id@version` 对应不同内容会被拒绝。
+注册过程把场景中的资产和任务中的场景解析为带制品标识的精确引用。同一
+`resource_id@version` 重复注册返回原引用；内容变化必须提升版本。
 
 ## 3. 生成 Episode 数据集
 
@@ -42,7 +42,7 @@ print(record.status)
 print(len(dataset.episodes), dataset.total_steps)
 ```
 
-运行规格已绑定精确后端和策略 `MethodSpec`。每条 Episode 保存种子、方法描述符、场景/任务摘要、
+运行规格已绑定精确后端和策略 `MethodSpec`。每条 Episode 保存种子、方法描述符、场景/任务版本、
 连续时间线、观测、动作、奖励、终止语义和失败原因；全部 Episode 验证完成后才发布数据集。
 
 ## 4. 训练契约参考策略
@@ -71,7 +71,7 @@ manifest = px.training.get_model(model)
 print(manifest.metrics)
 ```
 
-模型清单绑定数据集摘要、训练与推理方法、训练配置、权重摘要、信号模式和指标。
+模型清单绑定数据集版本、训练与推理方法、训练配置、权重制品、信号模式和指标。
 
 ## 5. 独立评测
 
@@ -100,4 +100,4 @@ physrealx methods --workspace .physrealx-demo
 ```
 
 接下来阅读[第一个可复现契约实验](first-project.md)了解目录、规格和质量验收，或进入
-[资产与数字孪生](../user-guide/assets.md)处理已采集 ArtModeling 数据。
+[真实资产接入与数字孪生](../user-guide/real-assets-and-digital-twin.md)处理已采集 ArtModeling 数据。

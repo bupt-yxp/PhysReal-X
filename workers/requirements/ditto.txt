@@ -1,4 +1,0 @@
-# The protocol adapter runs in the ordinary Python 3.10+ worker environment.
-# Official Ditto remains in its own Python 3.8 conda environment and is invoked
-# through ditto_inference_bridge.py; its historical CUDA stack is not duplicated.
-numpy==1.26.4

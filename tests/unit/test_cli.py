@@ -67,6 +67,7 @@ def test_cli_runs_complete_local_workspace_workflow(
     assert not error
     methods = json.loads(output)
     assert {item["name"] for item in methods} == {
+        "artgs",
         "artmodeling",
         "reference_drawer",
         "scripted_drawer",
@@ -81,7 +82,7 @@ def test_cli_runs_complete_local_workspace_workflow(
     assert not error
     asset_ref = json.loads(output)
     assert asset_ref["resource_type"] == "asset"
-    assert asset_ref["digest"].startswith("sha256:")
+    assert asset_ref["artifact_id"].startswith("art_")
 
     status, output, error = _invoke(
         capsys,
@@ -155,7 +156,7 @@ def test_cli_validates_every_supported_contract_kind(
                 resource_type=ResourceType.DATASET,
                 resource_id="drawer.dataset",
                 version="1.0.0",
-                digest=f"sha256:{'a' * 64}",
+                artifact_id=f"art_{'a' * 32}",
             ),
             trainer=TorchBehaviorCloningTrainer.descriptor.bind(),
         ),

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -23,7 +22,7 @@ from physrealx.domain import (
     SignalDType,
     VersionedRef,
     canonical_json_bytes,
-    sha256_digest,
+    canonical_record_id,
 )
 from physrealx.execution_lifecycle import (
     EpisodePackResult,
@@ -42,12 +41,16 @@ from physrealx.execution_lifecycle import (
 )
 
 
-def _digest(label: str) -> str:
-    return f"sha256:{hashlib.sha256(label.encode()).hexdigest()}"
+def _record_id(label: str) -> str:
+    return canonical_record_id(label)
+
+
+def _artifact_id(label: str) -> str:
+    return f"art_{uuid.uuid5(uuid.NAMESPACE_URL, label).hex}"
 
 
 def _artifact(label: str, media_type: str = "application/octet-stream") -> ArtifactRef:
-    return ArtifactRef(digest=_digest(label), size_bytes=128, media_type=media_type)
+    return ArtifactRef(artifact_id=_artifact_id(label), size_bytes=128, media_type=media_type)
 
 
 def _method(capability: MethodCapability, name: str) -> MethodSpec:
@@ -57,13 +60,12 @@ def _method(capability: MethodCapability, name: str) -> MethodSpec:
         version="1.0.0",
         api_version="2",
         source_uri=f"https://example.test/{name}",
-        source_revision=_digest(f"revision-{name}")[7:],
+        source_revision=f"revision-{name}",
         license_spdx="MIT",
         runtime=MethodRuntime(
-            mode=MethodExecutionMode.CONTAINER,
+            mode=MethodExecutionMode.IN_PROCESS,
             accelerator=MethodAccelerator.CPU,
             python="3.11",
-            image_digest=_digest(f"image-{name}"),
         ),
         input_contract="ExecutionInput/1",
         output_contract="ExecutionOutput/1",
@@ -79,18 +81,18 @@ def _plan() -> ExecutionPlan:
             resource_type=ResourceType.SCENE,
             resource_id="cabinet-scene",
             version="1.0.0",
-            digest=_digest("scene"),
+            artifact_id=_artifact_id("scene"),
         ),
         task=VersionedRef(
             resource_type=ResourceType.TASK,
             resource_id="open-drawer",
             version="1.0.0",
-            digest=_digest("task"),
+            artifact_id=_artifact_id("task"),
         ),
-        simulator=_method(MethodCapability.SIMULATION_RUN, "mujoco-worker"),
-        policy=_method(MethodCapability.POLICY_INFERENCE, "act-worker"),
-        renderer=_method(MethodCapability.RENDER_GENERATE, "blenderproc-worker"),
-        packer=_method(MethodCapability.EPISODE_PACK, "lerobot-pack-worker"),
+        simulator=_method(MethodCapability.SIMULATION_RUN, "mujoco-adapter"),
+        policy=_method(MethodCapability.POLICY_INFERENCE, "act-adapter"),
+        renderer=_method(MethodCapability.RENDER_GENERATE, "blenderproc-adapter"),
+        packer=_method(MethodCapability.EPISODE_PACK, "lerobot-pack-adapter"),
         seed=42,
         inputs=(
             ExecutionInput(
@@ -100,7 +102,7 @@ def _plan() -> ExecutionPlan:
                     resource_type=ResourceType.ASSET,
                     resource_id="cabinet2",
                     version="1.0.0",
-                    digest=_digest("cabinet2"),
+                    artifact_id=_artifact_id("cabinet2"),
                 ),
             ),
             ExecutionInput(
@@ -147,13 +149,13 @@ def _trajectory(plan: ExecutionPlan) -> StateTrajectoryEvidence:
         for index in range(3)
     )
     return StateTrajectoryEvidence(
-        plan_digest=plan.digest,
+        plan_record_id=plan.record_id,
         scene=plan.scene,
         task=plan.task,
-        simulator_digest=sha256_digest(plan.simulator),
-        policy_digest=sha256_digest(plan.policy),
+        simulator_record_id=canonical_record_id(plan.simulator),
+        policy_record_id=canonical_record_id(plan.policy),
         seed=plan.seed,
-        input_digest=plan.input_digest,
+        input_record_id=plan.input_record_id,
         trajectory=_artifact("trajectory", "application/x-mcap"),
         frames=frames,
         evidence=(_artifact("simulation-log", "text/plain"),),
@@ -185,19 +187,19 @@ def _render_value(name: str, index: int) -> DataValue:
 def _rendering(plan: ExecutionPlan, trajectory: StateTrajectoryEvidence) -> RenderStreamEvidence:
     started = datetime(2026, 1, 1, tzinfo=timezone.utc)
     return RenderStreamEvidence(
-        plan_digest=plan.digest,
-        trajectory_evidence_digest=trajectory.digest,
+        plan_record_id=plan.record_id,
+        trajectory_evidence_id=trajectory.record_id,
         scene=plan.scene,
         task=plan.task,
-        renderer_digest=sha256_digest(plan.renderer),
+        renderer_record_id=canonical_record_id(plan.renderer),
         seed=plan.seed,
-        input_digest=plan.input_digest,
+        input_record_id=plan.input_record_id,
         stream=_artifact("render-stream", "application/x-mcap"),
         frames=tuple(
             RenderedFrameEvidence(
                 index=frame.index,
                 timestamp_ns=frame.timestamp_ns,
-                state_frame_digest=frame.digest,
+                state_frame_id=frame.record_id,
                 modalities=tuple(
                     RenderedModality(name=name, value=_render_value(name, frame.index))
                     for name in plan.modalities
@@ -256,15 +258,15 @@ def _packed(
     episode = _episode(plan, trajectory, rendering)
     started = datetime(2026, 1, 1, tzinfo=timezone.utc)
     return EpisodePackResult(
-        plan_digest=plan.digest,
-        trajectory_evidence_digest=trajectory.digest,
-        render_evidence_digest=rendering.digest,
-        packer_digest=sha256_digest(plan.packer),
-        input_digest=plan.input_digest,
+        plan_record_id=plan.record_id,
+        trajectory_evidence_id=trajectory.record_id,
+        render_evidence_id=rendering.record_id,
+        packer_record_id=canonical_record_id(plan.packer),
+        input_record_id=plan.input_record_id,
         scene=plan.scene,
         task=plan.task,
         seed=plan.seed,
-        episode_payload_digest=episode.digest,
+        episode_payload_id=episode.record_id,
         episode=episode,
         artifact=_artifact("episode", "application/x-mcap"),
         evidence=(_artifact("pack-log", "text/plain"),),
@@ -292,7 +294,7 @@ def _materialized(bundle: VerifiedEpisodeBundle) -> VerifiedEpisodeArtifact:
         episode_id=bundle.episode.episode_id,
         bundle=bundle,
         artifact=ArtifactRef(
-            digest=sha256_digest(payload),
+            artifact_id=_artifact_id(bundle.record_id),
             size_bytes=len(payload),
             media_type="application/json",
         ),
@@ -308,25 +310,25 @@ def test_validated_chain_finalizes_a_versioned_episode_bundle() -> None:
     assert bundle.schema_name == "physrealx.verified-episode-bundle/1"
     assert bundle.validation.status == "VALIDATED"
     assert bundle.episode == packed.episode
-    assert bundle.validation.trajectory_evidence_digest == trajectory.digest
-    assert bundle.validation.render_evidence_digest == rendering.digest
-    assert bundle.validation.episode_digest == packed.episode.digest
+    assert bundle.validation.trajectory_evidence_id == trajectory.record_id
+    assert bundle.validation.render_evidence_id == rendering.record_id
+    assert bundle.validation.episode_record_id == packed.episode.record_id
     assert bundle.model_dump(mode="json", by_alias=True)["schema"] == bundle.schema_name
 
 
 @pytest.mark.parametrize(
     ("field_name", "replacement"),
     (
-        ("plan_digest", _digest("other-plan")),
+        ("plan_record_id", _record_id("other-plan")),
         ("seed", 43),
-        ("input_digest", _digest("other-input")),
+        ("input_record_id", _record_id("other-input")),
         (
             "scene",
             VersionedRef(
                 resource_type=ResourceType.SCENE,
                 resource_id="other-scene",
                 version="1.0.0",
-                digest=_digest("other-scene"),
+                artifact_id=_artifact_id("other-scene"),
             ),
         ),
     ),
@@ -339,9 +341,9 @@ def test_trajectory_cannot_change_any_execution_pin(field_name: str, replacement
         ExecutionLifecycle.finalize(plan, changed, rendering, packed)
 
 
-def test_methods_are_bound_by_full_method_spec_digest() -> None:
+def test_methods_are_bound_by_full_method_spec_record_id() -> None:
     plan, trajectory, rendering, packed = _chain()
-    changed = trajectory.model_copy(update={"simulator_digest": _digest("other-method")})
+    changed = trajectory.model_copy(update={"simulator_record_id": _record_id("other-method")})
 
     with pytest.raises(ValueError, match="changed pinned simulator"):
         ExecutionLifecycle.finalize(plan, changed, rendering, packed)
@@ -350,7 +352,7 @@ def test_methods_are_bound_by_full_method_spec_digest() -> None:
 def test_rendering_must_replay_every_state_frame_exactly() -> None:
     plan, trajectory, rendering, packed = _chain()
     changed_frame = rendering.frames[1].model_copy(
-        update={"state_frame_digest": _digest("wrong-frame")}
+        update={"state_frame_id": _record_id("wrong-frame")}
     )
     changed = rendering.model_copy(
         update={"frames": (rendering.frames[0], changed_frame, rendering.frames[2])}
@@ -379,7 +381,7 @@ def test_packer_must_preserve_rendered_observations_and_simulation_state() -> No
     changed_packed = packed.model_copy(
         update={
             "episode": changed_episode,
-            "episode_payload_digest": changed_episode.digest,
+            "episode_payload_id": changed_episode.record_id,
         }
     )
 
@@ -390,12 +392,12 @@ def test_packer_must_preserve_rendered_observations_and_simulation_state() -> No
 def test_manually_constructed_validation_report_cannot_finalize_another_chain() -> None:
     plan, trajectory, rendering, packed = _chain()
     report = ExecutionValidationReport(
-        plan_digest=plan.digest,
-        input_digest=plan.input_digest,
-        trajectory_evidence_digest=trajectory.digest,
-        render_evidence_digest=rendering.digest,
-        pack_result_digest=packed.digest,
-        episode_digest=_digest("different-episode"),
+        plan_record_id=plan.record_id,
+        input_record_id=plan.input_record_id,
+        trajectory_evidence_id=trajectory.record_id,
+        render_evidence_id=rendering.record_id,
+        pack_result_id=packed.record_id,
+        episode_record_id=_record_id("different-episode"),
         checks=(
             "artifact_evidence",
             "episode_binding",
@@ -497,12 +499,11 @@ def test_collect_orders_multiple_materialized_episodes_deterministically() -> No
 @pytest.mark.parametrize(
     ("field_name", "replacement"),
     (
-        ("digest", _digest("wrong-bundle")),
         ("size_bytes", 1),
         ("media_type", "application/octet-stream"),
     ),
 )
-def test_verified_episode_artifact_requires_exact_canonical_json(
+def test_verified_episode_artifact_requires_exact_declared_metadata(
     field_name: str, replacement: object
 ) -> None:
     plan, trajectory, rendering, packed = _chain()

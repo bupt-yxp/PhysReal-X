@@ -14,7 +14,6 @@ from physrealx.digital_twin import (
 from physrealx.domain import (
     AssetEvidenceState,
     AssetSpec,
-    GeometryRepresentation,
     GeometryRole,
     ParameterSource,
 )
@@ -31,28 +30,6 @@ def validate_asset(
     by_link: dict[str, set[GeometryRole]] = defaultdict(set)
     for geometry in asset.geometries:
         by_link[geometry.link].add(geometry.role)
-        if profile is not AssetValidationProfile.SCHEMA and (
-            geometry.representation is not GeometryRepresentation.PRIMITIVE
-        ):
-            if geometry.checksum is None:
-                issues.append(
-                    AssetValidationIssue(
-                        severity=IssueSeverity.ERROR,
-                        code="missing_geometry_checksum",
-                        message="non-primitive geometry requires a content checksum",
-                        path=f"geometries.{geometry.name}",
-                    )
-                )
-            elif not artifacts.verify(geometry.checksum):
-                issues.append(
-                    AssetValidationIssue(
-                        severity=IssueSeverity.ERROR,
-                        code="unavailable_geometry_artifact",
-                        message="geometry checksum is not available in the artifact store",
-                        path=f"geometries.{geometry.name}",
-                    )
-                )
-
     if profile is not AssetValidationProfile.SCHEMA:
         for link in asset.links:
             missing = {GeometryRole.VISUAL, GeometryRole.COLLISION} - by_link[link]
@@ -154,20 +131,4 @@ def validate_asset(
     )
 
 
-def merge_validation_reports(
-    worker: AssetValidationReport,
-    platform: AssetValidationReport,
-) -> AssetValidationReport:
-    """Combine worker evidence with platform-owned structural checks."""
-
-    issues = worker.issues + tuple(item for item in platform.issues if item not in worker.issues)
-    metrics = {f"worker.{key}": value for key, value in worker.metrics.items()}
-    metrics.update({f"platform.{key}": value for key, value in platform.metrics.items()})
-    return AssetValidationReport(
-        profile=AssetValidationProfile.DIGITAL_TWIN,
-        issues=issues,
-        metrics=metrics,
-    )
-
-
-__all__ = ["merge_validation_reports", "validate_asset"]
+__all__ = ["validate_asset"]

@@ -30,23 +30,15 @@ from physrealx.plugins import PluginRegistry
 from physrealx.reference import reference_asset
 
 
-def test_container_method_requires_immutable_image() -> None:
-    with pytest.raises(ValidationError, match="immutable image_digest"):
-        MethodRuntime(
-            mode=MethodExecutionMode.CONTAINER,
-            accelerator=MethodAccelerator.CUDA,
-            python=">=3.10,<3.13",
-            minimum_vram_gb=12,
-        )
-
-
-def test_process_method_requires_immutable_environment() -> None:
-    with pytest.raises(ValidationError, match="immutable environment_digest"):
-        MethodRuntime(
-            mode=MethodExecutionMode.PROCESS,
-            accelerator=MethodAccelerator.CUDA,
-            python=">=3.10,<3.13",
-            minimum_vram_gb=12,
+def test_method_runtime_only_accepts_the_project_environment() -> None:
+    with pytest.raises(ValidationError, match="Input should be 'in_process'"):
+        MethodRuntime.model_validate(
+            {
+                "mode": "container",
+                "accelerator": MethodAccelerator.CUDA,
+                "python": ">=3.10,<3.13",
+                "minimum_vram_gb": 12,
+            }
         )
 
 
@@ -102,6 +94,30 @@ def test_optional_training_method_is_not_advertised_without_dependencies(
     assert "torch_bc" not in {item.name for item in platform.methods.list()}
 
 
+def test_default_catalog_does_not_advertise_candidate_adapters(tmp_path: Path) -> None:
+    platform = PhysRealX.open(tmp_path, discover_plugins=False)
+    installations = platform.methods.installations()
+    names = {item.descriptor.name for item in installations}
+
+    assert {"artmodeling", "artgs", "reference_drawer", "scripted_drawer"} <= names
+    assert names.isdisjoint(
+        {
+            "blenderproc",
+            "coacd",
+            "colmap",
+            "ditto",
+            "lerobot_v3",
+            "metric_alignment",
+            "mujoco",
+            "mujoco_sysid",
+            "omni_dc",
+            "openusd",
+            "ros2_control",
+        }
+    )
+    assert all(item.executable for item in installations)
+
+
 def test_workspace_rejects_unpublished_method_checkpoint(tmp_path: Path) -> None:
     platform = PhysRealX.open(tmp_path, discover_plugins=False)
     descriptor = builtin_method(
@@ -112,7 +128,7 @@ def test_workspace_rejects_unpublished_method_checkpoint(tmp_path: Path) -> None
     )
     platform.methods.register(descriptor)
     missing = ArtifactRef(
-        digest=f"sha256:{'f' * 64}",
+        artifact_id=f"art_{'f' * 32}",
         size_bytes=1,
         media_type="application/octet-stream",
     )
@@ -125,7 +141,7 @@ def test_workspace_rejects_unpublished_method_checkpoint(tmp_path: Path) -> None
         )
 
 
-class _CollisionWorker:
+class _CollisionAdapter:
     descriptor = builtin_method(
         MethodCapability.COLLISION_BUILD,
         "test_coacd",
@@ -182,8 +198,8 @@ def test_capability_service_executes_and_publishes_immutable_evidence(tmp_path: 
         b"glTF fixture input",
         media_type="model/gltf-binary",
     )
-    platform.methods.register(_CollisionWorker.descriptor)
-    platform.plugins.register_worker(_CollisionWorker())
+    platform.methods.register(_CollisionAdapter.descriptor)
+    platform.plugins.register_adapter(_CollisionAdapter())
 
     first = platform.assets.build_collision(visual_mesh, method="test_coacd")
     second = platform.assets.build_collision(visual_mesh, method="test_coacd")
@@ -194,7 +210,7 @@ def test_capability_service_executes_and_publishes_immutable_evidence(tmp_path: 
     assert first.metrics == {"part_count": 3.0}
     operation_ref = platform.operations.list()[0]
     assert platform.operations.get(operation_ref) == first
-    assert operation_ref == first.reference(operation_ref.digest)
+    assert operation_ref == first.reference(operation_ref.artifact_id)
 
 
 def test_metadata_only_method_cannot_be_executed(tmp_path: Path) -> None:
@@ -229,7 +245,7 @@ def test_failed_entry_point_registration_is_atomic(monkeypatch: pytest.MonkeyPat
 
     class BrokenEntryPoint:
         name = "broken"
-        value = "broken_worker:register"
+        value = "broken_adapter:register"
 
         @staticmethod
         def load():

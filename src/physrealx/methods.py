@@ -1,7 +1,7 @@
 """Factories for immutable method descriptors.
 
 This module contains no registry state.  Applications own their
-:class:`~physrealx.plugins.PluginRegistry` and may register additional worker
+:class:`~physrealx.plugins.PluginRegistry` and may register additional method
 descriptors through entry points.
 """
 

@@ -54,6 +54,11 @@ from physrealx.execution_lifecycle import (
     VerifiedEpisodeBundle,
     VerifiedEpisodeCollection,
 )
+from physrealx.integrations.artgs import (
+    ArtGSInputManifest,
+    ArtGSRunConfig,
+    package_artgs_input,
+)
 from physrealx.platform import PhysRealX
 from physrealx.readiness import (
     LifecycleEvidence,
@@ -69,8 +74,8 @@ from physrealx.readiness import (
 )
 from physrealx.recipe_executor import (
     CompletedStepOutput,
-    ExternalMethodRecipe,
     InitialRecipeInput,
+    MethodRecipe,
     RecipeExecutionManifest,
     RecipeExecutionResult,
     RecipeExecutionSpec,
@@ -98,6 +103,7 @@ from physrealx.robot_agent import (
 )
 from physrealx.training_lifecycle import (
     BenchmarkEpisode,
+    BenchmarkReport,
     BenchmarkSuite,
     CodePin,
     DatasetSnapshot,
@@ -125,20 +131,20 @@ from physrealx.training_lifecycle import (
     WorldModelBundle,
     WorldModelTrainingPlan,
 )
-from physrealx.training_lifecycle import (
-    EvaluationReport as LifecycleEvaluationReport,
-)
 
 __version__ = "0.1.0"
 
 __all__ = [
     "ActionSpec",
+    "ArtGSInputManifest",
+    "ArtGSRunConfig",
     "ArtifactRef",
     "AssetEvidenceState",
     "AssetSpec",
     "AssetValidationProfile",
     "AssetValidationReport",
     "BenchmarkEpisode",
+    "BenchmarkReport",
     "BenchmarkSuite",
     "CodePin",
     "CommandDisposition",
@@ -164,7 +170,6 @@ __all__ = [
     "ExecutionLifecycle",
     "ExecutionPlan",
     "ExecutionValidationReport",
-    "ExternalMethodRecipe",
     "FailureLifecycle",
     "FailureRecord",
     "FailureReport",
@@ -173,7 +178,6 @@ __all__ = [
     "FeedbackLifecycle",
     "InitialRecipeInput",
     "JointSafetyLimit",
-    "LifecycleEvaluationReport",
     "LifecycleEvidence",
     "LifecycleEvidenceKey",
     "LifecyclePlan",
@@ -186,6 +190,7 @@ __all__ = [
     "MethodDescriptor",
     "MethodExecutionMode",
     "MethodMaturity",
+    "MethodRecipe",
     "MethodRuntime",
     "MethodSpec",
     "ModelKind",
@@ -245,4 +250,5 @@ __all__ = [
     "WorldModelBundle",
     "WorldModelTrainingPlan",
     "__version__",
+    "package_artgs_input",
 ]

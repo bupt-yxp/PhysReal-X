@@ -56,22 +56,18 @@ nav:
       - 第一个可复现契约实验: getting-started/first-project.md
   - 用户指南:
       - 指南总览: user-guide/index.md
-      - 资产与数字孪生: user-guide/assets.md
-      - 场景与任务: user-guide/scenes-and-tasks.md
-      - 仿真运行与后端: user-guide/simulation.md
-      - 外部方法与实验验证: user-guide/external-workers.md
-      - 多模态数据生成: user-guide/data-generation.md
-      - 数据集管理: user-guide/datasets.md
-      - 策略训练: user-guide/training.md
-      - 评测、部署与反馈闭环: user-guide/evaluation-and-deployment.md
+      - 真实资产接入与数字孪生: user-guide/real-assets-and-digital-twin.md
+      - 物理可信资产构建: user-guide/physical-assets.md
+      - 场景与任务生成: user-guide/scenes-and-tasks.md
+      - 物理仿真与多模态数据生成: user-guide/simulation-and-data-generation.md
+      - 数据管理与模型训练: user-guide/data-management-and-training.md
+      - 评测与真机反馈闭环: user-guide/evaluation-and-feedback.md
   - API 文档:
       - API 总览: api/index.md
       - 客户端与公共约定: api/client.md
       - 技术能力与方法 API: api/capability-methods.md
-      - 外部 worker:
-          - 米制相机对齐: api/metric-alignment-worker.md
-          - OMNI-DC 深度增强: api/omnidc-worker.md
-          - Ditto 关节恢复: api/ditto-worker.md
+      - 内嵌方法:
+          - ArtGS 视觉几何重建: api/artgs.md
       - 资产 API: api/assets.md
       - 场景与任务 API: api/scenes-and-tasks.md
       - 运行与数据生成 API: api/runs.md

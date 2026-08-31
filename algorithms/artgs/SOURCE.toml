@@ -1,0 +1,52 @@
+schema = "physrealx.vendored-source/1"
+name = "ArtGS"
+method = "artgs"
+capability = "geometry.reconstruct"
+license = "Apache-2.0"
+effective_license = "LicenseRef-ArtGS-Research-Only"
+license_note = "ArtGS 主体为 Apache-2.0；运行必需的 Gaussian rasterizer 与 Simple-KNN 限于非商业研究和评估。"
+upstream = "https://github.com/YuLiu-LY/ArtGS"
+revision = "7c1f41be2cb8b96abca13c6a9668dcf7e06d8c2a"
+
+[[components]]
+path = "submodules/diff-gaussian-rasterization"
+upstream = "https://github.com/ashawkey/diff-gaussian-rasterization"
+revision = "8829d14f814fccdaf840b7b0f3021a616583c0a1"
+license = "LicenseRef-Gaussian-Splatting-Research-Only"
+license_file = "submodules/diff-gaussian-rasterization/LICENSE.md"
+
+[[components]]
+path = "submodules/diff-gaussian-rasterization/third_party/glm"
+upstream = "https://github.com/g-truc/glm"
+revision = "5c46b9c07008ae65cb81ab79cd677ecc1934b903"
+license = "MIT"
+
+[[components]]
+path = "submodules/simple-knn"
+upstream = "https://gitlab.inria.fr/bkerbl/simple-knn"
+revision = "86710c2d4b46680c02301765dd79e465819c8f19"
+license = "LicenseRef-Gaussian-Splatting-Research-Only"
+license_file = "submodules/simple-knn/LICENSE.md"
+
+[[components]]
+path = "utils/pointnet_lib"
+upstream = "https://github.com/YuLiu-LY/ArtGS"
+revision = "7c1f41be2cb8b96abca13c6a9668dcf7e06d8c2a"
+license = "NOASSERTION"
+license_note = "上游快照未为该目录附带独立许可文件；发布和商业使用前必须单独审核。"
+
+[[adaptations]]
+id = "explicit-output-paths"
+description = "移除由数据路径推导模型路径和修改源码配置 JSON 的行为。"
+
+[[adaptations]]
+id = "optional-ground-truth"
+description = "无关节真值时明确跳过真值指标，不用宽泛异常吞掉执行错误。"
+
+[[adaptations]]
+id = "metric-depth-uint8-fix"
+description = "修正 RGB 图像转换使用有符号 byte 导致的像素溢出。"
+
+[[adaptations]]
+id = "platform-source-root"
+description = "训练和渲染均接收平台物化的数据根目录，不依赖仓库内 data 符号链接。"

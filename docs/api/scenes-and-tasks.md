@@ -12,7 +12,7 @@
 px.scenes.register(spec: SceneSpec) -> VersionedRef
 ```
 
-平台解析每个实体资产为带摘要引用，验证实体名唯一后原子发布场景。任务逻辑不得依赖实体数组下标。
+平台解析每个实体资产为带制品标识的版本引用，验证实体名唯一后原子发布场景。任务逻辑不得依赖实体数组下标。
 
 ### `scenes.get` / `scenes.list`
 
@@ -48,7 +48,7 @@ scene = px.scenes.register(
 px.tasks.register(spec: TaskSpec) -> VersionedRef
 ```
 
-注册时解析场景摘要，并确认 `subject_entity` 存在。谓词只能引用已声明的标量数值观测，动作和观测
+注册时解析场景版本，并确认 `subject_entity` 存在。谓词只能引用已声明的标量数值观测，动作和观测
 信号名称不能冲突。
 
 ### `tasks.get` / `tasks.list`
@@ -104,5 +104,5 @@ validation = px.tasks.validate(task_ref, method="task_probe")
 ## 主要错误
 
 - `ResourceNotFoundError`：场景引用的资产或任务引用的场景不存在；
-- `ResourceConflictError`：引用摘要或不可变资源身份冲突；
+- `ResourceConflictError`：制品引用或不可变资源身份冲突；
 - `DomainValidationError`：实体、信号、谓词、动作边界或任务绑定不合法。

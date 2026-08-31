@@ -1,18 +1,16 @@
 """Evidence-first contracts for training, evaluation, and feedback.
 
 The classes in this module are deliberately algorithm-agnostic.  They validate
-outputs produced by separately installed workers; they do not pretend that
+outputs produced by registered methods; they do not pretend that
 LeRobot, DINO-WM, LIBERO, ROS 2, or a robot was executed by the platform core.
 """
 
 from __future__ import annotations
 
-import hashlib
 import math
 import re
 import uuid
 from datetime import datetime, timezone
-from enum import Enum
 from typing import Literal, Union
 
 from pydantic import Field, field_validator, model_validator
@@ -25,20 +23,13 @@ from physrealx.domain import (
     MethodCapability,
     MethodSpec,
     ResourceType,
+    StrEnum,
     VersionedRef,
-    canonical_json_bytes,
-    sha256_digest,
+    canonical_record_id,
 )
 
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9_.-]{0,127}$")
-_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
-
-
-class _StrEnum(str, Enum):
-    """Python 3.8-compatible string enumeration."""
-
-    def __str__(self) -> str:
-        return str.__str__(self)
+_RECORD_ID = re.compile(r"^rec_[0-9a-f]{32}$")
 
 
 def _identifier(value: str, label: str) -> str:
@@ -47,9 +38,9 @@ def _identifier(value: str, label: str) -> str:
     return value
 
 
-def _digest(value: str, label: str) -> str:
-    if _DIGEST.fullmatch(value) is None:
-        raise ValueError(f"{label} must be a SHA-256 digest")
+def _record_id(value: str, label: str) -> str:
+    if _RECORD_ID.fullmatch(value) is None:
+        raise ValueError(f"{label} must use the platform record-ID format")
     return value
 
 
@@ -73,8 +64,8 @@ def _require_nonempty_artifact(value: ArtifactRef, label: str) -> None:
 def _require_unique_artifacts(values: tuple[ArtifactRef, ...], label: str) -> None:
     if not values:
         raise ValueError(f"{label} must contain at least one artifact")
-    if len({item.digest for item in values}) != len(values):
-        raise ValueError(f"{label} artifact digests must be unique")
+    if len({item.artifact_id for item in values}) != len(values):
+        raise ValueError(f"{label} artifact identifiers must be unique")
     for value in values:
         _require_nonempty_artifact(value, label)
 
@@ -84,8 +75,8 @@ def _require_finite_metrics(values: dict[str, float], label: str) -> None:
         raise ValueError(f"{label} metrics must be finite")
 
 
-def _method_digest(value: MethodSpec) -> str:
-    return sha256_digest(canonical_json_bytes(value))
+def _method_record_id(value: MethodSpec) -> str:
+    return canonical_record_id(value)
 
 
 class CodePin(DomainModel):
@@ -105,8 +96,8 @@ class CodePin(DomainModel):
         return self
 
     @property
-    def digest(self) -> str:
-        return sha256_digest(self)
+    def record_id(self) -> str:
+        return canonical_record_id(self)
 
 
 class EnvironmentPin(DomainModel):
@@ -114,12 +105,12 @@ class EnvironmentPin(DomainModel):
 
     runtime: str = Field(min_length=1, max_length=255)
     lockfile: ArtifactRef
-    environment_digest: str
+    environment_record_id: str
 
-    @field_validator("environment_digest")
+    @field_validator("environment_record_id")
     @classmethod
-    def validate_environment_digest(cls, value: str) -> str:
-        return _digest(value, "environment_digest")
+    def validate_environment_record_id(cls, value: str) -> str:
+        return _record_id(value, "environment_record_id")
 
     @model_validator(mode="after")
     def validate_pin(self) -> EnvironmentPin:
@@ -127,8 +118,8 @@ class EnvironmentPin(DomainModel):
         return self
 
     @property
-    def digest(self) -> str:
-        return sha256_digest(self)
+    def record_id(self) -> str:
+        return canonical_record_id(self)
 
 
 class EpisodeArtifact(DomainModel):
@@ -174,21 +165,21 @@ class DatasetSplit(DomainModel):
         return self.train + self.validation + self.test
 
     @property
-    def digest(self) -> str:
-        return sha256_digest(self)
+    def record_id(self) -> str:
+        return canonical_record_id(self)
 
 
 class SnapshotLineage(DomainModel):
     """Evidence that a snapshot was derived without mutating its parent."""
 
-    parent_snapshot_digest: str
+    parent_snapshot_id: str
     method: MethodSpec
     evidence: tuple[ArtifactRef, ...]
 
-    @field_validator("parent_snapshot_digest")
+    @field_validator("parent_snapshot_id")
     @classmethod
-    def validate_parent_digest(cls, value: str) -> str:
-        return _digest(value, "parent_snapshot_digest")
+    def validate_parent_snapshot_id(cls, value: str) -> str:
+        return _record_id(value, "parent_snapshot_id")
 
     @model_validator(mode="after")
     def validate_lineage(self) -> SnapshotLineage:
@@ -228,26 +219,26 @@ class DatasetSnapshot(DomainModel):
         episode_ids = tuple(item.episode_id for item in self.episodes)
         if len(episode_ids) != len(set(episode_ids)):
             raise ValueError("dataset snapshot episode ids must be unique")
-        if len({item.artifact.digest for item in self.episodes}) != len(self.episodes):
+        if len({item.artifact.artifact_id for item in self.episodes}) != len(self.episodes):
             raise ValueError("dataset snapshot episode artifacts must be unique")
         if set(episode_ids) != set(self.split.episode_ids):
             raise ValueError("dataset split must cover every snapshot episode exactly once")
-        if self.lineage is not None and self.lineage.parent_snapshot_digest == self.digest:
+        if self.lineage is not None and self.lineage.parent_snapshot_id == self.record_id:
             raise ValueError("dataset snapshot cannot be its own parent")
         return self
 
     @property
-    def digest(self) -> str:
-        return sha256_digest(self)
+    def record_id(self) -> str:
+        return canonical_record_id(self)
 
 
-class ModelKind(_StrEnum):
+class ModelKind(StrEnum):
     POLICY = "policy"
     WORLD_MODEL = "world_model"
 
 
 class PolicyTrainingPlan(DomainModel):
-    """Pinned request for a separately installed policy-training worker."""
+    """Pinned request for a registered policy-training method."""
 
     kind: Literal["policy"] = "policy"
     model_id: str
@@ -279,7 +270,7 @@ class PolicyTrainingPlan(DomainModel):
 
 
 class WorldModelTrainingPlan(DomainModel):
-    """Pinned request for a separately installed world-model worker."""
+    """Pinned request for a registered world-model method."""
 
     kind: Literal["world_model"] = "world_model"
     model_id: str
@@ -314,16 +305,16 @@ TrainingPlan: TypeAlias = Union[PolicyTrainingPlan, WorldModelTrainingPlan]
 
 
 class TrainingExecutionResult(DomainModel):
-    """Untrusted worker result accepted only after all pins are checked."""
+    """Untrusted method result accepted only after all pins are checked."""
 
     run_id: str
     kind: ModelKind
     model: VersionedRef
-    dataset_snapshot_digest: str
-    trainer_digest: str
-    code_digest: str
-    environment_digest: str
-    split_digest: str
+    dataset_snapshot_id: str
+    trainer_record_id: str
+    code_record_id: str
+    environment_record_id: str
+    split_record_id: str
     seed: int = Field(ge=0, le=4_294_967_295)
     checkpoint: ArtifactRef
     auxiliary_artifacts: tuple[ArtifactRef, ...] = ()
@@ -338,15 +329,15 @@ class TrainingExecutionResult(DomainModel):
         return _uuid(value, "training run_id")
 
     @field_validator(
-        "dataset_snapshot_digest",
-        "trainer_digest",
-        "code_digest",
-        "environment_digest",
-        "split_digest",
+        "dataset_snapshot_id",
+        "trainer_record_id",
+        "code_record_id",
+        "environment_record_id",
+        "split_record_id",
     )
     @classmethod
-    def validate_digests(cls, value: str, info: object) -> str:
-        return _digest(value, getattr(info, "field_name", "digest"))
+    def validate_record_ids(cls, value: str, info: object) -> str:
+        return _record_id(value, getattr(info, "field_name", "record ID"))
 
     @model_validator(mode="after")
     def validate_result(self) -> TrainingExecutionResult:
@@ -372,11 +363,11 @@ class TrainingReport(DomainModel):
     run_id: str
     kind: ModelKind
     model: VersionedRef
-    dataset_snapshot_digest: str
-    trainer_digest: str
-    code_digest: str
-    environment_digest: str
-    split_digest: str
+    dataset_snapshot_id: str
+    trainer_record_id: str
+    code_record_id: str
+    environment_record_id: str
+    split_record_id: str
     seed: int = Field(ge=0, le=4_294_967_295)
     checkpoint: ArtifactRef
     auxiliary_artifacts: tuple[ArtifactRef, ...]
@@ -391,15 +382,15 @@ class TrainingReport(DomainModel):
         return _uuid(value, "training report run_id")
 
     @field_validator(
-        "dataset_snapshot_digest",
-        "trainer_digest",
-        "code_digest",
-        "environment_digest",
-        "split_digest",
+        "dataset_snapshot_id",
+        "trainer_record_id",
+        "code_record_id",
+        "environment_record_id",
+        "split_record_id",
     )
     @classmethod
-    def validate_digests(cls, value: str, info: object) -> str:
-        return _digest(value, getattr(info, "field_name", "digest"))
+    def validate_record_ids(cls, value: str, info: object) -> str:
+        return _record_id(value, getattr(info, "field_name", "record ID"))
 
     @model_validator(mode="after")
     def validate_report(self) -> TrainingReport:
@@ -414,8 +405,8 @@ class TrainingReport(DomainModel):
         return self
 
     @property
-    def digest(self) -> str:
-        return sha256_digest(self)
+    def record_id(self) -> str:
+        return canonical_record_id(self)
 
 
 class PolicyModelBundle(DomainModel):
@@ -487,20 +478,20 @@ def _validate_common_bundle(
     report = bundle.report
     if report.kind is not kind or report.model != bundle.model:
         raise ValueError("model bundle and training report identity must match")
-    if report.dataset_snapshot_digest != bundle.dataset.digest:
+    if report.dataset_snapshot_id != bundle.dataset.record_id:
         raise ValueError("model bundle dataset snapshot does not match training report")
-    if report.trainer_digest != _method_digest(bundle.trainer):
+    if report.trainer_record_id != _method_record_id(bundle.trainer):
         raise ValueError("model bundle trainer does not match training report")
-    if report.code_digest != bundle.code.digest:
+    if report.code_record_id != bundle.code.record_id:
         raise ValueError("model bundle code does not match training report")
-    if report.environment_digest != bundle.environment.digest:
+    if report.environment_record_id != bundle.environment.record_id:
         raise ValueError("model bundle environment does not match training report")
-    if report.split_digest != bundle.dataset.split.digest:
+    if report.split_record_id != bundle.dataset.split.record_id:
         raise ValueError("model bundle split does not match training report")
 
 
 class TrainingLifecycle:
-    """Accept successful external-worker evidence and construct typed bundles."""
+    """Accept successful method evidence and construct typed bundles."""
 
     @staticmethod
     def finalize_policy(
@@ -543,20 +534,20 @@ class TrainingLifecycle:
         expected_kind: ModelKind,
     ) -> None:
         if result.kind is not expected_kind:
-            raise ValueError("training worker returned the wrong model kind")
+            raise ValueError("training method returned the wrong model kind")
         if (result.model.resource_id, result.model.version) != (plan.model_id, plan.version):
-            raise ValueError("training worker returned an unrequested model identity")
+            raise ValueError("training method returned an unrequested model identity")
         expected = {
-            "dataset_snapshot_digest": plan.dataset.digest,
-            "trainer_digest": _method_digest(plan.trainer),
-            "code_digest": plan.code.digest,
-            "environment_digest": plan.environment.digest,
-            "split_digest": plan.dataset.split.digest,
+            "dataset_snapshot_id": plan.dataset.record_id,
+            "trainer_record_id": _method_record_id(plan.trainer),
+            "code_record_id": plan.code.record_id,
+            "environment_record_id": plan.environment.record_id,
+            "split_record_id": plan.dataset.split.record_id,
             "seed": plan.seed,
         }
         for field_name, value in expected.items():
             if getattr(result, field_name) != value:
-                raise ValueError(f"training worker result changed pinned {field_name}")
+                raise ValueError(f"training method result changed pinned {field_name}")
 
     @staticmethod
     def _report(result: TrainingExecutionResult) -> TrainingReport:
@@ -654,17 +645,16 @@ class BenchmarkSuite(DomainModel):
         )
 
     @property
-    def digest(self) -> str:
-        return sha256_digest(self)
+    def record_id(self) -> str:
+        return canonical_record_id(self)
 
 
 def _episode_seed(global_seed: int, episode_id: str) -> int:
-    payload = f"physrealx-eval-v1:{global_seed}:{episode_id}".encode()
-    return int.from_bytes(hashlib.sha256(payload).digest()[:4], "big")
+    return (uuid.UUID(episode_id).int ^ global_seed) & 0xFFFF_FFFF
 
 
 class EpisodeExecutionResult(DomainModel):
-    """Raw external evaluator result before deadline and aggregate checks."""
+    """Raw evaluator result before deadline and aggregate checks."""
 
     episode_id: str
     seed: int = Field(ge=0, le=4_294_967_295)
@@ -692,7 +682,7 @@ class EpisodeExecutionResult(DomainModel):
         return self
 
 
-class EvaluationOutcome(_StrEnum):
+class EvaluationOutcome(StrEnum):
     SUCCESS = "success"
     FAILURE = "failure"
     TIMEOUT = "timeout"
@@ -747,7 +737,7 @@ class WilsonInterval(DomainModel):
         return self
 
 
-class EvaluationReport(DomainModel):
+class BenchmarkReport(DomainModel):
     """Fixed-suite report with evidence for every episode and timeout-as-failure."""
 
     schema_name: Literal["physrealx.benchmark-report/1"] = Field(
@@ -775,7 +765,7 @@ class EvaluationReport(DomainModel):
         return _identifier(value, "report_id")
 
     @model_validator(mode="after")
-    def validate_report(self) -> EvaluationReport:
+    def validate_report(self) -> BenchmarkReport:
         VersionedRef(
             resource_type=ResourceType.EVALUATION,
             resource_id=self.report_id,
@@ -813,8 +803,8 @@ class EvaluationReport(DomainModel):
         return self
 
     @property
-    def digest(self) -> str:
-        return sha256_digest(self)
+    def record_id(self) -> str:
+        return canonical_record_id(self)
 
 
 def _wilson_interval(successes: int, total: int) -> tuple[float, float]:
@@ -832,7 +822,7 @@ def _wilson_interval(successes: int, total: int) -> tuple[float, float]:
 
 
 class EvaluationLifecycle:
-    """Normalize external episode results and compute the fixed aggregate."""
+    """Normalize episode results and compute the fixed aggregate."""
 
     @staticmethod
     def finalize(
@@ -842,7 +832,7 @@ class EvaluationLifecycle:
         model: ModelBundle,
         suite: BenchmarkSuite,
         results: tuple[EpisodeExecutionResult, ...],
-    ) -> EvaluationReport:
+    ) -> BenchmarkReport:
         by_id = {item.episode_id: item for item in results}
         if len(by_id) != len(results):
             raise ValueError("evaluation results contain duplicate episode ids")
@@ -853,7 +843,7 @@ class EvaluationLifecycle:
         for benchmark in suite.episodes:
             result = by_id[benchmark.episode_id]
             if result.seed != benchmark.seed:
-                raise ValueError("evaluation worker changed a fixed episode seed")
+                raise ValueError("evaluation method changed a fixed episode seed")
             timed_out = result.timed_out or result.elapsed_s >= suite.timeout_s
             if timed_out:
                 outcome = EvaluationOutcome.TIMEOUT
@@ -879,7 +869,7 @@ class EvaluationLifecycle:
         timeout_count = sum(item.outcome is EvaluationOutcome.TIMEOUT for item in normalized)
         error_count = sum(item.outcome is EvaluationOutcome.ERROR for item in normalized)
         lower, upper = _wilson_interval(success_count, len(normalized))
-        return EvaluationReport(
+        return BenchmarkReport(
             report_id=report_id,
             version=version,
             model=model.model,
@@ -903,9 +893,9 @@ class FailureRecord(DomainModel):
     )
     schema_version: Literal[1] = 1
     failure_id: str
-    evaluation_report_digest: str
+    evaluation_report_id: str
     model: VersionedRef
-    suite_digest: str
+    suite_record_id: str
     episode_id: str
     category: FailureCategory = FailureCategory.UNKNOWN
     message: str = Field(min_length=1, max_length=2048)
@@ -918,10 +908,10 @@ class FailureRecord(DomainModel):
     def validate_ids(cls, value: str, info: object) -> str:
         return _uuid(value, getattr(info, "field_name", "id"))
 
-    @field_validator("evaluation_report_digest", "suite_digest")
+    @field_validator("evaluation_report_id", "suite_record_id")
     @classmethod
-    def validate_record_digest(cls, value: str, info: object) -> str:
-        return _digest(value, getattr(info, "field_name", "digest"))
+    def validate_record_id(cls, value: str, info: object) -> str:
+        return _record_id(value, getattr(info, "field_name", "record ID"))
 
     @model_validator(mode="after")
     def validate_record(self) -> FailureRecord:
@@ -930,8 +920,8 @@ class FailureRecord(DomainModel):
         return self
 
     @property
-    def digest(self) -> str:
-        return sha256_digest(self)
+    def record_id(self) -> str:
+        return canonical_record_id(self)
 
 
 class FailureReport(DomainModel):
@@ -941,22 +931,20 @@ class FailureReport(DomainModel):
         default="physrealx.failure-report/1", alias="schema", serialization_alias="schema"
     )
     status: Literal["ANALYZED", "CONFIRMED"]
-    evaluation_report_digest: str
+    evaluation_report_id: str
     records: tuple[FailureRecord, ...]
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
-    @field_validator("evaluation_report_digest")
+    @field_validator("evaluation_report_id")
     @classmethod
-    def validate_evaluation_digest(cls, value: str) -> str:
-        return _digest(value, "evaluation_report_digest")
+    def validate_evaluation_record_id(cls, value: str) -> str:
+        return _record_id(value, "evaluation_report_id")
 
     @model_validator(mode="after")
     def validate_report(self) -> FailureReport:
         if len({item.failure_id for item in self.records}) != len(self.records):
             raise ValueError("failure report record ids must be unique")
-        if any(
-            item.evaluation_report_digest != self.evaluation_report_digest for item in self.records
-        ):
+        if any(item.evaluation_report_id != self.evaluation_report_id for item in self.records):
             raise ValueError("failure report records must reference one evaluation report")
         confirmed = all(item.confirmed for item in self.records)
         if (self.status == "CONFIRMED") != confirmed:
@@ -964,8 +952,8 @@ class FailureReport(DomainModel):
         return self
 
     @property
-    def digest(self) -> str:
-        return sha256_digest(self)
+    def record_id(self) -> str:
+        return canonical_record_id(self)
 
 
 class FailureLifecycle:
@@ -973,7 +961,7 @@ class FailureLifecycle:
 
     @staticmethod
     def record(
-        report: EvaluationReport,
+        report: BenchmarkReport,
         *,
         episode_id: str,
         category: FailureCategory = FailureCategory.UNKNOWN,
@@ -987,13 +975,13 @@ class FailureLifecycle:
             raise ValueError("failure episode is absent from the evaluation report") from error
         if episode.succeeded:
             raise ValueError("a successful episode cannot become a failure record")
-        if episode.evidence.digest not in {item.digest for item in evidence}:
+        if episode.evidence.artifact_id not in {item.artifact_id for item in evidence}:
             raise ValueError("failure record must retain the evaluation episode evidence")
         return FailureRecord(
             failure_id=str(uuid.uuid4()),
-            evaluation_report_digest=report.digest,
+            evaluation_report_id=report.record_id,
             model=report.model,
-            suite_digest=report.suite.digest,
+            suite_record_id=report.suite.record_id,
             episode_id=episode_id,
             category=category,
             message=message,
@@ -1003,7 +991,7 @@ class FailureLifecycle:
 
     @staticmethod
     def finalize(
-        report: EvaluationReport,
+        report: BenchmarkReport,
         records: tuple[FailureRecord, ...],
     ) -> FailureReport:
         """Require exactly one analysis record for every failed benchmark episode."""
@@ -1015,11 +1003,11 @@ class FailureLifecycle:
             raise ValueError(
                 "failure analysis must cover every failed episode exactly once in report order"
             )
-        if any(item.evaluation_report_digest != report.digest for item in records):
+        if any(item.evaluation_report_id != report.record_id for item in records):
             raise ValueError("failure analysis record is bound to another evaluation report")
         return FailureReport(
             status=("CONFIRMED" if all(item.confirmed for item in records) else "ANALYZED"),
-            evaluation_report_digest=report.digest,
+            evaluation_report_id=report.record_id,
             records=records,
         )
 
@@ -1062,38 +1050,38 @@ class FeedbackDatasetManifest(DomainModel):
     )
     status: Literal["VALIDATED"] = "VALIDATED"
     snapshot: DatasetSnapshot
-    parent_snapshot_digest: str
-    failure_record_digests: tuple[str, ...]
-    method_digest: str
+    parent_snapshot_id: str
+    failure_record_ids: tuple[str, ...]
+    method_record_id: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
-    @field_validator("parent_snapshot_digest", "method_digest")
+    @field_validator("parent_snapshot_id", "method_record_id")
     @classmethod
-    def validate_digest_fields(cls, value: str, info: object) -> str:
-        return _digest(value, getattr(info, "field_name", "digest"))
+    def validate_record_id_fields(cls, value: str, info: object) -> str:
+        return _record_id(value, getattr(info, "field_name", "record ID"))
 
-    @field_validator("failure_record_digests")
+    @field_validator("failure_record_ids")
     @classmethod
-    def validate_failure_digests(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+    def validate_failure_record_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         if not value:
             raise ValueError("feedback manifest requires failure records")
-        normalized = tuple(_digest(item, "failure_record_digest") for item in value)
+        normalized = tuple(_record_id(item, "failure_record_id") for item in value)
         if len(normalized) != len(set(normalized)):
-            raise ValueError("feedback failure record digests must be unique")
+            raise ValueError("feedback failure record IDs must be unique")
         return normalized
 
     @model_validator(mode="after")
     def validate_lineage(self) -> FeedbackDatasetManifest:
         lineage = self.snapshot.lineage
-        if lineage is None or lineage.parent_snapshot_digest != self.parent_snapshot_digest:
+        if lineage is None or lineage.parent_snapshot_id != self.parent_snapshot_id:
             raise ValueError("feedback manifest snapshot must preserve parent lineage")
-        if _method_digest(lineage.method) != self.method_digest:
+        if _method_record_id(lineage.method) != self.method_record_id:
             raise ValueError("feedback manifest method must match snapshot lineage")
         return self
 
     @property
-    def digest(self) -> str:
-        return sha256_digest(self)
+    def record_id(self) -> str:
+        return canonical_record_id(self)
 
 
 class FeedbackLifecycle:
@@ -1108,12 +1096,12 @@ class FeedbackLifecycle:
             spec.target.resource_id,
             spec.target.version,
         ):
-            raise ValueError("feedback worker returned an unrequested dataset identity")
-        if produced.dataset.digest == spec.base.dataset.digest:
-            raise ValueError("feedback output cannot reuse the parent dataset digest")
+            raise ValueError("feedback method returned an unrequested dataset identity")
+        if produced.dataset.artifact_id == spec.base.dataset.artifact_id:
+            raise ValueError("feedback output cannot reuse the parent dataset record ID")
         if produced.lineage is None:
             raise ValueError("feedback output requires explicit snapshot lineage")
-        if produced.lineage.parent_snapshot_digest != spec.base.digest:
+        if produced.lineage.parent_snapshot_id != spec.base.record_id:
             raise ValueError("feedback output lineage does not identify the immutable parent")
         if produced.lineage.method != spec.method:
             raise ValueError("feedback output lineage changed the requested method")
@@ -1123,14 +1111,15 @@ class FeedbackLifecycle:
             raise ValueError("feedback output changed the pinned seed")
         return FeedbackDatasetManifest(
             snapshot=produced,
-            parent_snapshot_digest=spec.base.digest,
-            failure_record_digests=tuple(item.digest for item in spec.failures),
-            method_digest=_method_digest(spec.method),
+            parent_snapshot_id=spec.base.record_id,
+            failure_record_ids=tuple(item.record_id for item in spec.failures),
+            method_record_id=_method_record_id(spec.method),
         )
 
 
 __all__ = [
     "BenchmarkEpisode",
+    "BenchmarkReport",
     "BenchmarkSuite",
     "CodePin",
     "DatasetSnapshot",
@@ -1141,7 +1130,6 @@ __all__ = [
     "EpisodeExecutionResult",
     "EvaluationLifecycle",
     "EvaluationOutcome",
-    "EvaluationReport",
     "FailureLifecycle",
     "FailureRecord",
     "FailureReport",

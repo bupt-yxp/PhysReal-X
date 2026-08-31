@@ -1,7 +1,7 @@
 # 数据集 API
 
 数据集是不可变 Episode 清单，不是目录别名。当前数据集由成功运行原子发布，用户通过服务读取
-清单，并通过运行服务加载经过摘要验证的 Episode。
+清单，并通过运行服务加载经过 Schema 与引用验证的 Episode。
 
 ## `datasets.get`
 
@@ -9,7 +9,7 @@
 px.datasets.get(ref: VersionedRef) -> DatasetManifest
 ```
 
-清单包含 Episode 摘要、来源运行、观测/动作 Schema、总步数、创建时间和方法来源元数据；默认
+清单包含 Episode 记录、来源运行、观测/动作 Schema、总步数、创建时间和方法来源元数据；默认
 不加载高带宽 Episode 制品。
 
 ## `datasets.list`
@@ -24,8 +24,8 @@ px.datasets.list() -> list[VersionedRef]
 episodes = px.runs.episodes(run)
 ```
 
-每个摘要必须包含与 Episode JSON 相同的 SHA-256 和制品引用。读取时平台重算领域摘要，并重新
-验证时间线、信号模式、动作和终止语义。
+每条记录必须包含与 Episode JSON 相同的稳定记录标识和制品引用。读取时平台重新验证时间线、
+信号模式、动作和终止语义。
 
 ## 外部格式与快照
 
@@ -49,13 +49,13 @@ snapshot = px.datasets.snapshot(
 | `dataset.validate` | `episode_contract` |
 | `dataset.snapshot` | `dvc` |
 
-适配器必须发布新的不可变数据集或派生制品，并记录源摘要、转换配置、代码/镜像版本和输出摘要。
+适配器必须发布新的不可变数据集或派生制品，并记录源引用、转换配置、代码版本和输出制品。
 训练切分按资产、场景与采集批次防泄漏，不能依赖文件顺序。
-核心仓库不附带 LeRobot 转换占位 worker；示例中的尖括号必须替换为当前工作区内
-已安装且探针通过的方法名。`raw_mcap` 也必须是已发布、摘要已校验的版本化资源。
+核心仓库不附带 LeRobot 转换占位实现；示例中的尖括号必须替换为当前项目环境内
+已注册且自检通过的方法名。`raw_mcap` 也必须是已发布的版本化资源。
 
 ## 主要错误
 
 - `ResourceNotFoundError`：数据集或其来源运行不存在；
-- `ArtifactIntegrityError`：Episode 制品缺失或摘要不一致；
+- `ArtifactIntegrityError`：Episode 制品缺失或声明大小不一致；
 - `DomainValidationError`：Episode、总步数、来源运行或信号 Schema 不一致。

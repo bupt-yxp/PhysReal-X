@@ -6,7 +6,6 @@ import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from importlib.metadata import entry_points
-from pathlib import Path
 from typing import Callable
 from typing import Mapping as TypingMapping
 
@@ -14,12 +13,12 @@ from typing_extensions import TypeAlias
 
 from physrealx.contracts import (
     API_VERSION,
-    MethodWorker,
+    MethodAdapter,
+    MethodProbe,
     ObservationImporter,
     Policy,
     SimulationBackend,
     Trainer,
-    WorkerProbe,
 )
 from physrealx.domain import (
     JSONValue,
@@ -29,14 +28,14 @@ from physrealx.domain import (
     MethodSpec,
 )
 from physrealx.errors import (
+    MethodUnavailableError,
     PluginError,
     ResourceConflictError,
     ResourceNotFoundError,
-    WorkerUnavailableError,
 )
 
 PolicyFactory: TypeAlias = Callable[[TypingMapping[str, JSONValue]], Policy]
-ENTRY_POINT_GROUP = "physrealx.workers"
+ENTRY_POINT_GROUP = "physrealx.methods"
 
 
 @dataclass(frozen=True)
@@ -76,7 +75,7 @@ class PluginRegistry:
         self._importers: dict[str, ObservationImporter] = {}
         self._policies: dict[str, tuple[MethodDescriptor, PolicyFactory]] = {}
         self._trainers: dict[str, Trainer] = {}
-        self._workers: dict[tuple[MethodCapability, str], MethodWorker] = {}
+        self._adapters: dict[tuple[MethodCapability, str], MethodAdapter] = {}
         self._execution_kinds: dict[tuple[MethodCapability, str], str] = {}
 
     @staticmethod
@@ -123,7 +122,7 @@ class PluginRegistry:
         elif existing != descriptor:
             raise ResourceConflictError(
                 f"method {descriptor.capability.value}:{descriptor.name!r} metadata "
-                "does not match the executable worker"
+                "does not match the executable method"
             )
 
     @staticmethod
@@ -135,30 +134,26 @@ class PluginRegistry:
             )
 
     def register_method(self, descriptor: MethodDescriptor) -> None:
-        """Register metadata for a method executed by a composite or remote worker."""
+        """Register metadata for a method that is not executable in this installation."""
 
         self._record(descriptor)
 
-    def register_worker(self, worker: MethodWorker) -> None:
-        """Register one executable worker without coupling the core to its framework."""
+    def register_adapter(self, adapter: MethodAdapter) -> None:
+        """Register one executable method adapter."""
 
-        if not isinstance(worker, MethodWorker):
-            raise PluginError("method worker does not implement the required protocol")
-        descriptor = self._descriptor(worker, worker.descriptor.capability)
-        if descriptor.runtime.mode is not MethodExecutionMode.IN_PROCESS:
-            from physrealx.external_workers import ExternalMethodWorker
-
-            if not isinstance(worker, ExternalMethodWorker):
-                raise PluginError("process and container descriptors require ExternalMethodWorker")
+        if not isinstance(adapter, MethodAdapter):
+            raise PluginError("method adapter does not implement the required protocol")
+        descriptor = self._descriptor(adapter, adapter.descriptor.capability)
+        self._require_in_process(descriptor, "method adapter")
         key = (descriptor.capability, descriptor.name)
-        if key in self._workers:
+        if key in self._adapters:
             raise ResourceConflictError(
-                f"method worker {descriptor.capability.value}:{descriptor.name!r} "
+                f"method adapter {descriptor.capability.value}:{descriptor.name!r} "
                 "is already registered"
             )
         self._record_executable(descriptor)
-        self._workers[key] = worker
-        self._execution_kinds[key] = "method_worker"
+        self._adapters[key] = adapter
+        self._execution_kinds[key] = "method_adapter"
 
     def register_backend(self, backend: SimulationBackend) -> None:
         if not isinstance(backend, SimulationBackend):
@@ -272,37 +267,37 @@ class PluginRegistry:
             )
         return installed
 
-    def worker(self, method: MethodSpec) -> MethodWorker:
-        """Resolve an executable worker and verify its full immutable identity."""
+    def adapter(self, method: MethodSpec) -> MethodAdapter:
+        """Resolve an executable adapter and verify its full immutable identity."""
 
         self.resolve_method(method)
         key = (method.capability, method.name)
         try:
-            worker = self._workers[key]
+            adapter = self._adapters[key]
         except KeyError as error:
             raise ResourceNotFoundError(
                 f"method {method.capability.value}:{method.name!r} is registered as "
-                "metadata only; install its executable worker"
+                "metadata only; install its optional dependency and register its implementation"
             ) from error
-        probe = self._probe(worker)
+        probe = self._probe(adapter)
         if not probe.ready:
-            raise WorkerUnavailableError(
+            raise MethodUnavailableError(
                 f"method {method.capability.value}:{method.name!r} is installed but unavailable",
                 details={"reason": probe.detail},
             )
-        return worker
+        return adapter
 
     @staticmethod
-    def _probe(worker: MethodWorker) -> WorkerProbe:
-        probe_method = getattr(worker, "probe", None)
+    def _probe(adapter: MethodAdapter) -> MethodProbe:
+        probe_method = getattr(adapter, "probe", None)
         if not callable(probe_method):
-            return WorkerProbe(True, "in-process worker is registered")
+            return MethodProbe(True, "in-process method adapter is registered")
         try:
             result = probe_method()
         except Exception as error:
-            return WorkerProbe(False, f"readiness probe failed: {error}")
-        if not isinstance(result, WorkerProbe):
-            return WorkerProbe(False, "readiness probe returned an incompatible result")
+            return MethodProbe(False, f"readiness probe failed: {error}")
+        if not isinstance(result, MethodProbe):
+            return MethodProbe(False, "readiness probe returned an incompatible result")
         return result
 
     def installation(
@@ -319,10 +314,12 @@ class PluginRegistry:
                 execution_kind="metadata",
                 executable=False,
                 ready=False,
-                detail="descriptor is registered without an executable worker",
+                detail="descriptor is registered without an executable adapter",
             )
-        worker = self._workers.get(key)
-        probe = self._probe(worker) if worker is not None else WorkerProbe(True, "adapter is ready")
+        adapter = self._adapters.get(key)
+        probe = (
+            self._probe(adapter) if adapter is not None else MethodProbe(True, "adapter is ready")
+        )
         return MethodInstallation(
             descriptor=descriptor,
             execution_kind=execution_kind,
@@ -356,7 +353,7 @@ class PluginRegistry:
         return tuple(sorted(selected, key=lambda item: (item.capability.value, item.name)))
 
     def discover(self) -> None:
-        """Atomically load registration functions from ``physrealx.workers`` entry points."""
+        """Atomically load registration functions from ``physrealx.methods`` entry points."""
 
         if sys.version_info >= (3, 10):
             selected = entry_points(group=ENTRY_POINT_GROUP)
@@ -369,7 +366,7 @@ class PluginRegistry:
                 self._importers.copy(),
                 self._policies.copy(),
                 self._trainers.copy(),
-                self._workers.copy(),
+                self._adapters.copy(),
                 self._execution_kinds.copy(),
             )
             try:
@@ -383,7 +380,7 @@ class PluginRegistry:
                     self._importers,
                     self._policies,
                     self._trainers,
-                    self._workers,
+                    self._adapters,
                     self._execution_kinds,
                 )
                 if current == snapshot:
@@ -397,7 +394,7 @@ class PluginRegistry:
                     self._importers,
                     self._policies,
                     self._trainers,
-                    self._workers,
+                    self._adapters,
                     self._execution_kinds,
                 ) = snapshot
                 if isinstance(error, PluginError):
@@ -405,18 +402,6 @@ class PluginRegistry:
                 raise PluginError(
                     f"entry point {entry_point.name!r} failed during registration"
                 ) from error
-
-    def discover_deployments(self, directory: Path) -> None:
-        """Load machine-local process/container bindings from ``workers.d``."""
-
-        if not directory.exists():
-            return
-        if directory.is_symlink() or not directory.is_dir():
-            raise PluginError(f"worker deployment path is not a safe directory: {directory}")
-        from physrealx.external_workers import load_worker_deployment
-
-        for path in sorted(directory.glob("*.json")):
-            self.register_worker(load_worker_deployment(path))
 
 
 __all__ = ["ENTRY_POINT_GROUP", "MethodInstallation", "PluginRegistry", "PolicyFactory"]

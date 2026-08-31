@@ -6,7 +6,6 @@ filesystem, database, simulator, Torch, CUDA, or the network.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import re
@@ -30,7 +29,7 @@ from pydantic import (
 from typing_extensions import Annotated, Self, TypeAlias
 
 if sys.version_info >= (3, 11):
-    from enum import StrEnum
+    from enum import StrEnum as StrEnum
 else:
 
     class StrEnum(str, Enum):
@@ -49,7 +48,8 @@ _VERSION = re.compile(
     r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
     r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
 )
-_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_ARTIFACT_ID = re.compile(r"^art_[0-9a-f]{32}$")
+_RECORD_ID = re.compile(r"^rec_[0-9a-f]{32}$")
 _URI = re.compile(r"^[a-z][a-z0-9+.-]*://\S+$")
 _UNIT = re.compile(r"^(?:1|[A-Za-zµ°%][A-Za-z0-9µ°%*/^()._-]{0,62})$")
 _FRAME = re.compile(r"^[A-Za-z][A-Za-z0-9_./:-]{0,126}$")
@@ -182,9 +182,12 @@ def canonical_json_bytes(value: BaseModel | JsonValue) -> bytes:
     ).encode("utf-8")
 
 
-def sha256_digest(value: BaseModel | JsonValue | bytes) -> str:
+def canonical_record_id(value: BaseModel | JsonValue | bytes) -> str:
+    """Return a stable logical-record ID without treating files as content hashes."""
+
     payload = value if isinstance(value, bytes) else canonical_json_bytes(value)
-    return f"sha256:{hashlib.sha256(payload).hexdigest()}"
+    identifier = uuid.uuid5(uuid.NAMESPACE_URL, payload.hex())
+    return f"rec_{identifier.hex}"
 
 
 class DomainModel(BaseModel):
@@ -280,8 +283,6 @@ class MethodMaturity(StrEnum):
 
 class MethodExecutionMode(StrEnum):
     IN_PROCESS = "in_process"
-    PROCESS = "process"
-    CONTAINER = "container"
 
 
 class MethodAccelerator(StrEnum):
@@ -291,32 +292,15 @@ class MethodAccelerator(StrEnum):
 
 
 class MethodRuntime(DomainModel):
-    """Pinned execution requirements for a method implementation."""
+    """Requirements for an implementation installed in the project environment."""
 
     mode: MethodExecutionMode
     accelerator: MethodAccelerator = MethodAccelerator.ANY
     python: str = Field(min_length=1, max_length=127)
-    image_digest: str | None = None
-    environment_digest: str | None = None
     minimum_vram_gb: NonNegativeFloat | None = None
-
-    @field_validator("image_digest", "environment_digest")
-    @classmethod
-    def validate_runtime_digest(cls, value: str | None) -> str | None:
-        if value is not None and _DIGEST.fullmatch(value) is None:
-            raise ValueError("method runtime digests must be SHA-256 digests")
-        return value
 
     @model_validator(mode="after")
     def validate_execution_mode(self) -> MethodRuntime:
-        if self.mode is MethodExecutionMode.CONTAINER and self.image_digest is None:
-            raise ValueError("container methods require an immutable image_digest")
-        if self.mode is not MethodExecutionMode.CONTAINER and self.image_digest is not None:
-            raise ValueError("image_digest is only valid for container methods")
-        if self.mode is MethodExecutionMode.PROCESS and self.environment_digest is None:
-            raise ValueError("process methods require an immutable environment_digest")
-        if self.mode is not MethodExecutionMode.PROCESS and self.environment_digest is not None:
-            raise ValueError("environment_digest is only valid for process methods")
         if self.accelerator is not MethodAccelerator.CUDA and self.minimum_vram_gb is not None:
             raise ValueError("minimum_vram_gb is only valid for CUDA methods")
         return self
@@ -416,15 +400,22 @@ class MethodSpec(DomainModel):
 
 
 class ArtifactRef(DomainModel):
-    digest: str
+    """Opaque reference to one immutable file in the artifact store.
+
+    The identifier is assigned by the platform.  File integrity belongs to the
+    storage backend, while the public contract only needs a stable object
+    identity and basic metadata.
+    """
+
+    artifact_id: str
     size_bytes: int = Field(ge=0)
     media_type: str = Field(min_length=1, max_length=255)
 
-    @field_validator("digest")
+    @field_validator("artifact_id")
     @classmethod
-    def validate_digest(cls, value: str) -> str:
-        if _DIGEST.fullmatch(value) is None:
-            raise ValueError("digest must be 'sha256:' followed by 64 lowercase hex digits")
+    def validate_artifact_id(cls, value: str) -> str:
+        if _ARTIFACT_ID.fullmatch(value) is None:
+            raise ValueError("artifact_id must use the form 'art_' followed by 32 hex digits")
         return value
 
 
@@ -432,7 +423,7 @@ class VersionedRef(DomainModel):
     resource_type: ResourceType
     resource_id: str
     version: str
-    digest: str | None = None
+    artifact_id: str | None = None
 
     @field_validator("resource_id")
     @classmethod
@@ -444,20 +435,20 @@ class VersionedRef(DomainModel):
     def validate_version(cls, value: str) -> str:
         return _semver(value)
 
-    @field_validator("digest")
+    @field_validator("artifact_id")
     @classmethod
-    def validate_optional_digest(cls, value: str | None) -> str | None:
-        if value is not None and _DIGEST.fullmatch(value) is None:
-            raise ValueError("digest must be 'sha256:' followed by 64 lowercase hex digits")
+    def validate_optional_artifact_id(cls, value: str | None) -> str | None:
+        if value is not None and _ARTIFACT_ID.fullmatch(value) is None:
+            raise ValueError("artifact_id must use the form 'art_' followed by 32 hex digits")
         return value
 
     @property
     def resolved(self) -> bool:
-        return self.digest is not None
+        return self.artifact_id is not None
 
 
 class OperationInput(DomainModel):
-    """One named, immutable resource or artifact consumed by a method worker."""
+    """One named, immutable resource or artifact consumed by a method adapter."""
 
     name: str
     resource: VersionedRef | None = None
@@ -494,7 +485,7 @@ class OperationOutputRequirement(DomainModel):
     """One output contract plus its declarative publication constraints.
 
     Known platform contracts also have centrally maintained validators.  These
-    optional fields let new worker packages narrow media, size, and payload
+    optional fields let new method integrations narrow media, size, and payload
     shape before a core release adds a named contract validator.
     """
 
@@ -575,12 +566,12 @@ class OperationSpec(DomainModel):
             )
         return self
 
-    def reference(self, digest: str | None = None) -> VersionedRef:
+    def reference(self, artifact_id: str | None = None) -> VersionedRef:
         return VersionedRef(
             resource_type=ResourceType.OPERATION,
             resource_id=self.resource_id,
             version=self.version,
-            digest=digest,
+            artifact_id=artifact_id,
         )
 
 
@@ -618,18 +609,18 @@ class OperationManifest(DomainModel):
         required = tuple((item.name, item.contract) for item in self.spec.outputs)
         if actual != required:
             raise ValueError("operation outputs must exactly match required names and contracts")
-        if len({item.artifact.digest for item in self.outputs}) != len(self.outputs):
+        if len({item.artifact.artifact_id for item in self.outputs}) != len(self.outputs):
             raise ValueError("operation outputs must reference distinct artifacts")
         if any(not math.isfinite(value) for value in self.metrics.values()):
             raise ValueError("operation metrics must be finite")
         return self
 
-    def reference(self, digest: str | None = None) -> VersionedRef:
+    def reference(self, artifact_id: str | None = None) -> VersionedRef:
         return VersionedRef(
             resource_type=ResourceType.OPERATION,
             resource_id=self.resource_id,
             version=self.version,
-            digest=digest,
+            artifact_id=artifact_id,
         )
 
 
@@ -667,7 +658,6 @@ class GeometrySpec(DomainModel):
     role: GeometryRole
     representation: GeometryRepresentation
     uri: str
-    checksum: str | None = None
     local_pose: PoseSpec = Field(default_factory=PoseSpec)
     scale: tuple[float, float, float] = (1.0, 1.0, 1.0)
     primitive_dimensions_m: tuple[float, float, float] | None = None
@@ -685,13 +675,6 @@ class GeometrySpec(DomainModel):
             raise ValueError("geometry uri must be absolute and include a scheme")
         return value
 
-    @field_validator("checksum")
-    @classmethod
-    def validate_checksum(cls, value: str | None) -> str | None:
-        if value is not None and _DIGEST.fullmatch(value) is None:
-            raise ValueError("checksum must be a SHA-256 digest")
-        return value
-
     @field_validator("scale")
     @classmethod
     def validate_scale(cls, value: tuple[float, float, float]) -> tuple[float, float, float]:
@@ -701,8 +684,6 @@ class GeometrySpec(DomainModel):
 
     @model_validator(mode="after")
     def validate_external_geometry(self) -> GeometrySpec:
-        if self.representation is not GeometryRepresentation.PRIMITIVE and self.checksum is None:
-            raise ValueError("non-primitive geometry requires a checksum")
         if self.representation is GeometryRepresentation.PRIMITIVE:
             if self.primitive_dimensions_m is None or any(
                 not math.isfinite(item) or item <= 0 for item in self.primitive_dimensions_m
@@ -912,16 +893,16 @@ class AssetSpec(DomainModel):
             raise ValueError("every asset link requires an explicit physics entry")
         if self.evidence_state is not AssetEvidenceState.PRIOR and not self.evidence:
             raise ValueError("identified and validated assets require immutable evidence")
-        if len({item.digest for item in self.evidence}) != len(self.evidence):
+        if len({item.artifact_id for item in self.evidence}) != len(self.evidence):
             raise ValueError("asset evidence artifacts must be unique")
         return self
 
-    def reference(self, digest: str | None = None) -> VersionedRef:
+    def reference(self, artifact_id: str | None = None) -> VersionedRef:
         return VersionedRef(
             resource_type=ResourceType.ASSET,
             resource_id=self.resource_id,
             version=self.version,
-            digest=digest,
+            artifact_id=artifact_id,
         )
 
 
@@ -988,12 +969,12 @@ class SceneSpec(DomainModel):
             raise ValueError("a scene requires at least one robot or object entity")
         return self
 
-    def reference(self, digest: str | None = None) -> VersionedRef:
+    def reference(self, artifact_id: str | None = None) -> VersionedRef:
         return VersionedRef(
             resource_type=ResourceType.SCENE,
             resource_id=self.resource_id,
             version=self.version,
-            digest=digest,
+            artifact_id=artifact_id,
         )
 
 
@@ -1241,12 +1222,12 @@ class TaskSpec(DomainModel):
             )
         return self
 
-    def reference(self, digest: str | None = None) -> VersionedRef:
+    def reference(self, artifact_id: str | None = None) -> VersionedRef:
         return VersionedRef(
             resource_type=ResourceType.TASK,
             resource_id=self.resource_id,
             version=self.version,
-            digest=digest,
+            artifact_id=artifact_id,
         )
 
 
@@ -1440,8 +1421,8 @@ class Episode(DomainModel):
         return self
 
     @property
-    def digest(self) -> str:
-        return sha256_digest(self)
+    def record_id(self) -> str:
+        return canonical_record_id(self)
 
 
 class EpisodeSummary(DomainModel):
@@ -1450,16 +1431,8 @@ class EpisodeSummary(DomainModel):
     index: int = Field(ge=0)
     success: bool
     step_count: int = Field(gt=1)
-    digest: str
     artifact: ArtifactRef | None = None
     failure_reason: str | None = None
-
-    @field_validator("digest")
-    @classmethod
-    def validate_digest(cls, value: str) -> str:
-        if _DIGEST.fullmatch(value) is None:
-            raise ValueError("episode digest must be a SHA-256 digest")
-        return value
 
     @field_validator("episode_id", "run_id")
     @classmethod
@@ -1473,8 +1446,6 @@ class EpisodeSummary(DomainModel):
     def validate_summary(self) -> EpisodeSummary:
         if self.success == (self.failure_reason is not None):
             raise ValueError("only failed episode summaries may have a failure_reason")
-        if self.artifact is not None and self.artifact.digest != self.digest:
-            raise ValueError("episode summary and artifact digests must match")
         return self
 
 
@@ -1525,12 +1496,12 @@ class DatasetManifest(DomainModel):
             raise ValueError("dataset observation signal names must be unique")
         return self
 
-    def reference(self, digest: str | None = None) -> VersionedRef:
+    def reference(self, artifact_id: str | None = None) -> VersionedRef:
         return VersionedRef(
             resource_type=ResourceType.DATASET,
             resource_id=self.resource_id,
             version=self.version,
-            digest=digest,
+            artifact_id=artifact_id,
         )
 
 
@@ -1573,12 +1544,12 @@ class ModelManifest(DomainModel):
             raise ValueError("model observation signals must be non-empty and unique")
         return self
 
-    def reference(self, digest: str | None = None) -> VersionedRef:
+    def reference(self, artifact_id: str | None = None) -> VersionedRef:
         return VersionedRef(
             resource_type=ResourceType.MODEL,
             resource_id=self.resource_id,
             version=self.version,
-            digest=digest,
+            artifact_id=artifact_id,
         )
 
 
@@ -1667,12 +1638,12 @@ class EvaluationReport(DomainModel):
             raise ValueError("evaluation failure episode ids must be unique")
         return self
 
-    def reference(self, digest: str | None = None) -> VersionedRef:
+    def reference(self, artifact_id: str | None = None) -> VersionedRef:
         return VersionedRef(
             resource_type=ResourceType.EVALUATION,
             resource_id=self.resource_id,
             version=self.version,
-            digest=digest,
+            artifact_id=artifact_id,
         )
 
 
@@ -1821,5 +1792,5 @@ __all__ = [
     "TrainingSpec",
     "VersionedRef",
     "canonical_json_bytes",
-    "sha256_digest",
+    "canonical_record_id",
 ]

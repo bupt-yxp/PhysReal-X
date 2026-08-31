@@ -12,7 +12,6 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Mapping
-from enum import Enum
 from typing import Any, Literal
 
 from pydantic import ConfigDict, Field, ValidationError, field_validator, model_validator
@@ -21,23 +20,16 @@ from physrealx.domain import (
     ArtifactRef,
     DomainModel,
     ResourceType,
+    StrEnum,
     VersionedRef,
-    canonical_json_bytes,
-    sha256_digest,
+    canonical_record_id,
 )
 from physrealx.errors import InvalidStateTransitionError
 
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9_.-]{0,127}$")
 _FRAME = re.compile(r"^[A-Za-z][A-Za-z0-9_./:-]{0,126}$")
 _SEMVER = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
-_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
-
-
-class _StrEnum(str, Enum):
-    """Python 3.8-compatible string enumeration."""
-
-    def __str__(self) -> str:
-        return str.__str__(self)
+_RECORD_ID = re.compile(r"^rec_[0-9a-f]{32}$")
 
 
 class RobotAgentModel(DomainModel):
@@ -162,7 +154,7 @@ class RobotInterfaceSpec(RobotAgentModel):
 
     @model_validator(mode="after")
     def validate_artifacts(self) -> RobotInterfaceSpec:
-        if self.urdf.digest == self.controller_configuration.digest:
+        if self.urdf.artifact_id == self.controller_configuration.artifact_id:
             raise ValueError("URDF and controller configuration must be distinct artifacts")
         if not self.requires_ros2 or not self.requires_hardware:
             raise ValueError("a real robot interface must explicitly require ROS 2 and hardware")
@@ -258,11 +250,11 @@ class DeploymentPlan(RobotAgentModel):
         return self
 
     @property
-    def digest(self) -> str:
-        return sha256_digest(canonical_json_bytes(self))
+    def record_id(self) -> str:
+        return canonical_record_id(self)
 
 
-class DeploymentMode(_StrEnum):
+class DeploymentMode(StrEnum):
     IDLE = "idle"
     SHADOW = "shadow"
     CANARY = "canary"
@@ -271,7 +263,7 @@ class DeploymentMode(_StrEnum):
     FAULTED = "faulted"
 
 
-class SafetyFault(_StrEnum):
+class SafetyFault(StrEnum):
     INVALID_MESSAGE = "invalid_message"
     LEASE_REVOKED = "lease_revoked"
     LEASE_EXPIRED = "lease_expired"
@@ -289,7 +281,7 @@ class SafetyFault(_StrEnum):
     WORKSPACE_LIMIT = "workspace_limit"
 
 
-class CommandDisposition(_StrEnum):
+class CommandDisposition(StrEnum):
     OBSERVE_ONLY = "observe_only"
     FORWARD_LIMITED = "forward_limited"
     FORWARD = "forward"
@@ -317,7 +309,7 @@ class RobotCommand(RobotAgentModel):
 
 class DeploymentLease(RobotAgentModel):
     lease_id: str
-    deployment_digest: str
+    deployment_record_id: str
     acquired_at_ns: int = Field(ge=0)
     expires_at_ns: int = Field(gt=0)
 
@@ -328,11 +320,11 @@ class DeploymentLease(RobotAgentModel):
             raise ValueError("lease_id must be a lowercase machine identifier")
         return value
 
-    @field_validator("deployment_digest")
+    @field_validator("deployment_record_id")
     @classmethod
-    def validate_digest(cls, value: str) -> str:
-        if _DIGEST.fullmatch(value) is None:
-            raise ValueError("deployment digest must be a SHA-256 digest")
+    def validate_record_id(cls, value: str) -> str:
+        if _RECORD_ID.fullmatch(value) is None:
+            raise ValueError("deployment_record_id must use the platform record-ID format")
         return value
 
 
@@ -379,12 +371,12 @@ class RobotExecutionEvidence(RobotAgentModel):
             raise ValueError(
                 "execution status must be COMPLETED after revoke and FAILED after a fault"
             )
-        digests = {
-            self.deployment_plan.digest,
-            self.telemetry.digest,
-            self.safety_events.digest,
+        artifact_ids = {
+            self.deployment_plan.artifact_id,
+            self.telemetry.artifact_id,
+            self.safety_events.artifact_id,
         }
-        if len(digests) != 3:
+        if len(artifact_ids) != 3:
             raise ValueError("deployment, telemetry and safety events must be distinct artifacts")
         return self
 
@@ -399,7 +391,7 @@ class TelemetryManifest(RobotAgentModel):
     )
     status: Literal["COMPLETE"] = "COMPLETE"
     schema_version: Literal[1] = 1
-    deployment_digest: str
+    deployment_record_id: str
     robot_id: str
     clock_domain: Literal["ros_time", "tai", "utc"]
     started_at_ns: int = Field(ge=0)
@@ -412,11 +404,11 @@ class TelemetryManifest(RobotAgentModel):
     index_verified: Literal[True]
     timestamps_monotonic: Literal[True]
 
-    @field_validator("deployment_digest")
+    @field_validator("deployment_record_id")
     @classmethod
-    def validate_deployment_digest(cls, value: str) -> str:
-        if _DIGEST.fullmatch(value) is None:
-            raise ValueError("deployment_digest must be a SHA-256 digest")
+    def validate_deployment_record_id(cls, value: str) -> str:
+        if _RECORD_ID.fullmatch(value) is None:
+            raise ValueError("deployment_record_id must use the platform record-ID format")
         return value
 
     @field_validator("robot_id")
@@ -443,7 +435,7 @@ class TelemetryManifest(RobotAgentModel):
             raise ValueError("telemetry payload must use application/vnd.mcap")
         if self.topic_schemas.media_type != "application/json":
             raise ValueError("telemetry topic schemas must use application/json")
-        if self.mcap.digest == self.topic_schemas.digest:
+        if self.mcap.artifact_id == self.topic_schemas.artifact_id:
             raise ValueError("telemetry payload and topic schema must be distinct artifacts")
         return self
 
@@ -482,7 +474,7 @@ class MockNodeLocalRobotAgent:
         ttl_ns = _seconds_to_ns(plan.safety.lease_ttl_s)
         lease = DeploymentLease(
             lease_id=lease_id,
-            deployment_digest=plan.digest,
+            deployment_record_id=plan.record_id,
             acquired_at_ns=now_ns,
             expires_at_ns=now_ns + ttl_ns,
         )

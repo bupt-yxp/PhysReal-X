@@ -3,7 +3,7 @@
 评测使用冻结模型、任务和独立种子生成报告；真机部署与失败反馈通过能力方法接入，并共享
 Episode、制品和方法证据，不共享仿真后端对象。
 核心包提供这些领域服务与证据契约，但不附带 LIBERO、ROS 2、MCAP、故障归因或反馈构建
-worker；下文方法名均是独立部署候选，只有当前工作区安装且探针通过后才能执行。
+实现；下文方法名均是候选，只有作为项目可选依赖安装、注册且探针通过后才能执行。
 
 ## `evaluations.submit`
 
@@ -45,7 +45,7 @@ px.evaluations.list_reports() -> list[VersionedRef]
 ## 评测方法
 
 ```python
-benchmark = px.evaluations.run(model_ref, suite_ref, method="libero")
+benchmark = px.evaluations.run(model_ref, suite_ref, method=benchmark_method)
 ```
 
 推荐 `libero`、`robotwin2` 和 `simpler` 扩展；每个基准必须固定官方任务、初态、种子、超时和成功
@@ -54,8 +54,8 @@ benchmark = px.evaluations.run(model_ref, suite_ref, method="libero")
 ## 真机部署边界
 
 ```python
-deployment = px.deployments.stage(model_ref, robot_ref, method="ros2_control")
-telemetry = px.telemetry.record(robot_run_artifact, method="rosbag2_mcap")
+deployment = px.deployments.stage(model_ref, robot_ref, method=deployment_method)
+telemetry = px.telemetry.record(robot_run_artifact, method=telemetry_method)
 ```
 
 `ros2_control` 方法使用 ros2_control/MoveIt 2 接入机器人，`rosbag2_mcap` 记录观测、动作、TF、诊断、
@@ -65,10 +65,10 @@ telemetry = px.telemetry.record(robot_run_artifact, method="rosbag2_mcap")
 ## 失败与反馈边界
 
 ```python
-failure = px.failures.analyze(telemetry.outputs[0].artifact, method="rules_v1")
+failure = px.failures.analyze(telemetry.outputs[0].artifact, method=failure_method)
 targeted = px.feedback.build_dataset(
     failure.outputs[0].artifact,
-    method="hard_negative",
+    method=feedback_method,
 )
 ```
 
@@ -80,7 +80,7 @@ targeted = px.feedback.build_dataset(
 参与反馈构建的 failure holdout 和旧回归集上同时验证。
 
 上述五个接口都返回可追溯 `OperationManifest`。`deployment.stage` 的 `safety_report` 未通过时，
-扩展 worker 必须拒绝进入 canary；`failure.analyze` 证据不足时必须输出 `unknown`，不得强制归因。
+部署方法必须拒绝进入 canary；`failure.analyze` 证据不足时必须输出 `unknown`，不得强制归因。
 
 ## 发布门禁
 

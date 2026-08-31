@@ -8,7 +8,7 @@
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `digest` | `str` | `sha256:` 开头的内容摘要 |
+| `artifact_id` | `str` | 平台生成的不可变制品标识，格式为 `art_<uuid>` |
 | `size_bytes` | `int` | 非负字节数 |
 | `media_type` | `str` | IANA 媒体类型或平台扩展类型 |
 
@@ -19,7 +19,7 @@
 | `resource_type` | `ResourceType` | 资产、场景、任务、数据集、模型等 |
 | `resource_id` | `str` | 稳定逻辑标识 |
 | `version` | `str` | 显式语义版本 |
-| `digest` | `str | None` | 解析后必须存在 |
+| `artifact_id` | `str | None` | 解析后必须存在，指向资源清单制品 |
 
 `ResourceType` 包含 `observation_set`、`asset`、`scene`、`task`、`dataset`、`model`、
 `evaluation`、`operation` 和 `recipe_execution`。
@@ -100,10 +100,10 @@ ScalarParameter(
 
 `ObservationStream.artifacts` 只允许一个打包制品，或与 `frame_count` 一致的逐帧制品。
 
-### `ExternalMethodRecipe`
+### `MethodRecipe`
 
 ```python
-ExternalMethodRecipe(
+MethodRecipe(
     name: str,
     version: str,
     steps: tuple[RecipeStep, ...],
@@ -111,7 +111,7 @@ ExternalMethodRecipe(
 )
 ```
 
-`RecipeStep` 将一个进程或容器 `MethodSpec` 绑定到显式输入与输出契约。
+`RecipeStep` 将一个已注册的 `MethodSpec` 绑定到显式输入与输出契约。
 `InitialRecipeInput` 引用初始不可变证据，`CompletedStepOutput` 只能引用已排在前面的阶段输出；
 因此配方在构造时就拒绝前向引用、重复步骤名和未声明输入。
 
@@ -119,8 +119,8 @@ ExternalMethodRecipe(
 
 `RecipeExecutionSpec` 固定执行身份、配方与初始 `OperationInput`。只有终端阶段成功后才发布
 `RecipeExecutionManifest`，其中按顺序保存每个 `OperationManifest` 的精确引用及最终制品。
-`MethodSpec` 包含完整 `MethodDescriptor`、可选权重摘要和冻结配置；进程 worker 必须固定
-`environment_digest`，容器 worker 必须固定 `image_digest`。
+`MethodSpec` 包含完整 `MethodDescriptor`、可选权重制品和冻结配置。方法源码整体位于项目
+`algorithms/`，通过可选依赖安装到当前项目环境，再由进程内适配器注册。
 
 ### `AssetValidationReport`
 
@@ -140,7 +140,7 @@ ExternalMethodRecipe(
 | `entities` | 具有稳定名称、角色、资产精确引用和位姿的实体实例 |
 | `metadata` | 有限的结构化扩展信息 |
 
-`SceneEntitySpec.role` 为 `robot`、`object` 或 `environment`；实体名在场景内唯一。注册场景时，平台会把每个资产解析为带摘要的精确引用。
+`SceneEntitySpec.role` 为 `robot`、`object` 或 `environment`；实体名在场景内唯一。注册场景时，平台会把每个资产解析为带制品标识的精确引用。
 
 ### `TaskSpec`
 
@@ -169,7 +169,7 @@ Predicate(
 ### `OperationManifest`
 
 包含原 `OperationSpec`、按契约顺序返回的 `OperationOutput`、有限指标和含时区的起止时间。
-输出必须已进入制品存储；输入摘要、方法身份、输出名称、语义契约或顺序不一致均拒绝发布。
+输出必须已进入制品存储；输入引用、方法身份、输出名称、语义契约或顺序不一致均拒绝发布。
 
 ## 运行与 Episode
 
@@ -196,7 +196,7 @@ Episode 不重复保存单资产引用，全部资产由场景清单确定。
 
 ### `DatasetManifest`
 
-包含 Episode 摘要、来源运行、观测/动作 Schema、总步数和结构化元数据。
+包含 Episode 记录、来源运行、观测/动作 Schema、总步数和结构化元数据。
 
 ## 学习与评测模型
 
@@ -207,7 +207,7 @@ Episode 不重复保存单资产引用，全部资产由场景清单确定。
 
 ### `ModelManifest`
 
-包含训练与推理 `MethodSpec`、数据集来源、权重摘要、输入输出 Schema、规范化训练配置和指标。
+包含训练与推理 `MethodSpec`、数据集来源、权重制品、输入输出 Schema、规范化训练配置和指标。
 
 ### `EvaluationReport`
 
@@ -228,7 +228,8 @@ FailureCase(
 ```python
 spec = TaskSpec.model_validate(task_payload)
 payload = spec.model_dump(mode="json")
-digest = sha256_digest(spec)
+record_id = canonical_record_id(spec)
 ```
 
-规范化 JSON 使用 UTF-8、稳定键顺序、无 NaN/Inf；内容摘要不依赖空格和输入文件格式。
+规范化 JSON 使用 UTF-8、稳定键顺序且拒绝 NaN/Inf。`record_id` 只用于领域记录的确定性标识，
+不读取文件，也不承担文件完整性校验。

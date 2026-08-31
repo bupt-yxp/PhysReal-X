@@ -35,7 +35,7 @@ from physrealx.domain import (
     TaskSpec,
     TrainingSpec,
     VersionedRef,
-    sha256_digest,
+    canonical_record_id,
 )
 from physrealx.errors import (
     DomainValidationError,
@@ -45,6 +45,7 @@ from physrealx.errors import (
     ResourceNotFoundError,
     SourcePackageError,
 )
+from physrealx.integrations.artgs import ArtGSMethodAdapter
 from physrealx.plugins import PluginRegistry
 from physrealx.readiness import ReadinessService
 from physrealx.recipe_executor import RecipeExecutor
@@ -127,13 +128,13 @@ class PhysRealX:
         plugins = cls._default_plugins(artifacts)
         if discover_plugins:
             plugins.discover()
-            plugins.discover_deployments(root / "workers.d")
         return cls(root, repository, artifacts, plugins)
 
     @staticmethod
     def _default_plugins(artifacts: ArtifactStore) -> PluginRegistry:
         plugins = PluginRegistry()
         plugins.register_importer(ArtModelingImporter())
+        plugins.register_adapter(ArtGSMethodAdapter())
         plugins.register_backend(ReferenceDrawerBackend())
         plugins.register_policy(
             ScriptedDrawerPolicy.descriptor,
@@ -171,6 +172,14 @@ class PhysRealX:
         display_name: str,
         config: Mapping[str, JSONValue],
     ) -> VersionedRef:
+        try:
+            return self.repository.get_resource(
+                ResourceType.OBSERVATION_SET.value,
+                resource_id,
+                version,
+            )
+        except ResourceNotFoundError:
+            pass
         adapter = self.plugins.importer(importer)
         try:
             manifest = adapter.ingest(
@@ -220,9 +229,12 @@ class PhysRealX:
                 entity.asset.resource_id,
                 entity.asset.version,
             )
-            if entity.asset.digest is not None and entity.asset.digest != asset_ref.digest:
+            if (
+                entity.asset.artifact_id is not None
+                and entity.asset.artifact_id != asset_ref.artifact_id
+            ):
                 raise ResourceConflictError(
-                    f"scene entity {entity.name!r} asset digest does not match the registry"
+                    f"scene entity {entity.name!r} asset does not match the registry"
                 )
             resolved_entities.append(entity.model_copy(update={"asset": asset_ref}))
         resolved = spec.model_copy(update={"entities": tuple(resolved_entities)})
@@ -238,8 +250,8 @@ class PhysRealX:
             spec.scene.resource_id,
             spec.scene.version,
         )
-        if spec.scene.digest is not None and spec.scene.digest != scene_ref.digest:
-            raise ResourceConflictError("task scene digest does not match the registered scene")
+        if spec.scene.artifact_id is not None and spec.scene.artifact_id != scene_ref.artifact_id:
+            raise ResourceConflictError("task scene does not match the registered scene")
         scene = self._load_registered(scene_ref, SceneSpec)
         if spec.subject_entity not in {entity.name for entity in scene.entities}:
             raise DomainValidationError("task subject_entity does not exist in the scene")
@@ -252,8 +264,8 @@ class PhysRealX:
 
     def _train(self, spec: TrainingSpec) -> VersionedRef:
         registered = self.repository.get_dataset(spec.dataset.resource_id, spec.dataset.version)
-        if registered.digest != spec.dataset.digest:
-            raise ResourceConflictError("training dataset digest does not match the registry")
+        if registered.artifact_id != spec.dataset.artifact_id:
+            raise ResourceConflictError("training dataset does not match the registry")
         dataset = self.datasets.get(registered)
         episodes = (self._executor.load_episode(summary) for summary in dataset.episodes)
         trainer = self.plugins.trainer(spec.trainer.name)
@@ -297,8 +309,8 @@ class PhysRealX:
         if model.resource_type is not ResourceType.MODEL or not model.resolved:
             raise DomainValidationError("evaluation requires a resolved model reference")
         registered_model = self.repository.get_model(model.resource_id, model.version)
-        if model.digest != registered_model.digest:
-            raise ResourceConflictError("evaluation model digest does not match the registry")
+        if model.artifact_id != registered_model.artifact_id:
+            raise ResourceConflictError("evaluation model does not match the registry")
         model_manifest = self.training.get_model(registered_model)
         task = self.tasks.get(run.task)
         task_observations = {item.name: item for item in task.observations}
@@ -318,7 +330,7 @@ class PhysRealX:
                     update={
                         "config": {
                             **model_manifest.policy.config,
-                            "model_digest": registered_model.digest or "",
+                            "model_artifact_id": registered_model.artifact_id or "",
                         }
                     }
                 ).model_dump(mode="json"),
@@ -329,7 +341,7 @@ class PhysRealX:
             }
         )
         evaluation_payload.pop("run_id", None)
-        evaluation_key = sha256_digest(evaluation_payload)
+        evaluation_key = canonical_record_id(evaluation_payload)
         evaluation_payload["run_id"] = str(uuid.uuid5(uuid.NAMESPACE_URL, evaluation_key))
         evaluation_run = RunSpec.model_validate(evaluation_payload)
         record = self.runs.submit(evaluation_run)
@@ -371,7 +383,7 @@ class PhysRealX:
         )
 
     def _execute_operation(self, spec: OperationSpec) -> OperationManifest:
-        """Execute and atomically publish one capability-worker invocation."""
+        """Execute and atomically publish one capability-method invocation."""
 
         try:
             existing_ref = self.repository.get_resource(
@@ -397,9 +409,9 @@ class PhysRealX:
                     item.resource.resource_id,
                     item.resource.version,
                 )
-                if registered.digest != item.resource.digest:
+                if registered.artifact_id != item.resource.artifact_id:
                     raise ResourceConflictError(
-                        f"operation input {item.name!r} digest does not match the registry"
+                        f"operation input {item.name!r} does not match the registry"
                     )
                 resolved_inputs.append(item.model_copy(update={"resource": registered}))
             else:
@@ -410,14 +422,14 @@ class PhysRealX:
                 resolved_inputs.append(item)
 
         resolved = spec.model_copy(update={"inputs": tuple(resolved_inputs)})
-        worker = self.plugins.worker(resolved.method)
+        adapter = self.plugins.adapter(resolved.method)
         checkpoint = resolved.method.checkpoint
         if checkpoint is not None and not self.artifacts.verify(checkpoint):
             raise DomainValidationError("method checkpoint is unavailable or corrupt")
 
         started_at = datetime.now(timezone.utc)
         try:
-            result = worker.execute(resolved, self.artifacts)
+            result = adapter.execute(resolved, self.artifacts)
         except PhysRealXError:
             raise
         except Exception as error:
@@ -428,15 +440,15 @@ class PhysRealX:
         if not isinstance(result, MethodExecutionOutput) or any(
             not isinstance(item, OperationOutput) for item in result.outputs
         ):
-            raise MethodExecutionError("method worker returned an incompatible result")
+            raise MethodExecutionError("method adapter returned an incompatible result")
         expected_outputs = tuple((item.name, item.contract) for item in resolved.outputs)
         actual_outputs = tuple((item.name, item.contract) for item in result.outputs)
         if actual_outputs != expected_outputs:
             raise MethodExecutionError(
-                "method worker output names or contracts do not match the operation"
+                "method adapter output names or contracts do not match the operation"
             )
         if any(not self.artifacts.verify(item.artifact) for item in result.outputs):
-            raise MethodExecutionError("method worker returned unpublished or corrupt artifacts")
+            raise MethodExecutionError("method adapter returned unpublished or invalid artifacts")
         for requirement, output in zip(resolved.outputs, result.outputs):
             if (
                 requirement.media_types
@@ -467,7 +479,7 @@ class PhysRealX:
             )
         except ValueError as error:
             raise MethodExecutionError(
-                "method worker returned invalid execution evidence"
+                "method adapter returned invalid execution evidence"
             ) from error
         self._register(
             manifest,
@@ -487,6 +499,24 @@ class PhysRealX:
         *,
         specialized: str | None = None,
     ) -> VersionedRef:
+        try:
+            existing = self.repository.get_resource(
+                unresolved.resource_type.value,
+                unresolved.resource_id,
+                unresolved.version,
+            )
+        except ResourceNotFoundError:
+            existing = None
+        if existing is not None:
+            current = type(model).model_validate_json(
+                self.artifacts.get_bytes(existing.artifact_id or "")
+            )
+            if current != model:
+                raise ResourceConflictError(
+                    f"{unresolved.resource_type.value}/{unresolved.resource_id}@"
+                    f"{unresolved.version} already contains a different resource"
+                )
+            return existing
         reference = self._store_resource(model, unresolved, media_type)
         if specialized == "model":
             return self.repository.register_model(reference)
@@ -503,9 +533,7 @@ class PhysRealX:
         """Store canonical resource bytes without making the resource visible."""
 
         artifact = self.artifacts.put_json(model, media_type=media_type)
-        if artifact.digest != sha256_digest(model):
-            raise DomainValidationError("artifact store changed canonical resource bytes")
-        return unresolved.model_copy(update={"digest": artifact.digest})
+        return unresolved.model_copy(update={"artifact_id": artifact.artifact_id})
 
     def _load_registered(self, reference: VersionedRef, model: type[_ModelT]) -> _ModelT:
         registered = self.repository.get_resource(
@@ -513,18 +541,16 @@ class PhysRealX:
             reference.resource_id,
             reference.version,
         )
-        if reference.digest is not None and reference.digest != registered.digest:
-            raise ResourceConflictError("resource digest does not match the registry")
-        if registered.digest is None:
+        if reference.artifact_id is not None and reference.artifact_id != registered.artifact_id:
+            raise ResourceConflictError("resource artifact does not match the registry")
+        if registered.artifact_id is None:
             raise DomainValidationError("registered resource is unresolved")
-        value = model.model_validate_json(self.artifacts.get_bytes(registered.digest))
+        value = model.model_validate_json(self.artifacts.get_bytes(registered.artifact_id))
         if (
             getattr(value, "resource_id", None) != registered.resource_id
             or getattr(value, "version", None) != registered.version
         ):
             raise DomainValidationError("resource payload identity does not match the registry")
-        if sha256_digest(value) != registered.digest:
-            raise DomainValidationError("resource bytes do not match the registered digest")
         return value
 
 

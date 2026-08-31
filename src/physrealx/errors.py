@@ -49,7 +49,7 @@ class ResourceConflictError(PhysRealXError):
 
 
 class ArtifactIntegrityError(PhysRealXError):
-    """Artifact bytes do not match their declared digest or size."""
+    """Artifact bytes are unavailable or do not match their declared size."""
 
     code = "artifact_integrity_error"
 
@@ -79,15 +79,15 @@ class SourcePackageError(PhysRealXError):
 
 
 class MethodExecutionError(PhysRealXError):
-    """A capability worker failed or returned invalid execution evidence."""
+    """A capability method failed or returned invalid execution evidence."""
 
     code = "method_execution_error"
 
 
-class WorkerUnavailableError(MethodExecutionError):
-    """An installed worker cannot run in the current host environment."""
+class MethodUnavailableError(MethodExecutionError):
+    """An installed method cannot run in the current project environment."""
 
-    code = "worker_unavailable"
+    code = "method_unavailable"
 
 
 __all__ = [
@@ -95,11 +95,11 @@ __all__ = [
     "DomainValidationError",
     "InvalidStateTransitionError",
     "MethodExecutionError",
+    "MethodUnavailableError",
     "PhysRealXError",
     "PluginCompatibilityError",
     "PluginError",
     "ResourceConflictError",
     "ResourceNotFoundError",
     "SourcePackageError",
-    "WorkerUnavailableError",
 ]

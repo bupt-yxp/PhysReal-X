@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import hashlib
 import sqlite3
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -30,16 +30,20 @@ _RUN_ID = "00000000-0000-0000-0000-000000000001"
 _EPISODE_ID = "00000000-0000-0000-0000-000000000002"
 
 
-def _reference(resource_type: str, resource_id: str, digest: str) -> VersionedRef:
+def _artifact_id(label: str) -> str:
+    return f"art_{uuid.uuid5(uuid.NAMESPACE_URL, label).hex}"
+
+
+def _reference(resource_type: str, resource_id: str, artifact_id: str) -> VersionedRef:
     return VersionedRef(
         resource_type=resource_type,
         resource_id=resource_id,
         version="1.0.0",
-        digest=digest,
+        artifact_id=artifact_id,
     )
 
 
-def _run_spec(digest: str, *, seed: int = 7) -> RunSpec:
+def _run_spec(artifact_id: str, *, seed: int = 7) -> RunSpec:
     backend = builtin_method(
         MethodCapability.SIMULATION_RUN,
         "reference",
@@ -54,8 +58,8 @@ def _run_spec(digest: str, *, seed: int = 7) -> RunSpec:
     ).bind()
     return RunSpec(
         run_id=_RUN_ID,
-        scene=_reference("scene", "drawer_lab", digest),
-        task=_reference("task", "open_drawer", digest),
+        scene=_reference("scene", "drawer_lab", artifact_id),
+        task=_reference("task", "open_drawer", artifact_id),
         backend=backend,
         policy=policy,
         episode_count=1,
@@ -73,27 +77,28 @@ def _episode(artifact: ArtifactRef) -> EpisodeSummary:
         index=0,
         step_count=3,
         success=True,
-        digest=artifact.digest,
         artifact=artifact,
     )
 
 
 @pytest.mark.integration
-def test_artifacts_are_content_addressed_and_json_is_canonical(tmp_path: Path) -> None:
+def test_artifacts_use_opaque_ids_and_json_is_canonical(tmp_path: Path) -> None:
     store = LocalArtifactStore(tmp_path / "artifacts")
 
     first = store.put_bytes(b"physreal-x", media_type="application/octet-stream")
     duplicate = store.put_bytes(b"physreal-x", media_type="application/octet-stream")
 
-    assert first == duplicate
-    assert first.digest == f"sha256:{hashlib.sha256(b'physreal-x').hexdigest()}"
+    assert first != duplicate
+    assert first.artifact_id.startswith("art_")
+    assert duplicate.artifact_id.startswith("art_")
     assert first.size_bytes == len(b"physreal-x")
     assert store.get_bytes(first) == b"physreal-x"
     assert store.verify(first)
 
     json_a = store.put_json({"z": [1, 2], "a": "\u5177\u8eab"})
     json_b = store.put_json({"a": "\u5177\u8eab", "z": [1, 2]})
-    assert json_a.digest == json_b.digest
+    assert json_a.artifact_id != json_b.artifact_id
+    assert store.get_bytes(json_a) == store.get_bytes(json_b)
     assert store.get_bytes(json_a) == b'{"a":"\xe5\x85\xb7\xe8\xba\xab","z":[1,2]}'
 
     assert not list(store.root.rglob("*.tmp"))
@@ -108,7 +113,7 @@ def test_artifact_files_are_streamed_and_symbolic_links_are_rejected(tmp_path: P
     reference = store.put_file(source, media_type="application/octet-stream")
 
     assert store.get_bytes(reference) == b"captured-observations"
-    materialized = tmp_path / "worker-input.bin"
+    materialized = tmp_path / "adapter-input.bin"
     store.materialize(reference, materialized)
     assert materialized.read_bytes() == b"captured-observations"
     with pytest.raises(DomainValidationError, match="must not exist"):
@@ -120,22 +125,16 @@ def test_artifact_files_are_streamed_and_symbolic_links_are_rejected(tmp_path: P
 
 
 @pytest.mark.integration
-def test_artifact_reads_reject_bad_references_and_corruption(tmp_path: Path) -> None:
+def test_artifact_reads_reject_bad_references_and_size_corruption(tmp_path: Path) -> None:
     store = LocalArtifactStore(tmp_path / "artifacts")
     reference = store.put_bytes(b"immutable")
 
     with pytest.raises(DomainValidationError):
-        store.get_bytes("../not-a-digest")
+        store.get_bytes("../not-an-artifact-id")
     with pytest.raises(ResourceNotFoundError):
-        store.get_bytes(f"sha256:{'0' * 64}")
+        store.get_bytes(f"art_{'0' * 32}")
 
-    object_path = (
-        store.root
-        / "objects"
-        / "sha256"
-        / reference.digest[len("sha256:") :][:2]
-        / reference.digest[len("sha256:") :]
-    )
+    object_path = store.root / "objects" / reference.artifact_id[4:6] / reference.artifact_id
     object_path.write_bytes(b"corrupt")
 
     assert not store.verify(reference)
@@ -144,14 +143,37 @@ def test_artifact_reads_reject_bad_references_and_corruption(tmp_path: Path) -> 
 
 
 @pytest.mark.integration
+def test_artifact_store_rejects_invalid_inputs_without_publishing_files(tmp_path: Path) -> None:
+    store = LocalArtifactStore(tmp_path / "artifacts")
+
+    with pytest.raises(TypeError, match="bytes-like"):
+        store.put_bytes("not-bytes")  # type: ignore[arg-type]
+    with pytest.raises(DomainValidationError, match="media_type"):
+        store.put_bytes(b"payload", media_type="  ")
+    with pytest.raises(TypeError, match=r"pathlib\.Path"):
+        store.put_file("capture.bin")  # type: ignore[arg-type]
+    with pytest.raises(DomainValidationError, match="media_type"):
+        store.put_file(tmp_path, media_type="")
+    with pytest.raises(DomainValidationError, match="regular file"):
+        store.put_file(tmp_path)
+    with pytest.raises(TypeError, match=r"pathlib\.Path"):
+        store.materialize(f"art_{'0' * 32}", "output.bin")  # type: ignore[arg-type]
+    with pytest.raises(ResourceNotFoundError, match="artifact not found"):
+        store.materialize(f"art_{'0' * 32}", tmp_path / "output.bin")
+
+    assert not store.verify(f"art_{'0' * 32}")
+    assert not list((store.root / "objects").rglob("*.tmp"))
+
+
+@pytest.mark.integration
 def test_repository_enables_durable_sqlite_settings_and_schema(tmp_path: Path) -> None:
     database = tmp_path / "metadata.sqlite3"
     repository = SQLiteRepository(database, busy_timeout_ms=1_234)
 
-    assert repository.schema_version == 1
+    assert repository.schema_version == 2
     with sqlite3.connect(database) as connection:
         assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
         tables = {
             row[0]
             for row in connection.execute(
@@ -196,28 +218,28 @@ def test_repository_rejects_sqlite_without_strict_tables(
 def test_repository_rejects_unknown_schema_version(tmp_path: Path) -> None:
     database = tmp_path / "future.sqlite3"
     with sqlite3.connect(database) as connection:
-        connection.execute("PRAGMA user_version = 2")
+        connection.execute("PRAGMA user_version = 99")
 
-    with pytest.raises(RuntimeError, match="unsupported database schema version 2"):
+    with pytest.raises(RuntimeError, match="unsupported database schema version 99"):
         SQLiteRepository(database)
 
 
 @pytest.mark.integration
 def test_versioned_registration_is_idempotent_and_conflict_safe(tmp_path: Path) -> None:
     repository = SQLiteRepository(tmp_path / "metadata.sqlite3")
-    reference = _reference("asset", "drawer", f"sha256:{'a' * 64}")
+    reference = _reference("asset", "drawer", _artifact_id("drawer-a"))
 
     assert repository.register_resource(reference) == reference
     assert repository.register_resource(reference) == reference
     assert repository.get_resource("asset", "drawer", "1.0.0") == reference
     assert repository.list_resources(resource_type="asset") == [reference]
 
-    conflicting = reference.model_copy(update={"digest": f"sha256:{'b' * 64}"})
+    conflicting = reference.model_copy(update={"artifact_id": _artifact_id("drawer-b")})
     with pytest.raises(ResourceConflictError):
         repository.register_resource(conflicting)
     assert repository.get_resource("asset", "drawer", "1.0.0") == reference
 
-    unresolved = reference.model_copy(update={"resource_id": "unresolved", "digest": None})
+    unresolved = reference.model_copy(update={"resource_id": "unresolved", "artifact_id": None})
     with pytest.raises(DomainValidationError):
         repository.register_resource(unresolved)
 
@@ -225,14 +247,14 @@ def test_versioned_registration_is_idempotent_and_conflict_safe(tmp_path: Path) 
 @pytest.mark.integration
 def test_group_registration_is_atomic_on_conflict(tmp_path: Path) -> None:
     repository = SQLiteRepository(tmp_path / "metadata.sqlite3")
-    existing = _reference("asset", "cabinet", f"sha256:{'a' * 64}")
+    existing = _reference("asset", "cabinet", _artifact_id("cabinet-a"))
     repository.register_resource(existing)
     new_observations = _reference(
         "observation_set",
         "cabinet.observations",
-        f"sha256:{'b' * 64}",
+        _artifact_id("cabinet-observations"),
     )
-    conflict = existing.model_copy(update={"digest": f"sha256:{'c' * 64}"})
+    conflict = existing.model_copy(update={"artifact_id": _artifact_id("cabinet-c")})
 
     with pytest.raises(ResourceConflictError):
         repository.register_resources((new_observations, conflict))
@@ -257,7 +279,7 @@ def test_specialized_registries_share_resource_invariants(
     list_name: str,
 ) -> None:
     repository = SQLiteRepository(tmp_path / f"{resource_type}.sqlite3")
-    reference = _reference(resource_type, f"{resource_type}_one", f"sha256:{'c' * 64}")
+    reference = _reference(resource_type, f"{resource_type}_one", _artifact_id(resource_type))
 
     register = getattr(repository, register_name)
     get = getattr(repository, get_name)
@@ -280,7 +302,7 @@ def test_specialized_registries_share_resource_invariants(
 @pytest.mark.integration
 def test_concurrent_identical_resource_registration_publishes_one_row(tmp_path: Path) -> None:
     repository = SQLiteRepository(tmp_path / "metadata.sqlite3", busy_timeout_ms=10_000)
-    reference = _reference("asset", "drawer", f"sha256:{'d' * 64}")
+    reference = _reference("asset", "drawer", _artifact_id("drawer"))
 
     with ThreadPoolExecutor(max_workers=8) as executor:
         results = list(executor.map(repository.register_resource, [reference] * 16))
@@ -294,14 +316,14 @@ def test_run_episode_and_result_are_published_through_strict_lifecycle(tmp_path:
     store = LocalArtifactStore(tmp_path / "artifacts")
     repository = SQLiteRepository(tmp_path / "metadata.sqlite3")
     artifact = store.put_bytes(b"episode")
-    spec = _run_spec(artifact.digest)
+    spec = _run_spec(artifact.artifact_id)
 
     pending = repository.create_run(spec)
     assert pending.status is RunStatus.PENDING
     assert repository.create_run(spec) == pending
 
     with pytest.raises(ResourceConflictError):
-        repository.create_run(_run_spec(artifact.digest, seed=8))
+        repository.create_run(_run_spec(artifact.artifact_id, seed=8))
     with pytest.raises(InvalidStateTransitionError):
         repository.transition_run(_RUN_ID, RunStatus.SUCCEEDED)
 
@@ -324,7 +346,11 @@ def test_run_episode_and_result_are_published_through_strict_lifecycle(tmp_path:
     with pytest.raises(ResourceConflictError):
         repository.publish_episode(duplicate_index)
 
-    dataset = _reference("dataset", "drawer_dataset", store.put_json({"ok": True}).digest)
+    dataset = _reference(
+        "dataset",
+        "drawer_dataset",
+        store.put_json({"ok": True}).artifact_id,
+    )
     wrong_count = RunResult(
         run_id=_RUN_ID,
         status=RunStatus.SUCCEEDED,
@@ -359,7 +385,7 @@ def test_run_episode_and_result_are_published_through_strict_lifecycle(tmp_path:
 @pytest.mark.integration
 def test_pending_run_can_be_cancelled_atomically(tmp_path: Path) -> None:
     repository = SQLiteRepository(tmp_path / "metadata.sqlite3")
-    repository.create_run(_run_spec(f"sha256:{'e' * 64}"))
+    repository.create_run(_run_spec(_artifact_id("pending-run")))
     result = RunResult(
         run_id=_RUN_ID,
         status=RunStatus.CANCELLED,

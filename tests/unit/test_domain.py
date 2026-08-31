@@ -19,17 +19,17 @@ from physrealx.domain import (
     SignalSpec,
     TaskSpec,
     canonical_json_bytes,
-    sha256_digest,
+    canonical_record_id,
 )
 from physrealx.reference import reference_asset, reference_scene, reference_task
 
 
-def test_canonical_digest_is_mapping_order_independent() -> None:
+def test_canonical_record_id_is_mapping_order_independent() -> None:
     left: dict[str, JsonValue] = {"b": [2, 3], "a": 1}
     right: dict[str, JsonValue] = {"a": 1, "b": [2, 3]}
 
     assert canonical_json_bytes(left) == canonical_json_bytes(right)
-    assert sha256_digest(left) == sha256_digest(right)
+    assert canonical_record_id(left) == canonical_record_id(right)
 
 
 def test_reference_asset_has_separate_visual_and_collision_geometry() -> None:
@@ -53,7 +53,7 @@ def test_asset_evidence_state_cannot_claim_identification_without_evidence() -> 
 
     payload["evidence"] = [
         ArtifactRef(
-            digest=f"sha256:{'e' * 64}",
+            artifact_id=f"art_{'e' * 32}",
             size_bytes=10,
             media_type="application/vnd.physrealx.identification+json",
         ).model_dump(mode="json")

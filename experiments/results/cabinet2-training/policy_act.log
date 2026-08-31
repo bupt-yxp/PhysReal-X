@@ -1,0 +1,139 @@
+INFO 2026-08-30 14:25:04 ts/train.py:111 {'batch_size': 64,
+ 'dataset': {'episodes': None,
+             'image_transforms': {'enable': False,
+                                  'max_num_transforms': 3,
+                                  'random_order': False,
+                                  'tfs': {'brightness': {'kwargs': {'brightness': [0.8,
+                                                                                   1.2]},
+                                                         'type': 'ColorJitter',
+                                                         'weight': 1.0},
+                                          'contrast': {'kwargs': {'contrast': [0.8,
+                                                                               1.2]},
+                                                       'type': 'ColorJitter',
+                                                       'weight': 1.0},
+                                          'hue': {'kwargs': {'hue': [-0.05,
+                                                                     0.05]},
+                                                  'type': 'ColorJitter',
+                                                  'weight': 1.0},
+                                          'saturation': {'kwargs': {'saturation': [0.5,
+                                                                                   1.5]},
+                                                         'type': 'ColorJitter',
+                                                         'weight': 1.0},
+                                          'sharpness': {'kwargs': {'sharpness': [0.5,
+                                                                                 1.5]},
+                                                        'type': 'SharpnessJitter',
+                                                        'weight': 1.0}}},
+             'repo_id': 'physrealx/cabinet2-drawer-engineering-v1',
+             'revision': None,
+             'root': '/mnt/53dad72e-a787-4c09-961e-eff73e08888e/yxp/PhysReal-X-training/cabinet2-learning-final-20260830/lerobot_dataset',
+             'use_imagenet_stats': True,
+             'video_backend': 'torchcodec'},
+ 'env': None,
+ 'eval': {'batch_size': 50, 'n_episodes': 50, 'use_async_envs': False},
+ 'eval_freq': 0,
+ 'job_name': 'act',
+ 'log_freq': 20,
+ 'num_workers': 0,
+ 'optimizer': {'betas': [0.9, 0.999],
+               'eps': 1e-08,
+               'grad_clip_norm': 10.0,
+               'lr': 0.0003,
+               'type': 'adamw',
+               'weight_decay': 0.0001},
+ 'output_dir': '/mnt/53dad72e-a787-4c09-961e-eff73e08888e/yxp/PhysReal-X-training/cabinet2-learning-final-20260830/policy_act',
+ 'policy': {'chunk_size': 16,
+            'device': 'cpu',
+            'dim_feedforward': 256,
+            'dim_model': 64,
+            'dropout': 0.05,
+            'feedforward_activation': 'relu',
+            'input_features': {},
+            'kl_weight': 10.0,
+            'latent_dim': 8,
+            'license': None,
+            'n_action_steps': 1,
+            'n_decoder_layers': 1,
+            'n_encoder_layers': 2,
+            'n_heads': 4,
+            'n_obs_steps': 1,
+            'n_vae_encoder_layers': 1,
+            'normalization_mapping': {'ACTION': <NormalizationMode.MEAN_STD: 'MEAN_STD'>,
+                                      'STATE': <NormalizationMode.MEAN_STD: 'MEAN_STD'>,
+                                      'VISUAL': <NormalizationMode.MEAN_STD: 'MEAN_STD'>},
+            'optimizer_lr': 0.0003,
+            'optimizer_lr_backbone': 1e-05,
+            'optimizer_weight_decay': 0.0001,
+            'output_features': {},
+            'pre_norm': False,
+            'pretrained_backbone_weights': 'ResNet18_Weights.IMAGENET1K_V1',
+            'private': None,
+            'push_to_hub': False,
+            'replace_final_stride_with_dilation': False,
+            'repo_id': None,
+            'tags': None,
+            'temporal_ensemble_coeff': None,
+            'type': 'act',
+            'use_amp': False,
+            'use_vae': True,
+            'vision_backbone': 'resnet18'},
+ 'resume': False,
+ 'save_checkpoint': True,
+ 'save_freq': 600,
+ 'scheduler': None,
+ 'seed': 42,
+ 'steps': 600,
+ 'use_policy_training_preset': True,
+ 'wandb': {'disable_artifact': False,
+           'enable': False,
+           'entity': None,
+           'mode': None,
+           'notes': None,
+           'project': 'lerobot',
+           'run_id': None}}
+INFO 2026-08-30 14:25:04 ts/train.py:117 Logs will be saved locally.
+WARNING 2026-08-30 14:25:04 ils/utils.py:72 Using CPU, this will be slow.
+INFO 2026-08-30 14:25:04 ts/train.py:127 Creating dataset
+INFO 2026-08-30 14:25:06 _client.py:1025 HTTP Request: HEAD https://s3.amazonaws.com/datasets.huggingface.co/datasets/datasets/parquet/parquet.py "HTTP/1.1 404 Not Found"
+Downloading data:   0%|          | 0/96 [00:00<?, ?files/s]Downloading data: 100%|██████████| 96/96 [00:00<00:00, 16767.43files/s]
+Generating train split: 0 examples [00:00, ? examples/s]Generating train split: 6400 examples [00:00, 62705.38 examples/s]Generating train split: 7680 examples [00:00, 62795.10 examples/s]
+INFO 2026-08-30 14:25:07 ts/train.py:138 Creating policy
+INFO 2026-08-30 14:25:07 ts/train.py:144 Creating optimizer and scheduler
+INFO 2026-08-30 14:25:07 ts/train.py:156 Output dir: /mnt/53dad72e-a787-4c09-961e-eff73e08888e/yxp/PhysReal-X-training/cabinet2-learning-final-20260830/policy_act
+INFO 2026-08-30 14:25:07 ts/train.py:159 cfg.steps=600 (600)
+INFO 2026-08-30 14:25:07 ts/train.py:160 dataset.num_frames=7680 (8K)
+INFO 2026-08-30 14:25:07 ts/train.py:161 dataset.num_episodes=96
+INFO 2026-08-30 14:25:07 ts/train.py:162 num_learnable_params=220754 (221K)
+INFO 2026-08-30 14:25:07 ts/train.py:163 num_total_params=220766 (221K)
+INFO 2026-08-30 14:25:07 ts/train.py:202 Start offline training on a fixed dataset
+INFO 2026-08-30 14:25:11 ts/train.py:232 step:20 smpl:1K ep:16 epch:0.17 loss:9.971 grdn:121.508 lr:3.0e-04 updt_s:0.024 data_s:0.175
+INFO 2026-08-30 14:25:15 ts/train.py:232 step:40 smpl:3K ep:32 epch:0.33 loss:0.560 grdn:15.999 lr:3.0e-04 updt_s:0.024 data_s:0.186
+INFO 2026-08-30 14:25:19 ts/train.py:232 step:60 smpl:4K ep:48 epch:0.50 loss:0.317 grdn:6.897 lr:3.0e-04 updt_s:0.023 data_s:0.173
+INFO 2026-08-30 14:25:23 ts/train.py:232 step:80 smpl:5K ep:64 epch:0.67 loss:0.251 grdn:3.346 lr:3.0e-04 updt_s:0.024 data_s:0.168
+INFO 2026-08-30 14:25:26 ts/train.py:232 step:100 smpl:6K ep:80 epch:0.83 loss:0.199 grdn:4.291 lr:3.0e-04 updt_s:0.023 data_s:0.171
+INFO 2026-08-30 14:25:30 ts/train.py:232 step:120 smpl:8K ep:96 epch:1.00 loss:0.175 grdn:4.074 lr:3.0e-04 updt_s:0.023 data_s:0.173
+INFO 2026-08-30 14:25:34 ts/train.py:232 step:140 smpl:9K ep:112 epch:1.17 loss:0.150 grdn:4.431 lr:3.0e-04 updt_s:0.024 data_s:0.172
+INFO 2026-08-30 14:25:38 ts/train.py:232 step:160 smpl:10K ep:128 epch:1.33 loss:0.127 grdn:4.686 lr:3.0e-04 updt_s:0.024 data_s:0.175
+INFO 2026-08-30 14:25:42 ts/train.py:232 step:180 smpl:12K ep:144 epch:1.50 loss:0.109 grdn:3.003 lr:3.0e-04 updt_s:0.023 data_s:0.176
+INFO 2026-08-30 14:25:46 ts/train.py:232 step:200 smpl:13K ep:160 epch:1.67 loss:0.094 grdn:2.766 lr:3.0e-04 updt_s:0.023 data_s:0.176
+INFO 2026-08-30 14:25:50 ts/train.py:232 step:220 smpl:14K ep:176 epch:1.83 loss:0.086 grdn:2.776 lr:3.0e-04 updt_s:0.023 data_s:0.173
+INFO 2026-08-30 14:25:54 ts/train.py:232 step:240 smpl:15K ep:192 epch:2.00 loss:0.078 grdn:2.135 lr:3.0e-04 updt_s:0.024 data_s:0.173
+INFO 2026-08-30 14:25:58 ts/train.py:232 step:260 smpl:17K ep:208 epch:2.17 loss:0.067 grdn:2.194 lr:3.0e-04 updt_s:0.024 data_s:0.175
+INFO 2026-08-30 14:26:02 ts/train.py:232 step:280 smpl:18K ep:224 epch:2.33 loss:0.061 grdn:2.089 lr:3.0e-04 updt_s:0.023 data_s:0.174
+INFO 2026-08-30 14:26:06 ts/train.py:232 step:300 smpl:19K ep:240 epch:2.50 loss:0.057 grdn:3.250 lr:3.0e-04 updt_s:0.024 data_s:0.172
+INFO 2026-08-30 14:26:10 ts/train.py:232 step:320 smpl:20K ep:256 epch:2.67 loss:0.051 grdn:2.012 lr:3.0e-04 updt_s:0.024 data_s:0.175
+INFO 2026-08-30 14:26:14 ts/train.py:232 step:340 smpl:22K ep:272 epch:2.83 loss:0.049 grdn:2.457 lr:3.0e-04 updt_s:0.024 data_s:0.173
+INFO 2026-08-30 14:26:18 ts/train.py:232 step:360 smpl:23K ep:288 epch:3.00 loss:0.047 grdn:2.514 lr:3.0e-04 updt_s:0.024 data_s:0.172
+INFO 2026-08-30 14:26:22 ts/train.py:232 step:380 smpl:24K ep:304 epch:3.17 loss:0.041 grdn:2.097 lr:3.0e-04 updt_s:0.024 data_s:0.175
+INFO 2026-08-30 14:26:26 ts/train.py:232 step:400 smpl:26K ep:320 epch:3.33 loss:0.040 grdn:3.212 lr:3.0e-04 updt_s:0.024 data_s:0.180
+INFO 2026-08-30 14:26:30 ts/train.py:232 step:420 smpl:27K ep:336 epch:3.50 loss:0.040 grdn:2.626 lr:3.0e-04 updt_s:0.025 data_s:0.175
+INFO 2026-08-30 14:26:34 ts/train.py:232 step:440 smpl:28K ep:352 epch:3.67 loss:0.038 grdn:2.060 lr:3.0e-04 updt_s:0.024 data_s:0.177
+INFO 2026-08-30 14:26:38 ts/train.py:232 step:460 smpl:29K ep:368 epch:3.83 loss:0.037 grdn:2.089 lr:3.0e-04 updt_s:0.024 data_s:0.176
+INFO 2026-08-30 14:26:42 ts/train.py:232 step:480 smpl:31K ep:384 epch:4.00 loss:0.037 grdn:3.151 lr:3.0e-04 updt_s:0.024 data_s:0.177
+INFO 2026-08-30 14:26:46 ts/train.py:232 step:500 smpl:32K ep:400 epch:4.17 loss:0.034 grdn:2.106 lr:3.0e-04 updt_s:0.024 data_s:0.175
+INFO 2026-08-30 14:26:50 ts/train.py:232 step:520 smpl:33K ep:416 epch:4.33 loss:0.031 grdn:1.446 lr:3.0e-04 updt_s:0.025 data_s:0.178
+INFO 2026-08-30 14:26:54 ts/train.py:232 step:540 smpl:35K ep:432 epch:4.50 loss:0.031 grdn:1.547 lr:3.0e-04 updt_s:0.025 data_s:0.177
+INFO 2026-08-30 14:26:58 ts/train.py:232 step:560 smpl:36K ep:448 epch:4.67 loss:0.030 grdn:1.514 lr:3.0e-04 updt_s:0.024 data_s:0.174
+INFO 2026-08-30 14:27:02 ts/train.py:232 step:580 smpl:37K ep:464 epch:4.83 loss:0.030 grdn:1.361 lr:3.0e-04 updt_s:0.024 data_s:0.172
+INFO 2026-08-30 14:27:06 ts/train.py:232 step:600 smpl:38K ep:480 epch:5.00 loss:0.031 grdn:1.692 lr:3.0e-04 updt_s:0.023 data_s:0.172
+INFO 2026-08-30 14:27:06 ts/train.py:241 Checkpoint policy after step 600
+INFO 2026-08-30 14:27:06 ts/train.py:283 End of training

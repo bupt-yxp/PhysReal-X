@@ -54,44 +54,44 @@ PhysReal-X 统一描述和编排数字孪生、场景任务、仿真执行、Epi
 <div class="prx-section__heading">
   <span>平台能力</span>
   <h2>面向从真实世界到真机反馈的完整链路</h2>
-  <p>各环节通过可验证资源、明确生命周期和可追溯输入输出组合；缺失 worker 或科学证据时会显式阻断。</p>
+  <p>各环节通过可验证资源、明确生命周期和可追溯输入输出组合；缺失方法或科学证据时会显式阻断。</p>
 </div>
 
 <div class="prx-capability-grid">
-  <a class="prx-capability-item" href="user-guide/assets/">
+  <a class="prx-capability-item" href="user-guide/real-assets-and-digital-twin/">
     <span class="prx-capability-index">01</span>
-    <h3>资产与数字孪生</h3>
-    <p>接入 RGB-D、点云、CAD、Mesh、USD 与 Gaussian，统一描述几何、关节、碰撞、物性和标定。</p>
+    <h3>真实资产接入与数字孪生</h3>
+    <p>导入 RGB-D 与点云，恢复相机、米制尺度、深度、视觉几何、部件和关节。</p>
+    <span class="prx-capability-arrow" aria-hidden="true">→</span>
+  </a>
+  <a class="prx-capability-item" href="user-guide/physical-assets/">
+    <span class="prx-capability-index">02</span>
+    <h3>物理可信资产构建</h3>
+    <p>构建碰撞体、辨识物性、组装并验证可供仿真使用的 OpenUSD 资产。</p>
     <span class="prx-capability-arrow" aria-hidden="true">→</span>
   </a>
   <a class="prx-capability-item" href="user-guide/scenes-and-tasks/">
-    <span class="prx-capability-index">02</span>
-    <h3>场景与任务</h3>
-    <p>组合机器人、物体、传感器与环境，声明观测、动作、初始条件、成功条件和随机化空间。</p>
-    <span class="prx-capability-arrow" aria-hidden="true">→</span>
-  </a>
-  <a class="prx-capability-item" href="user-guide/simulation/">
     <span class="prx-capability-index">03</span>
-    <h3>仿真与运行编排</h3>
-    <p>根据能力选择 Isaac Sim、Genesis、MuJoCo 等后端，统一提交、观察、取消、恢复和重试。</p>
+    <h3>场景与任务生成</h3>
+    <p>组合机器人、物体与传感器，声明观测、动作、初态、目标和确定性成功条件。</p>
     <span class="prx-capability-arrow" aria-hidden="true">→</span>
   </a>
-  <a class="prx-capability-item" href="user-guide/data-generation/">
+  <a class="prx-capability-item" href="user-guide/simulation-and-data-generation/">
     <span class="prx-capability-index">04</span>
-    <h3>多模态数据生成</h3>
-    <p>同步记录图像、深度、点云、接触、力觉、状态与动作，发布经过质量校验的 Episode。</p>
+    <h3>物理仿真与多模态数据生成</h3>
+    <p>执行物理轨迹并同步生成图像、深度、点云、接触、状态、动作与 Episode。</p>
     <span class="prx-capability-arrow" aria-hidden="true">→</span>
   </a>
-  <a class="prx-capability-item" href="user-guide/training/">
+  <a class="prx-capability-item" href="user-guide/data-management-and-training/">
     <span class="prx-capability-index">05</span>
-    <h3>训练与独立评测</h3>
-    <p>用一致入口组织模仿学习、强化学习、VLA 和世界模型训练，并在冻结矩阵上独立评测。</p>
+    <h3>数据管理与模型训练</h3>
+    <p>质检并版本化 Episode，训练策略、VLA 和世界模型，登记可加载权重。</p>
     <span class="prx-capability-arrow" aria-hidden="true">→</span>
   </a>
-  <a class="prx-capability-item" href="user-guide/evaluation-and-deployment/">
+  <a class="prx-capability-item" href="user-guide/evaluation-and-feedback/">
     <span class="prx-capability-index">06</span>
-    <h3>部署与反馈闭环</h3>
-    <p>记录真机运行与失败证据，定位模型、数据和物理参数缺口，驱动校准与定向数据再生成。</p>
+    <h3>评测与真机反馈闭环</h3>
+    <p>执行固定基准和分级部署，通过遥测、失败归因和定向数据集持续改进。</p>
     <span class="prx-capability-arrow" aria-hidden="true">→</span>
   </a>
 </div>
@@ -107,12 +107,12 @@ PhysReal-X 统一描述和编排数字孪生、场景任务、仿真执行、Epi
 </div>
 
 <div class="prx-workflow" aria-label="PhysReal-X 标准工作流">
-  <div><span>01</span><strong>注册资产</strong><small>结构、物理与标定</small></div>
-  <div><span>02</span><strong>定义任务</strong><small>观测、动作与目标</small></div>
-  <div><span>03</span><strong>提交运行</strong><small>后端、策略与种子</small></div>
-  <div><span>04</span><strong>发布数据</strong><small>Episode 与数据集</small></div>
-  <div><span>05</span><strong>训练评测</strong><small>模型、指标与失败</small></div>
-  <div><span>06</span><strong>真机回流</strong><small>校准与定向补数</small></div>
+  <div><span>01</span><strong>接入并重建</strong><small>观测、相机、几何与关节</small></div>
+  <div><span>02</span><strong>构建物理资产</strong><small>碰撞、物性与 USD</small></div>
+  <div><span>03</span><strong>定义场景任务</strong><small>布局、观测、动作与目标</small></div>
+  <div><span>04</span><strong>生成仿真数据</strong><small>渲染、传感器与 Episode</small></div>
+  <div><span>05</span><strong>管理数据并训练</strong><small>快照、策略与世界模型</small></div>
+  <div><span>06</span><strong>评测与真机回流</strong><small>基准、部署、归因与补数</small></div>
 </div>
 
 </section>

@@ -15,7 +15,6 @@ import tempfile
 import zipfile
 from collections.abc import Mapping
 from dataclasses import dataclass
-from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Union
 
@@ -28,6 +27,7 @@ from physrealx.domain import (
     MethodCapability,
     MethodSpec,
     ResourceType,
+    StrEnum,
     VersionedRef,
 )
 from physrealx.errors import PhysRealXError, ResourceNotFoundError
@@ -37,14 +37,7 @@ if TYPE_CHECKING:
     from physrealx.platform import PhysRealX
 
 
-class _StrEnum(str, Enum):
-    """Python 3.8-compatible string enum local to this domain."""
-
-    def __str__(self) -> str:
-        return str.__str__(self)
-
-
-class LifecycleStage(_StrEnum):
+class LifecycleStage(StrEnum):
     INGESTION = "ingestion"
     CAMERA = "camera"
     METRIC_ALIGNMENT = "metric_alignment"
@@ -65,7 +58,7 @@ class LifecycleStage(_StrEnum):
     FEEDBACK = "feedback"
 
 
-class LifecycleEvidenceKey(_StrEnum):
+class LifecycleEvidenceKey(StrEnum):
     CAPTURE = "capture"
     OBSERVATIONS = "observations"
     CAMERA_RECONSTRUCTION = "camera_reconstruction"
@@ -95,12 +88,12 @@ class LifecycleEvidenceKey(_StrEnum):
     FEEDBACK_DATASET = "feedback_dataset"
 
 
-class ReadinessStatus(_StrEnum):
+class ReadinessStatus(StrEnum):
     READY = "READY"
     BLOCKED = "BLOCKED"
 
 
-class ReadinessBlockerCode(_StrEnum):
+class ReadinessBlockerCode(StrEnum):
     METHOD_NOT_INSTALLED = "method_not_installed"
     METHOD_IDENTITY_MISMATCH = "method_identity_mismatch"
     METHOD_NOT_EXECUTABLE = "method_not_executable"
@@ -188,7 +181,7 @@ class LifecycleEvidence(ReadinessModel):
         if locations != 1:
             raise ValueError("lifecycle evidence requires exactly one location")
         if self.resource is not None and not self.resource.resolved:
-            raise ValueError("lifecycle resource evidence must include an immutable digest")
+            raise ValueError("lifecycle resource evidence must include an immutable artifact ID")
         return self
 
 
@@ -563,11 +556,11 @@ class ReadinessService:
         )
 
     @staticmethod
-    def _evidence_digest(evidence: LifecycleEvidence) -> str | None:
+    def _evidence_artifact_id(evidence: LifecycleEvidence) -> str | None:
         if evidence.artifact is not None:
-            return evidence.artifact.digest
+            return evidence.artifact.artifact_id
         if evidence.resource is not None:
-            return evidence.resource.digest
+            return evidence.resource.artifact_id
         return None
 
     def _cross_evidence_availability(
@@ -589,15 +582,19 @@ class ReadinessService:
         ):
             geometry_evidence = evidence[LifecycleEvidenceKey.VISUAL_GEOMETRY]
             geometry = self._semantic_document(geometry_evidence)
-            camera_digest = self._evidence_digest(evidence[LifecycleEvidenceKey.CAMERA_SOLUTION])
-            depth_digest = self._evidence_digest(evidence[LifecycleEvidenceKey.ENHANCED_DEPTH])
+            camera_artifact_id = self._evidence_artifact_id(
+                evidence[LifecycleEvidenceKey.CAMERA_SOLUTION]
+            )
+            depth_artifact_id = self._evidence_artifact_id(
+                evidence[LifecycleEvidenceKey.ENHANCED_DEPTH]
+            )
             if (
-                geometry.get("source_camera_digest") != camera_digest
-                or geometry.get("source_depth_digest") != depth_digest
+                geometry.get("source_camera_artifact_id") != camera_artifact_id
+                or geometry.get("source_depth_artifact_id") != depth_artifact_id
             ):
                 result[LifecycleEvidenceKey.VISUAL_GEOMETRY] = self._gate_failure(
                     geometry_evidence,
-                    "geometry source digests do not match camera_solution and enhanced_depth",
+                    "geometry source artifact IDs do not match camera_solution and enhanced_depth",
                 )
 
         if usable(
@@ -607,16 +604,16 @@ class ReadinessService:
             collision_evidence = evidence[LifecycleEvidenceKey.COLLISION_GEOMETRY]
             collision = self._semantic_document(collision_evidence)
             geometry = self._semantic_document(evidence[LifecycleEvidenceKey.VISUAL_GEOMETRY])
-            mesh_digests = {
-                raw["artifact"]["digest"]
+            mesh_artifact_ids = {
+                raw["artifact"]["artifact_id"]
                 for raw in geometry["meshes"]
                 if isinstance(raw, dict)
                 and isinstance(raw.get("artifact"), dict)
-                and isinstance(raw["artifact"].get("digest"), str)
+                and isinstance(raw["artifact"].get("artifact_id"), str)
             }
             source = collision.get("source_geometry")
-            source_digest = source.get("digest") if isinstance(source, dict) else None
-            if source_digest not in mesh_digests:
+            source_artifact_id = source.get("artifact_id") if isinstance(source, dict) else None
+            if source_artifact_id not in mesh_artifact_ids:
                 result[LifecycleEvidenceKey.COLLISION_GEOMETRY] = self._gate_failure(
                     collision_evidence,
                     "collision source mesh is not part of the supplied visual geometry",
@@ -637,39 +634,41 @@ class ReadinessService:
             geometry = self._semantic_document(evidence[LifecycleEvidenceKey.VISUAL_GEOMETRY])
             collision = self._semantic_document(evidence[LifecycleEvidenceKey.COLLISION_GEOMETRY])
             supplied_visual = {
-                raw["artifact"]["digest"]
+                raw["artifact"]["artifact_id"]
                 for raw in geometry["meshes"]
                 if isinstance(raw, dict)
                 and isinstance(raw.get("artifact"), dict)
-                and isinstance(raw["artifact"].get("digest"), str)
+                and isinstance(raw["artifact"].get("artifact_id"), str)
             }
             assembled_visual = {
-                raw["artifact"]["digest"]
+                raw["artifact"]["artifact_id"]
                 for raw in assembly["visual_meshes"]
                 if isinstance(raw, dict)
                 and isinstance(raw.get("artifact"), dict)
-                and isinstance(raw["artifact"].get("digest"), str)
+                and isinstance(raw["artifact"].get("artifact_id"), str)
             }
             assembled_collision = {
-                raw["artifact"]["digest"]
+                raw["artifact"]["artifact_id"]
                 for raw in assembly["collision_meshes"]
                 if isinstance(raw, dict)
                 and isinstance(raw.get("artifact"), dict)
-                and isinstance(raw["artifact"].get("digest"), str)
+                and isinstance(raw["artifact"].get("artifact_id"), str)
             }
             collision_output = collision.get("collision_geometry")
-            collision_digest = (
-                collision_output.get("digest") if isinstance(collision_output, dict) else None
+            collision_artifact_id = (
+                collision_output.get("artifact_id") if isinstance(collision_output, dict) else None
             )
-            articulation_digest = self._evidence_digest(evidence[LifecycleEvidenceKey.ARTICULATION])
+            articulation_artifact_id = self._evidence_artifact_id(
+                evidence[LifecycleEvidenceKey.ARTICULATION]
+            )
             assembly_articulation = assembly.get("articulation_model")
             evidence_closure = {
-                raw["digest"]
+                raw["artifact_id"]
                 for raw in assembly["evidence"]
-                if isinstance(raw, dict) and isinstance(raw.get("digest"), str)
+                if isinstance(raw, dict) and isinstance(raw.get("artifact_id"), str)
             }
             required_closure = {
-                self._evidence_digest(evidence[key])
+                self._evidence_artifact_id(evidence[key])
                 for key in (
                     LifecycleEvidenceKey.CAMERA_SOLUTION,
                     LifecycleEvidenceKey.BODY_PHYSICS,
@@ -678,9 +677,9 @@ class ReadinessService:
             }
             if (
                 supplied_visual != assembled_visual
-                or collision_digest not in assembled_collision
+                or collision_artifact_id not in assembled_collision
                 or not isinstance(assembly_articulation, dict)
-                or assembly_articulation.get("digest") != articulation_digest
+                or assembly_articulation.get("artifact_id") != articulation_artifact_id
                 or not required_closure.issubset(evidence_closure)
             ):
                 result[LifecycleEvidenceKey.ASSET_ASSEMBLY] = self._gate_failure(
@@ -760,10 +759,12 @@ class ReadinessService:
                 code=ReadinessBlockerCode.EVIDENCE_UNAVAILABLE,
                 message=f"resource evidence {evidence.key.value!r} is unavailable: {error}",
             )
-        if registered.digest != evidence.resource.digest:
+        if registered.artifact_id != evidence.resource.artifact_id:
             return ReadinessBlocker(
                 code=ReadinessBlockerCode.EVIDENCE_UNAVAILABLE,
-                message=f"resource evidence {evidence.key.value!r} has a registry digest mismatch",
+                message=(
+                    f"resource evidence {evidence.key.value!r} has a registry artifact ID mismatch"
+                ),
             )
         return self._semantic_evidence_blocker(evidence)
 
@@ -844,17 +845,17 @@ class ReadinessService:
             raise ValueError(f"{label} must be a valid ArtifactRef") from error
 
     @staticmethod
-    def _digest(value: object, label: str) -> str:
+    def _artifact_id(value: object, label: str) -> str:
         if not isinstance(value, str):
-            raise ValueError(f"{label} must be a SHA-256 digest")
+            raise ValueError(f"{label} must be an artifact identifier")
         try:
             return ArtifactRef(
-                digest=value,
+                artifact_id=value,
                 size_bytes=0,
                 media_type="application/octet-stream",
-            ).digest
+            ).artifact_id
         except ValueError as error:
-            raise ValueError(f"{label} must be a SHA-256 digest") from error
+            raise ValueError(f"{label} must be an artifact identifier") from error
 
     def _require_available_artifacts(
         self,
@@ -862,7 +863,7 @@ class ReadinessService:
         label: str,
     ) -> None:
         missing = sorted(
-            reference.digest
+            reference.artifact_id
             for reference in references
             if not self._platform.artifacts.verify(reference)
         )
@@ -870,8 +871,8 @@ class ReadinessService:
             raise ValueError(f"{label} has unavailable artifacts: {', '.join(missing)}")
 
     def _validate_geometry_evidence(self, document: Mapping[str, Any]) -> None:
-        self._digest(document.get("source_camera_digest"), "source_camera_digest")
-        self._digest(document.get("source_depth_digest"), "source_depth_digest")
+        self._artifact_id(document.get("source_camera_artifact_id"), "source_camera_artifact_id")
+        self._artifact_id(document.get("source_depth_artifact_id"), "source_depth_artifact_id")
         method = document.get("method")
         if not isinstance(method, dict) or any(
             not isinstance(method.get(field), str) or not method[field].strip()
@@ -913,8 +914,8 @@ class ReadinessService:
             if not reference.media_type.startswith("model/"):
                 raise ValueError("geometry report meshes must reference model/* artifacts")
             references.append(reference)
-        if len({reference.digest for reference in references}) != len(references):
-            raise ValueError("geometry report mesh artifact digests must be unique")
+        if len({reference.artifact_id for reference in references}) != len(references):
+            raise ValueError("geometry report mesh artifact IDs must be unique")
         self._require_available_artifacts(references, "geometry report")
 
     def _validate_collision_evidence(self, document: Mapping[str, Any]) -> None:
@@ -933,7 +934,7 @@ class ReadinessService:
             raise ValueError("collision report source_geometry must be a model/* artifact")
         if collision.media_type != "model/gltf-binary":
             raise ValueError("collision report collision_geometry must be a GLB artifact")
-        if source.digest == collision.digest:
+        if source.artifact_id == collision.artifact_id:
             raise ValueError("collision geometry must be distinct from its visual source mesh")
         method = document.get("method")
         if not isinstance(method, dict) or any(
@@ -985,8 +986,10 @@ class ReadinessService:
             raise ValueError(f"{label}.value is outside its physical range")
         if value.get("unit") != unit:
             raise ValueError(f"{label}.unit must be {unit!r}")
-        evidence_digest = self._digest(value.get("evidence_digest"), f"{label}.evidence_digest")
-        return number, evidence_digest
+        evidence_artifact_id = self._artifact_id(
+            value.get("evidence_artifact_id"), f"{label}.evidence_artifact_id"
+        )
+        return number, evidence_artifact_id
 
     @staticmethod
     def _finite_vector(value: object, label: str, length: int) -> tuple[float, ...]:
@@ -1016,8 +1019,10 @@ class ReadinessService:
                 raise ValueError("body physics links must be non-empty and unique")
             links.add(link)
             label = f"bodies[{index}]"
-            body_digest = self._digest(body.get("evidence_digest"), f"{label}.evidence_digest")
-            _, mass_digest = self._identified_parameter(
+            body_artifact_id = self._artifact_id(
+                body.get("evidence_artifact_id"), f"{label}.evidence_artifact_id"
+            )
+            _, mass_artifact_id = self._identified_parameter(
                 body.get("mass_kg"),
                 f"{label}.mass_kg",
                 unit="kg",
@@ -1046,19 +1051,19 @@ class ReadinessService:
             )
             if first_minor <= 0.0 or second_minor <= 0.0 or determinant <= 0.0:
                 raise ValueError(f"{label}.inertia_kg_m2 must be positive definite")
-            static_friction, static_digest = self._identified_parameter(
+            static_friction, static_artifact_id = self._identified_parameter(
                 body.get("static_friction"),
                 f"{label}.static_friction",
                 unit="1",
                 minimum=0.0,
             )
-            dynamic_friction, dynamic_digest = self._identified_parameter(
+            dynamic_friction, dynamic_artifact_id = self._identified_parameter(
                 body.get("dynamic_friction"),
                 f"{label}.dynamic_friction",
                 unit="1",
                 minimum=0.0,
             )
-            _, restitution_digest = self._identified_parameter(
+            _, restitution_artifact_id = self._identified_parameter(
                 body.get("restitution"),
                 f"{label}.restitution",
                 unit="1",
@@ -1068,14 +1073,14 @@ class ReadinessService:
             if dynamic_friction > static_friction:
                 raise ValueError(f"{label} dynamic friction cannot exceed static friction")
             if {
-                mass_digest,
-                static_digest,
-                dynamic_digest,
-                restitution_digest,
-            } != {body_digest}:
-                raise ValueError(f"{label} parameters must share its measured evidence digest")
-            if not self._platform.artifacts.verify(body_digest):
-                raise ValueError(f"{label} measured evidence digest is unavailable")
+                mass_artifact_id,
+                static_artifact_id,
+                dynamic_artifact_id,
+                restitution_artifact_id,
+            } != {body_artifact_id}:
+                raise ValueError(f"{label} parameters must share its measured evidence artifact ID")
+            if not self._platform.artifacts.verify(body_artifact_id):
+                raise ValueError(f"{label} measured evidence artifact ID is unavailable")
 
     def _validate_joint_physics_evidence(self, document: Mapping[str, Any]) -> None:
         joint = document.get("joint")
@@ -1088,12 +1093,12 @@ class ReadinessService:
             raise ValueError("joint physics joint.type must be hinge or slide")
         if not isinstance(parameters, dict) or not parameters:
             raise ValueError("joint physics parameters must be non-empty")
-        evidence_digest = self._digest(
-            document.get("evidence_digest"),
-            "joint physics evidence_digest",
+        evidence_artifact_id = self._artifact_id(
+            document.get("evidence_artifact_id"),
+            "joint physics evidence_artifact_id",
         )
-        if not self._platform.artifacts.verify(evidence_digest):
-            raise ValueError("joint physics measured evidence digest is unavailable")
+        if not self._platform.artifacts.verify(evidence_artifact_id):
+            raise ValueError("joint physics measured evidence artifact ID is unavailable")
         expected_units = (
             {
                 "effective_inertia": "kg",
@@ -1167,9 +1172,9 @@ class ReadinessService:
             or float(meters_per_unit) <= 0.0
         ):
             raise ValueError("asset assembly meters_per_unit must be positive and finite")
-        scale_digest = self._digest(
-            metric_scale.get("evidence_digest"),
-            "asset assembly metric scale evidence_digest",
+        scale_artifact_id = self._artifact_id(
+            metric_scale.get("evidence_artifact_id"),
+            "asset assembly metric scale evidence_artifact_id",
         )
         references: list[ArtifactRef] = []
         geometry_links: dict[str, set[str]] = {"visual_meshes": set(), "collision_meshes": set()}
@@ -1209,11 +1214,11 @@ class ReadinessService:
             self._artifact_reference(item, f"asset assembly evidence[{index}]")
             for index, item in enumerate(raw_evidence)
         ]
-        if scale_digest not in {item.digest for item in evidence_refs}:
+        if scale_artifact_id not in {item.artifact_id for item in evidence_refs}:
             raise ValueError("metric scale evidence is outside the asset assembly closure")
         references.extend((articulation_ref, physics_ref, *evidence_refs))
-        if len({reference.digest for reference in references}) != len(references):
-            raise ValueError("asset assembly artifact digests must be unique")
+        if len({reference.artifact_id for reference in references}) != len(references):
+            raise ValueError("asset assembly artifact IDs must be unique")
         self._require_available_artifacts(references, "asset assembly")
         articulation = _strict_json_object(
             self._platform.artifacts.get_bytes(articulation_ref),
@@ -1287,17 +1292,17 @@ class ReadinessService:
     def _metric_alignment_evidence_error(document: Mapping[str, Any]) -> str | None:
         """Reject marker detections that do not carry independent metric metrology."""
 
-        digest = document.get("camera_rig_digest")
+        camera_artifact_id = document.get("camera_rig_artifact_id")
         try:
-            if not isinstance(digest, str):
+            if not isinstance(camera_artifact_id, str):
                 raise ValueError
             ArtifactRef(
-                digest=digest,
+                artifact_id=camera_artifact_id,
                 size_bytes=0,
                 media_type="application/json",
             )
         except ValueError:
-            return "camera_rig_digest must bind the exact unresolved camera artifact"
+            return "camera_rig_artifact_id must bind the exact unresolved camera artifact"
         for field in ("component_id", "source_frame", "target_frame"):
             if not isinstance(document.get(field), str) or not document[field].strip():
                 return f"field {field!r} must be a non-empty string"
@@ -1397,7 +1402,7 @@ class ReadinessService:
                 "observations must be a registered immutable observation_set resource",
             )
         try:
-            payload = self._platform.artifacts.get_bytes(resource.digest or "")
+            payload = self._platform.artifacts.get_bytes(resource.artifact_id or "")
             document = _strict_json_object(payload, "observation resource")
             manifest = ObservationSetManifest.model_validate(document)
         except (OSError, PhysRealXError, ValueError) as error:
@@ -1414,7 +1419,7 @@ class ReadinessService:
             artifact for stream in manifest.streams for artifact in stream.artifacts
         ) + tuple(attachment.artifact for attachment in manifest.attachments)
         unavailable = tuple(
-            artifact.digest
+            artifact.artifact_id
             for artifact in referenced_artifacts
             if not self._platform.artifacts.verify(artifact)
         )
@@ -1443,9 +1448,9 @@ class ReadinessService:
             payload = self._platform.artifacts.get_bytes(artifact)
         else:
             resource = evidence.resource
-            if resource is None or resource.digest is None:
+            if resource is None or resource.artifact_id is None:
                 raise ValueError("evidence has no immutable JSON location")
-            payload = self._platform.artifacts.get_bytes(resource.digest)
+            payload = self._platform.artifacts.get_bytes(resource.artifact_id)
         return _strict_json_object(payload, f"evidence {evidence.key.value!r}")
 
     def _enhanced_depth_zip_manifest(self, artifact: ArtifactRef) -> dict[str, Any]:
@@ -1550,19 +1555,22 @@ class ReadinessService:
         ):
             camera_evidence = evidence[LifecycleEvidenceKey.CAMERA_RECONSTRUCTION]
             metric_evidence = evidence[LifecycleEvidenceKey.METRIC_ALIGNMENT_EVIDENCE]
-            camera_digest = (
-                camera_evidence.artifact.digest
+            camera_artifact_id = (
+                camera_evidence.artifact.artifact_id
                 if camera_evidence.artifact is not None
-                else camera_evidence.resource.digest
+                else camera_evidence.resource.artifact_id
                 if camera_evidence.resource is not None
                 else None
             )
             metric_document = self._semantic_document(metric_evidence)
-            if camera_digest is None or metric_document.get("camera_rig_digest") != camera_digest:
+            if (
+                camera_artifact_id is None
+                or metric_document.get("camera_rig_artifact_id") != camera_artifact_id
+            ):
                 blockers.append(
                     self._gate_failure(
                         metric_evidence,
-                        "camera_rig_digest does not match camera_reconstruction evidence",
+                        "camera_rig_artifact_id does not match camera_reconstruction evidence",
                     )
                 )
                 satisfied.remove(LifecycleEvidenceKey.METRIC_ALIGNMENT_EVIDENCE)

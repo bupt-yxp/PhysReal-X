@@ -1,12 +1,12 @@
-"""Strict stage-wise execution for externally installed method recipes.
+"""Strict stage-wise execution for registered method recipes.
 
 The recipe executor is intentionally smaller than a workflow engine.  It only
-resolves an immutable directed chain, invokes already registered external
-workers through :class:`~physrealx.domain.OperationSpec`, and returns an
+resolves an immutable directed chain, invokes already registered methods
+through :class:`~physrealx.domain.OperationSpec`, and returns an
 aggregate receipt made exclusively from registered operation evidence.
 
 Planned output names are never represented as artifacts.  A downstream input
-becomes resolvable only after the producing worker returned a valid
+becomes resolvable only after the producing adapter returned a valid
 ``OperationManifest`` and the platform registered that manifest.  Consequently
 a failed step may leave reusable, auditable prefix operations, but it can never
 publish the terminal build operation or a successful recipe receipt.
@@ -24,7 +24,6 @@ from typing_extensions import Annotated
 from physrealx.domain import (
     DomainModel,
     JSONValue,
-    MethodExecutionMode,
     MethodSpec,
     OperationInput,
     OperationManifest,
@@ -33,15 +32,13 @@ from physrealx.domain import (
     OperationSpec,
     ResourceType,
     VersionedRef,
-    sha256_digest,
+    canonical_record_id,
 )
 from physrealx.errors import (
     DomainValidationError,
-    PluginError,
     ResourceConflictError,
     ResourceNotFoundError,
 )
-from physrealx.external_workers import ExternalMethodWorker
 
 if TYPE_CHECKING:
     from physrealx.platform import PhysRealX
@@ -115,7 +112,7 @@ class RecipeInputBinding(DomainModel):
 
 
 class RecipeStep(DomainModel):
-    """One externally executed method with exact inputs and output contracts."""
+    """One registered method with exact inputs and output contracts."""
 
     name: str
     method: MethodSpec
@@ -157,11 +154,6 @@ class RecipeStep(DomainModel):
             raise ValueError(
                 "recipe step outputs must exactly match the selected method output contract"
             )
-        if self.method.descriptor.runtime.mode not in {
-            MethodExecutionMode.PROCESS,
-            MethodExecutionMode.CONTAINER,
-        }:
-            raise ValueError("recipe steps must use process or container method workers")
         return self
 
 
@@ -177,7 +169,7 @@ class RecipeFinalOutput(DomainModel):
         return _identifier(value, "recipe final output name")
 
 
-class ExternalMethodRecipe(DomainModel):
+class MethodRecipe(DomainModel):
     """A topologically ordered recipe with a single explicit terminal step."""
 
     schema_version: Literal[1] = 1
@@ -197,14 +189,14 @@ class ExternalMethodRecipe(DomainModel):
         return _semver(value)
 
     @model_validator(mode="after")
-    def validate_graph(self) -> ExternalMethodRecipe:
+    def validate_graph(self) -> MethodRecipe:
         if not self.steps:
-            raise ValueError("an external method recipe requires at least one step")
+            raise ValueError("a method recipe requires at least one step")
         step_names = [item.name for item in self.steps]
         if len(step_names) != len(set(step_names)):
             raise ValueError("recipe step names must be unique")
         if not self.outputs:
-            raise ValueError("an external method recipe requires at least one final output")
+            raise ValueError("a method recipe requires at least one final output")
         output_names = [item.name for item in self.outputs]
         if len(output_names) != len(set(output_names)):
             raise ValueError("recipe final output names must be unique")
@@ -250,7 +242,7 @@ class RecipeExecutionSpec(DomainModel):
     schema_version: Literal[1] = 1
     resource_id: str
     version: str
-    recipe: ExternalMethodRecipe
+    recipe: MethodRecipe
     inputs: tuple[OperationInput, ...]
 
     @field_validator("resource_id")
@@ -350,7 +342,7 @@ class RecipeExecutionManifest(DomainModel):
         actual_contracts = tuple(item.contract for item in self.outputs)
         if actual_contracts != expected_contracts:
             raise ValueError("recipe output contracts must match terminal step contracts")
-        if len({item.artifact.digest for item in self.outputs}) != len(self.outputs):
+        if len({item.artifact.artifact_id for item in self.outputs}) != len(self.outputs):
             raise ValueError("recipe outputs must reference distinct artifacts")
         if self.started_at.tzinfo is None or self.completed_at.tzinfo is None:
             raise ValueError("recipe timestamps must include a UTC offset")
@@ -362,12 +354,12 @@ class RecipeExecutionManifest(DomainModel):
     def operation_refs(self) -> tuple[VersionedRef, ...]:
         return tuple(item.operation for item in self.operations)
 
-    def reference(self, digest: str | None = None) -> VersionedRef:
+    def reference(self, artifact_id: str | None = None) -> VersionedRef:
         return VersionedRef(
             resource_type=ResourceType.RECIPE_EXECUTION,
             resource_id=self.resource_id,
             version=self.version,
-            digest=digest,
+            artifact_id=artifact_id,
         )
 
 
@@ -388,8 +380,6 @@ class RecipeExecutionResult(DomainModel):
             self.execution.version,
         ) != (self.manifest.resource_id, self.manifest.version):
             raise ValueError("recipe execution result identity must match its manifest")
-        if self.execution.digest != sha256_digest(self.manifest):
-            raise ValueError("recipe execution reference digest must match its manifest")
         return self
 
     @property
@@ -406,7 +396,7 @@ class RecipeExecutionResult(DomainModel):
 
 
 class RecipeExecutor:
-    """Execute an :class:`ExternalMethodRecipe` through the platform kernel."""
+    """Execute an :class:`MethodRecipe` through the platform kernel."""
 
     def __init__(self, platform: PhysRealX) -> None:
         self._platform = platform
@@ -415,7 +405,7 @@ class RecipeExecutor:
     def operation_resource_id(spec: RecipeExecutionSpec, step: RecipeStep) -> str:
         """Return the deterministic, retry-safe identity of one recipe step."""
 
-        identity = sha256_digest(
+        identity = canonical_record_id(
             {
                 "execution": spec.model_dump(mode="json"),
                 "step": step.name,
@@ -514,12 +504,12 @@ class RecipeExecutor:
                     item.resource.resource_id,
                     item.resource.version,
                 )
-                if registered.digest != item.resource.digest:
+                if registered.artifact_id != item.resource.artifact_id:
                     raise DomainValidationError(
                         f"recipe input {item.name!r} does not match registered evidence"
                     )
-                if registered.digest is None or not self._platform.artifacts.verify(
-                    registered.digest
+                if registered.artifact_id is None or not self._platform.artifacts.verify(
+                    registered.artifact_id
                 ):
                     raise DomainValidationError(
                         f"recipe input resource {item.name!r} is unavailable or corrupt"
@@ -531,9 +521,7 @@ class RecipeExecutor:
 
         for step in spec.recipe.steps:
             self._platform.plugins.resolve_method(step.method)
-            worker = self._platform.plugins.worker(step.method)
-            if not isinstance(worker, ExternalMethodWorker):
-                raise PluginError(f"recipe step {step.name!r} must resolve to ExternalMethodWorker")
+            self._platform.plugins.adapter(step.method)
 
     @staticmethod
     def _resolve_binding(
@@ -587,8 +575,8 @@ class RecipeExecutor:
 
 __all__ = [
     "CompletedStepOutput",
-    "ExternalMethodRecipe",
     "InitialRecipeInput",
+    "MethodRecipe",
     "RecipeExecutionManifest",
     "RecipeExecutionResult",
     "RecipeExecutionSpec",

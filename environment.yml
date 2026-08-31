@@ -4,6 +4,8 @@ channels:
 dependencies:
   - python=3.10.21
   - pip>=24.3
+  - editables=0.5
+  - hatchling=1.27.0
   - pip:
       # The exact local version ensures this resolves from PyTorch's cu121 index,
       # while the default PyPI index remains available for the project dependencies.
@@ -11,12 +13,4 @@ dependencies:
       - torch==2.4.1+cu121
       - torchvision==0.19.1+cu121
       - torchaudio==2.4.1+cu121
-      - numpy==1.26.4
-      - opencv-python==4.10.0.84
-      - open3d==0.18.0
-      - trimesh==4.5.1
-      - scipy==1.13.1
-      - scikit-image==0.22.0
-      - matplotlib==3.5.3
       - usd-core==24.11
-      - -e .[dev,train,docs]
