@@ -2,7 +2,7 @@ name: PhysReal-X
 channels:
   - conda-forge
 dependencies:
-  - python=3.10.21
+  - python=3.11.15
   - pip>=24.3
   - editables=0.5
   - hatchling=1.27.0
@@ -10,7 +10,6 @@ dependencies:
       # The exact local version ensures this resolves from PyTorch's cu121 index,
       # while the default PyPI index remains available for the project dependencies.
       - --extra-index-url https://download.pytorch.org/whl/cu121
-      - torch==2.4.1+cu121
-      - torchvision==0.19.1+cu121
-      - torchaudio==2.4.1+cu121
+      - torch==2.5.1+cu121
+      - torchvision==0.20.1+cu121
       - usd-core==24.11

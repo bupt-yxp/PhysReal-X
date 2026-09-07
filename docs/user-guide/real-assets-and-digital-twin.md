@@ -1,194 +1,118 @@
 # 真实资产接入与数字孪生
 
-本模块从**已经完成采集的数据包**开始，完成不可变导入、相机与尺度恢复、深度增强、视觉几何重建以及部件和关节恢复。相机驱动、硬件触发和在线采集不属于平台 API。
+本模块从已经采集的 RGB-D 与可选逆向建模 USD 开始，发布可追溯的观测、米制相机、深度、实拍表面及参考部件结构。相机驱动和在线采集不属于此模块；碰撞与物性由[物理资产构建](physical-assets.md)处理。
 
-## 完成目标
+## cabinet2 的当前执行路径
+
+项目中的 `examples/real_assets_and_digital_twin/demo.ipynb` 使用当前 PhysReal-X Conda 环境，从头执行以下流程：
 
 ```text
-采集目录 → 结构预检 → 观测集 → 相机恢复 → 米制对齐
-→ 深度增强 → 几何重建 → 部件与关节模型
+输入与环境 → 相机与米制尺度 → 深度准备与增强
+→ 几何与运动重建 → 位姿配准与关节校核 → 结果与导出
 ```
 
-输出是带米制坐标、视觉几何和可动结构的数字孪生候选。碰撞体、质量、摩擦和阻尼由[物理可信资产构建](physical-assets.md)处理。
+Notebook 中所有 SDK 调用、方法和参数直接可见，不需要替换 `None`、编写额外 YAML 或启动第二个环境。
 
-## 1. 检查采集数据
+六个功能章节对应七个执行阶段（环境单独检查）；算法名称仅作为 `method` 选择与来源记录。
+共享米制输入由深度阶段生成。默认只运行用于后续配准的运动重建；CPU 表面融合是可选诊断。
+表格只显示关键指标，完整操作配置和质量报告由制品与回执保存。
 
-输入可以包含 RGB、Depth、Event、点云、位姿、力觉和机器人状态。导入前至少确认：
-
-- 物体、状态与采集批次具有稳定标识；
-- RGB/Depth 帧可明确配对，帧 ID 没有重复；
-- 时间戳、单位、坐标系和深度无效值规则有记录；
-- 标定、marker、控制量和力觉证据作为独立附件保留；
-- 历史 Mesh、USD 和人工参数标记为候选结果，而非实测真值；
-- 目录没有越界链接，也没有仍在写入的文件。
-
-```python
-from physrealx import PhysRealX
-
-px = PhysRealX.open(".physrealx")
-inspection = px.assets.inspect_source(
-    "/data/ArtModeling/cabinet2",
-    importer="artmodeling",
-)
-
-for issue in inspection.issues:
-    print(issue.severity, issue.code, issue.path)
-
-if not inspection.ingestible:
-    raise RuntimeError("数据包未通过预检")
+```bash
+conda activate PhysReal-X
+python -m pip install -e '.[physical,colmap,artgs,demo]'
+python -m ipykernel install --sys-prefix --name physreal-x --display-name PhysReal-X
+python -m jupyter lab examples/real_assets_and_digital_twin/demo.ipynb
 ```
 
-ArtModeling 导入器识别 `real/can/start`、`real/can/end`、`real/cmp`、`real/video`、`real/recon` 与 `sim`，但不会猜测深度尺度或自动采信历史重建。
+## 输入与版本
 
-## 2. 发布不可变观测集
+ArtModeling 导入器识别 `real/can/start`、`real/can/end`、`real/cmp`、`real/video`、`real/recon` 与 `sim`。`can.start/end` 用于双状态重建，`video` 保留为源数据。本例显式使用 `aruco_6x6_50` 和共享静态 `layout_id`；Marker 角点连接视角与状态，不能单独提供米制尺度。
 
-```python
-observations = px.assets.ingest(
-    "/data/ArtModeling/cabinet2",
-    resource_id="cabinet2.observations",
-    version="1.0.0",
-    display_name="Cabinet 2 observations",
-    importer="artmodeling",
-    config={
-        "depth_unit": "native_u16_unscaled",
-        "coordinate_frame": "camera_unregistered",
-        "include_candidates": False,
-    },
-)
-```
+必须显式提供 `depth_unit="native_u16_unscaled"`、`coordinate_frame="camera_unregistered"` 和 `include_candidates=True`。后者保留配套 USD 与元数据，不代表自动通过科学验收。
 
-这里如实声明深度尚未定尺、相机尚未注册。导入过程复制文件并检查复制期间的大小与源文件
-状态；任一文件发生变化，整次发布失败。`ObservationSetManifest` 保存帧制品、媒体类型、大小、
-导入器版本和配置。
+`assets.ingest` 将原始导入配置与文件来源一起冻结。同版本仅复用相同来源、导入器和配置；配置不同或旧记录缺少配置证据时明确报冲突，需使用新的显式版本。不会静默复用一个排除了 USD 的旧观测集。
 
-## 3. 检查重建方法
+## USD 参考模型
 
 ```python
-from physrealx import MethodCapability
-
-required = (
-    MethodCapability.CAMERA_RECOVER,
-    MethodCapability.CAMERA_ALIGN_METRIC,
-    MethodCapability.DEPTH_ENHANCE,
-    MethodCapability.GEOMETRY_RECONSTRUCT,
-    MethodCapability.ARTICULATION_RECOVER,
-)
-
-for capability in required:
-    print(capability.value, px.methods.installations(capability))
-```
-
-`ready=True` 同时要求方法身份、源码 revision 或权重制品、项目环境和真实探针一致。当前发行版
-在这条链中只提供 `artgs`；相机、米制对齐、深度和关节方法必须完成项目内集成后才会出现在结果中。
-
-## 4. 恢复相机与米制尺度
-
-```python
-camera_operation = px.assets.recover_cameras(
+reference_model = px.assets.import_reference(
     observations,
-    method=camera_method,
-    config=camera_config,
-)
-
-camera_rig = next(
-    output.artifact
-    for output in camera_operation.outputs
-    if output.name == "camera_rig_calibration"
-)
-
-metric_operation = px.assets.align_cameras_metric(
-    camera_rig,
-    metric_alignment_evidence,
-    method=metric_alignment_method,
+    usd_path="sim/usd/Cabinet_3.usd",
 )
 ```
 
-纯 RGB COLMAP 重建只确定到 Sim(3)，必须保持 `scale_status="unresolved"`。`MetricAlignmentEvidence/1` 应提供 marker 家族、实际尺寸和布局，或等价的独立米制 3D 对应；拟合点和留出点必须分离。只有内点率、尺度稳定性和留出误差全部通过，才能发布米制相机。
+`assets.import_reference` 从已导入附件读取 USD，要求显式单位，检查本地层与数据资源、拓扑和部件树，生成米制/Z-up 网格与关节记录；原始 USD、纹理和本地 MDL 一并保留。USD 几何资源缺失会失败；外部 MDL 着色器依赖单独记录，不在 CPU 数据处理时加载。
 
-## 5. 增强深度与重建几何
+cabinet2 的 USD 给出约 0.35 × 0.34 × 0.34 m、3 个部件与 2 个移动关节，限位约 0–0.28 m；`sim/info.json` 给出的尺寸不同。本例显式选择 USD 为模型参考，记录冲突，旁路 JSON 不覆盖 USD 的部件名称或关节坐标。
+
+这些是逆向建模记录，不自动等价于有不确定度证明的实测物性。
+
+## 米制相机与深度
+
+`camera.recover:colmap` 在 CPU 上每状态均匀采样最多 32 帧，检查注册率、稀疏轨迹及 Marker 重投影。本地数据实际注册 52/64 帧，平均重投影误差约 0.886 px。
+
+`camera.align_metric:usd_depth_scale` 使用已导入的观测和 USD 参考：
+
+1. 从 Marker 支持的桌面平面估计可见物体高度，以 USD 高度估计传感器深度比例。
+2. 将稀疏点投影深度与实际传感器深度拟合，得到 COLMAP 到米制的比例。
+3. 按整视角划分拟合/检查数据，验证高度稳定性、深度比例及跨状态 Marker 对齐的一致性。
+
+结果标记 `MODEL_CONDITIONED`，相机进入共同 `capture_metric` 坐标系；它不是物体相对于 USD 的完整位姿注册。独立实测三维对应仍可使用 `ransac_umeyama`，两类证据不能互相冒充。
 
 ```python
+calibrated_rgbd = px.assets.prepare_rgbd(
+    observations,
+    metric_camera,
+    stride=2,
+    max_frames_per_stream=16,
+)
 depth_operation = px.assets.enhance_depth(
-    calibrated_rgbd_ref,
-    method=depth_method,
+    calibrated_rgbd,
+    method="rgb_guided_fill",
+    config={"max_rmse_m": 0.02},
 )
 ```
 
-深度增强必须保留原始有效像素，并使用独立留出像素检查 RMSE、MAE、REL、覆盖率和边界误差。结果没有改善时，应保留原深度并使增强门禁失败。
+准备阶段实际解码 PNG16，核对 RGB 来源与帧索引，使用 COLMAP 畸变模型生成射线。0 和饱和深度保持无效。全部已恢复 Marker 在共同米制坐标中拟合桌面平面与空间范围，供每个注册视角分割物体；估计尺度所需的逐帧 Marker 可见性不限制重建视角，也不使用会裁断物体的单视图 Marker 凸包。
 
-内嵌 ArtGS 接收两状态 RGBA、刚体相机位姿和已通过门禁的米制增强深度。平台不信任目录中
-预先存在的深度 PNG，而是按显式 frame 绑定读取 `EnhancedDepthBundle/1` 的 float32 米制 NPY，
-确定性转换为 ArtGS 所需的 uint16 毫米 PNG，并把每帧制品引用写入输入清单：
+`CalibratedRGBDBundle.validation_scope` 显式区分：
+
+| 范围 | 检查与发布语义 |
+| --- | --- |
+| `independent_capture` | 每帧必须有另一采集的深度参考；通过后为 `PASSED` |
+| `masked_observed_pixels` | 对连续表面的有效像素先遮挡再预测；结果为 `SELF_SUPERVISED`，报告剩余无效深度 |
+
+小孔补全保留原始有效值。无局部支持或跨断层的区域不会被强制填满；自监督模式不能满足要求独立参考的生命周期门禁。
+
+## 几何与关节
+
+默认重建通过 `assets.reconstruct_geometry(geometry_input, method=RECONSTRUCTION_METHOD, config=...)` 执行。
+所选实现必须提供后续配准所需的运动组和留出评估；更换实现时也要配置其对应参数，不能把纯表面重建当作运动证据。
+`articulated_surface_icp` 随后拟合实拍到 USD 的位姿和两状态关节位置，再检查留出距离。
+
+完整部件几何和可动结构取自 USD。`evaluate_reference_kinematics` 计算闭合/展开构型并检查关节树与限位。
+当前所选方法恢复两个可观测运动组，报告留出前景误差与轮廓 IoU；实现细节见[重建方法](../api/artgs.md)。
+
+### 可选表面诊断
+
+完成 Notebook 后，如需检查深度表面融合，可使用同一 `geometry_input`：
 
 ```python
-from physrealx import package_artgs_input
-
-artgs_source = package_artgs_input(
-    "/data/prepared/cabinet2",
-    scene_id="cabinet2",
-    camera_rig=metric_camera_rig,
-    enhanced_depth=enhanced_depth_bundle,
-    # 由本次预处理清单读取，必须精确覆盖全部训练与留出视图。
-    depth_frame_ids=frame_bindings,
-    num_slots=3,
-    artifacts=px.artifacts,
-)
-
-geometry_operation = px.assets.reconstruct_geometry(
-    artgs_source,
-    method="artgs",
-    config={"seed": 0},
-)
+diagnostic = px.assets.reconstruct_geometry(geometry_input, method="rgbd_fusion", config={})
 ```
 
-输入必须同时包含 `transforms_train_start/end.json`、两状态 RGBA 和独立
-`transforms_test_start/end.json`；训练视图不能兼作发布验收。只有显式设置
-`allow_training_view_evaluation=True` 才允许实验运行，此时报告固定为
-`TRAINING_VIEWS_ONLY`，不能进入可训练资产门禁。输出为每 link 视觉 Mesh、Gaussian、形变权重和
-`GeometryReconstructionReport/1`；它不替代关节、碰撞或物性验证。
+此操作独立发布诊断制品，不进入默认完成判据，也不作为运动重建的前置步骤。
 
-## 6. 恢复部件与关节
+`geometry.reconstruct:rgbd_fusion` 消费 `MetricRGBDInput`：米制相机、增强深度及 USD 参考的 `ArtifactRef`。它在 CPU 上投影实际深度、过滤跨断层三角形，按状态输出彩色 PLY。固定每三个有效视角留出一个，其余视角用于网格生成，报告留出表面距离中位数和 P90。不可见区域和自动部件分割没有被虚构补齐。
 
-```python
-articulation_operation = px.assets.articulate(
-    paired_interaction_pointcloud_ref,
-    method=articulation_method,
-)
+## 执行验收
+
+`output/digital-twin-report.json` 记录每阶段状态、耗时、制品和异常；失败抛出错误并保存 `FAILED`。重跑上游会使下游回执失效，全部必要阶段完成后才写入 `execution_status=COMPLETED`。
+
+```bash
+PHYSREALX_REAL_DATA_TESTS=1 python -m pytest tests/integration/test_notebook_suite.py -q
 ```
 
-Ditto 输入必须是同一米制对象坐标系中的交互前后点云，并带相机、掩码、运动量和留出点。输出关节轴需要单位化，预测运动必须在留出点上通过误差门禁。单次前后状态通常不足以确定完整限位，应由多状态轨迹或独立测量补充。
+该测试按顺序实际运行六个 Notebook 的所有代码单元格，并生成 `output/demo.executed.ipynb`。本模块默认导出参考 USD、米制相机、增强深度、`reconstruction.zip`、`reconstruction-report.json`、配准结果及关节构型；可选表面诊断单独发布。
 
-## 方法与产物
-
-| 阶段 | 候选实现 | 主要产物 |
-| --- | --- | --- |
-| 数据导入 | `artmodeling` | `ObservationSetManifest` |
-| 相机恢复 | `colmap` | 相机、稀疏重建和恢复报告 |
-| 米制对齐 | `metric_alignment` | 米制相机与留出报告 |
-| 深度增强 | `omni_dc` | 增强深度和质量报告 |
-| 几何重建 | `artgs` | 每 link 视觉 Mesh、Gaussian、形变权重与留出报告 |
-| 关节恢复 | `ditto` | `ArticulationModel/1` 与恢复报告 |
-
-除 `artmodeling` 与 `artgs` 外，这些名称用于说明推荐算法映射，不表示当前发行版已经注册对应适配器。
-
-## cabinet2 数据边界
-
-原始包可以完成结构预检、RGB-D 配对和 ArtModeling 导入，但缺少可核验的 Marker 尺寸与布局、
-物性辨识轨迹和真机 Episode。平台必须在对应阶段返回 `BLOCKED`，不能用候选重建或工程先验
-补齐这些科学证据。
-
-历史实验实际执行 ArtGS 35,000 次优化并生成 Gaussian 与部件 Mesh，但当时没有米制深度绑定、
-独立留出视图和关节真值，因此仍只是训练视图算法证据，不能冒充当前 `artgs` 方法的通过结果。
-
-![ArtGS 训练视图对比](../assets/images/experiments/cabinet2-artgs-comparison.png)
-
-## 输出与验收
-
-- 源文件清单、模态配对、单位与坐标声明完整；
-- 相机注册率、重投影误差、轨迹长度和稀疏点数达标；
-- 米制尺度置信区间、RANSAC 内点率及留出 RMSE 达标；
-- 深度覆盖率、RMSE/REL、边界误差和无效值比例达标；
-- 几何 Chamfer、F-score、完整率和尺度误差达标；
-- 部件非退化，关节轴、原点及留出运动重放误差达标。
-
-没有参考真值的指标必须标为不可用。下一步进入[物理可信资产构建](physical-assets.md)。
+软件执行完成、模型来源可信与独立实测验收分别记录。当前数据不包含足以完成独立物性/真机验证的完整证据；历史 ArtGS 训练或本次自监督检查不会替代这些证据。

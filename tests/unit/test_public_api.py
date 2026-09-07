@@ -11,7 +11,6 @@ from physrealx.training_lifecycle import BenchmarkReport
 def test_public_api_is_explicit_and_stable() -> None:
     assert physrealx.__all__ == [
         "ActionSpec",
-        "ArtGSInputManifest",
         "ArtGSRunConfig",
         "ArtifactRef",
         "AssetEvidenceState",
@@ -51,6 +50,7 @@ def test_public_api_is_explicit_and_stable() -> None:
         "FeedbackDatasetManifest",
         "FeedbackDatasetSpec",
         "FeedbackLifecycle",
+        "FiducialSpec",
         "InitialRecipeInput",
         "JointSafetyLimit",
         "LifecycleEvidence",
@@ -68,6 +68,7 @@ def test_public_api_is_explicit_and_stable() -> None:
         "MethodRecipe",
         "MethodRuntime",
         "MethodSpec",
+        "MetricRGBDInput",
         "ModelKind",
         "ModelManifest",
         "ObservationSetManifest",
@@ -120,12 +121,13 @@ def test_public_api_is_explicit_and_stable() -> None:
         "VerifiedEpisodeBundle",
         "VerifiedEpisodeCollection",
         "VersionedRef",
+        "ViewAlignmentMode",
+        "ViewAlignmentSpec",
         "WilsonInterval",
         "WorkspaceBounds",
         "WorldModelBundle",
         "WorldModelTrainingPlan",
         "__version__",
-        "package_artgs_input",
     ]
 
 

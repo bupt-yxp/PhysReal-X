@@ -27,13 +27,15 @@ def builtin_method(
     input_contract: str,
     output_contract: str,
     accelerator: MethodAccelerator = MethodAccelerator.ANY,
+    python: str = ">=3.8,<3.13",
+    version: str = "1.0.0",
 ) -> MethodDescriptor:
     """Describe one method shipped in the PhysReal-X distribution."""
 
     return MethodDescriptor(
         capability=capability,
         name=name,
-        version="1.0.0",
+        version=version,
         api_version="1",
         source_uri=_PROJECT_SOURCE,
         source_revision=_PROJECT_REVISION,
@@ -42,7 +44,7 @@ def builtin_method(
         runtime=MethodRuntime(
             mode=MethodExecutionMode.IN_PROCESS,
             accelerator=accelerator,
-            python=">=3.8,<3.13",
+            python=python,
         ),
         input_contract=input_contract,
         output_contract=output_contract,

@@ -1,11 +1,9 @@
-# 数据管理与模型训练
+# 05 · 数据与训练
 
-Episode 集合、数据转换/快照方法和训练计划均紧邻对应 API 显式展示：
+合并模块四数据、分组快照，实际训练官方 ACT 与 DINO-WM 核心，重载闭环评测，执行单帧五秒未来状态/图像和反事实推演。
 
-```console
-python -m jupyter lab examples/data_management_and_training/demo.ipynb
-```
+在现有 PhysReal-X 环境中打开 [demo.ipynb](demo.ipynb)，选择 PhysReal-X 内核并全部运行。先完成上游模块；`python -m examples.run_all` 会自动按顺序执行六个模块。
 
-Notebook 分别演示数据接入、快照、策略/世界模型训练、模型登记和推演。策略和世界
-模型必须分别形成模型包；训练数据、切分、代码、环境、种子和权重制品必须冻结，
-不能只凭训练损失登记模型。
+官方 DINOv2 权重首次下载后在工作区复用。世界模型使用同一路径多步训练与推理，在留出数据上分别比较状态、潜在特征、RGB 与保持初态基线；五秒事实和零动作反事实均有对应的 MuJoCo 真值。初始 ACT 基线的实际失败交给模块六闭环修正。
+
+执行副本与回执写入本模块 `output/`；异常会抛出并停止下游。详细对照见 [功能验收](../../docs/acceptance.md)。

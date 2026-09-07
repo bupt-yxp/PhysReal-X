@@ -7,6 +7,7 @@ import torch.nn.functional as F
 from scene.gaussian_model import GaussianModel
 from utils.dual_quaternion import *
 from scene.module import gumbel_softmax, ProgressiveBandHashGrid
+from utils.joint_geometry import rotation_axis_position
 
 
 class CenterBasedSeg(nn.Module):
@@ -27,7 +28,7 @@ class CenterBasedSeg(nn.Module):
 
         self.scale_factor = scale_factor
         self.shift_weight = shift_weight
-        
+
     def forward(self, x, tau, is_training=False):
         '''
             x: position of canonical gaussians [N, 3]
@@ -59,11 +60,11 @@ class CenterBasedSeg(nn.Module):
         rot = self.get_rot[None]
         scale = self.get_scale[None] * self.scale_factor
         return quaternion_apply(rot, (x[:, None] - center)) / scale # [N, K, 3]
-    
+
     @property
     def get_scale(self):
         return torch.exp(self.logscale)
-    
+
     @property
     def get_rot(self):
         return F.normalize(self.rot, p=2, dim=-1)
@@ -93,7 +94,7 @@ class ArtGS(nn.Module):
         self.reg_loss = 0.
         self.tau = 1.0
         self.tau_decay_steps = args.tau_decay_steps
-    
+
     @torch.no_grad()
     def cal_art_type(self):
         qr, qd = self.get_slot_deform()
@@ -104,13 +105,13 @@ class ArtGS(nn.Module):
         self.use_art_type_prior = True
         print(self.joint_types)
         return ','.join(self.joint_types)
-    
+
     def slotdq_to_gsdq(self, slot_qr, slot_qd, mask):
         # slot_qr: [K, 4], slot_qd: [K, 4], mask: [N, K]
         qr = torch.einsum('nk, kl->nl', mask, slot_qr)   # [N, 4]
         qd = torch.einsum('nk, kl->nl', mask, slot_qd)   # [N, 4]
         return normalize_dualquaternion(qr, qd)
-    
+
     def get_slot_deform(self):
         qrs = []
         qds = []
@@ -144,20 +145,20 @@ class ArtGS(nn.Module):
         gs_qr, gs_qd = self.slotdq_to_gsdq(slot_qr, slot_qd, mask)
         xt = dual_quaternion_apply((gs_qr, gs_qd), xc)
         return xt, gs_qr
-    
+
     def trainable_parameters(self):
         params = [
             {'params': self.joints, 'name': 'mlp'},
             {'params': list(self.seg_model.parameters()), 'name': 'slot'},
             ]
         return params
-    
+
     def get_mask(self, x, is_training=False):
         tau = self.tau if is_training else 0.1
         slots, mask = self.seg_model(x, tau, is_training)
         self.slots = slots
         return mask
-    
+
     @torch.no_grad()
     def get_joint_param(self, joint_type_list):
         qrs, qds = self.get_slot_deform()
@@ -168,15 +169,14 @@ class ArtGS(nn.Module):
             qr, t = dual_quaternion_to_quaternion_translation((qr, qd))
             R = quaternion_to_matrix(qr).cpu().numpy()
             t = t.cpu().numpy()
-            
+
             if joint_type == 'r':
                 axis_dir, theta = quaternion_to_axis_angle(qr)
                 axis_dir, theta = axis_dir.cpu().numpy(), theta.cpu().numpy()
                 theta = 2 * theta
-                axis_position = np.matmul(np.linalg.inv(np.eye(3) - R), t.reshape(3, 1)).reshape(-1)
-                axis_position += axis_dir * np.dot(axis_dir, -axis_position)
-                R = R @ R
+                axis_position = rotation_axis_position(R, t, axis_dir)
                 t = R @ t + t
+                R = R @ R
                 joint_info = {'type': joint_type,
                             'axis_position': axis_position,
                             'axis_direction': axis_dir,
@@ -185,15 +185,17 @@ class ArtGS(nn.Module):
             elif joint_type == 'p':
                 t = t * 2
                 theta = np.linalg.norm(t)
+                if not np.isfinite(theta) or theta <= 1e-12:
+                    raise ValueError('zero translation cannot identify a prismatic axis')
                 axis_dir = t / theta
                 joint_info = {'type': joint_type,
-                            'axis_position': np.zeros(3), 
-                            'axis_direction': axis_dir, 
+                            'axis_position': np.zeros(3),
+                            'axis_direction': axis_dir,
                             'theta': theta,
                             'rotation': R, 'translation': t}
             joint_info_list.append(joint_info)
         return joint_info_list
-    
+
     def one_transform(self, gaussians:GaussianModel, state, is_training):
         xc = gaussians.get_xyz.detach()
         N = xc.shape[0]
@@ -217,7 +219,7 @@ class ArtGS(nn.Module):
             'xt': xt,
             'mask': mask.argmax(-1),
         }
-        
+
     def forward(self, gaussians: GaussianModel, is_training=False):
         xc = gaussians._xyz.detach()
         N = xc.shape[0]
@@ -238,7 +240,7 @@ class ArtGS(nn.Module):
             d_values_list.append(d_values)
 
         return d_values_list
-    
+
     def interpolate(self, gaussians: GaussianModel, time_list):
         xc = gaussians._xyz.detach()
         mask = self.get_mask(xc, False) # [N, K]
@@ -255,7 +257,7 @@ class ArtGS(nn.Module):
             dx_list.append(xt - xc)
             dr_list.append(gs_qr)
         return dx_list, dr_list
-    
+
     def update(self, iteration, *args, **kwargs):
         self.tau = self.cosine_anneal(iteration, self.tau_decay_steps, 0, 1.0, 0.1)
         self.seg_model.grid.update_step(global_step=iteration)
@@ -263,7 +265,7 @@ class ArtGS(nn.Module):
     def cosine_anneal(self, step, final_step, start_step=0, start_value=1.0, final_value=0.1):
         if start_value <= final_value or start_step >= final_step:
             return final_value
-        
+
         if step < start_step:
             value = start_value
         elif step >= final_step:
@@ -274,4 +276,3 @@ class ArtGS(nn.Module):
             progress = (step - start_step) / (final_step - start_step)
             value = a * math.cos(math.pi * progress) + b
         return value
-

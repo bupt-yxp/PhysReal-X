@@ -3,7 +3,7 @@
 # GRAPHDECO research group, https://team.inria.fr/graphdeco
 # All rights reserved.
 #
-# This software is free for non-commercial, research and evaluation use 
+# This software is free for non-commercial, research and evaluation use
 # under the terms of the LICENSE.md file.
 #
 # For inquiries contact  george.drettakis@inria.fr
@@ -171,7 +171,10 @@ def export_joint_info_json(pred_joint_list, mesh_files, exp_dir):
                         "origin": joint_info['axis_position'].tolist(),
                         "direction": joint_info['axis_direction'].tolist()
                     },
-                    "limit": {
+                    "observed_span": {
+                        "value": float(joint_info['theta']),
+                        "unit": "m" if joint_info['type'] == 'p' else "deg",
+                        "scope": "recovered start-to-end motion, not mechanical limits"
                     }
                 },
                 "visuals": [
@@ -189,9 +192,27 @@ def render_set(args, load2gpt_on_the_fly, name, iteration, views, gaussians, pip
     pred_joint_types = deform.deform.joint_types[1:]
     num_d_joints = len(pred_joint_types)
     pred_joint_list = deform.deform.get_joint_param(pred_joint_types)
-    
+
     save_dir = os.path.join(model_path, name, "ours_{}".format(iteration))
     makedirs(save_dir, exist_ok=True)
+    if name == 'test':
+        # Evaluate continuous articulation at an actual held-out camera, without
+        # a dataset-specific camera trajectory or any held-out optimization.
+        states = np.linspace(0.0, 1.0, 5)
+        translations, rotations = deform.deform.interpolate(gaussians, states)
+        view = views[0]
+        if load2gpt_on_the_fly:
+            view.load2device()
+        preview_dir = os.path.join(save_dir, 'interpolation')
+        makedirs(preview_dir, exist_ok=True)
+        for index, (translation, rotation) in enumerate(zip(translations, rotations)):
+            prediction = render(view, gaussians, pipeline, background, translation, rotation)
+            torchvision.utils.save_image(
+                prediction['render'].clamp(0, 1), os.path.join(preview_dir, f'{index:02d}.png')
+            )
+        with open(os.path.join(preview_dir, 'states.json'), 'w') as stream:
+            json.dump({'states': states.tolist(), 'scope': 'normalized observed motion span',
+                       'camera': view.image_name}, stream)
     mesh_path = os.path.join(model_path, name, "ours_{}".format(iteration), "meshes")
     makedirs(mesh_path, exist_ok=True)
 
@@ -203,25 +224,22 @@ def render_set(args, load2gpt_on_the_fly, name, iteration, views, gaussians, pip
             pos = centers[i]
         else:
             pos += joint_info['axis_direction'] * np.dot(joint_info['axis_direction'], centers[i] - pos)
-        save_axis_mesh(joint_info['axis_direction'], pos, 
+        save_axis_mesh(joint_info['axis_direction'], pos,
                        f'{mesh_path}/axis_{i}_{pred_joint_types[i]}.ply')
     gt_trans_path = os.path.expanduser(f'{args.source_path}/gt/trans.json')
     gt_evaluation_available = os.path.isfile(gt_trans_path)
     results_list, real_perm = [], []
     if gt_evaluation_available:
-        try:
-            gt_info_list = read_gt(gt_trans_path)
-            results_list, real_perm = eval_axis_and_state_all(
-                pred_joint_list, pred_joint_types, gt_info_list, print_perm=True
-            )
-            print(results_list)
-        except Exception as error:
-            gt_evaluation_available = False
-            print(f'Skipping ArtGS ground-truth evaluation: {error}')
+        gt_info_list = read_gt(gt_trans_path)
+        results_list, real_perm = eval_axis_and_state_all(
+            pred_joint_list, pred_joint_types, gt_info_list, print_perm=True
+        )
+        print(results_list)
     else:
         print(f'Skipping ArtGS ground-truth evaluation: {gt_trans_path} is missing')
-    
+
     PSNR, SSIM, LPIPS = -1, -1, -1
+    FG_PSNR, ALPHA_IOU = -1, -1
     for mask_id in range(-1, num_d_joints + 1):
         render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders", "{}".format(mask_id))
         gts_path = os.path.join(model_path, name, "ours_{}".format(iteration), "gt", "{}".format(mask_id))
@@ -236,7 +254,7 @@ def render_set(args, load2gpt_on_the_fly, name, iteration, views, gaussians, pip
         alphas_start, alphas_end = [], []
         gt_rgbs_start, gt_rgbs_end = [], []
         views_start, views_end = [], []
-        
+
         if mask_id > 0 and 'real_' in args.source_path: # filter noise gaussians for real-wolrd objects
             x = gaussians.get_xyz
             mask_part = d_values_list[0]['mask'] == mask_id
@@ -301,6 +319,15 @@ def render_set(args, load2gpt_on_the_fly, name, iteration, views, gaussians, pip
             n = len(rgbs)
             PSNR, SSIM, LPIPS = PSNR / n, SSIM / n, LPIPS / n
             PSNR, SSIM, LPIPS = PSNR.item(), SSIM.item(), LPIPS.item()
+            foreground = torch.stack([
+                view.gt_alpha_mask.to('cuda') for view in views_start + views_end
+            ]) > 0.5
+            if not foreground.any():
+                raise ValueError('appearance evaluation requires nonempty source masks')
+            foreground_mse = ((rgbs - gt_rgbs).square() * foreground).sum() / (3 * foreground.sum())
+            FG_PSNR = float(-10 * torch.log10(foreground_mse.clamp_min(1e-12)))
+            predicted_mask = torch.stack(alphas_start + alphas_end) > 0.5
+            ALPHA_IOU = float((predicted_mask & foreground).sum() / (predicted_mask | foreground).sum())
 
         if visualize:
             for i in range(len(rgbs)):
@@ -309,14 +336,14 @@ def render_set(args, load2gpt_on_the_fly, name, iteration, views, gaussians, pip
                 vis_depth(depths[i], os.path.join(depth_path, '{0:05d}'.format(i) + ".png"))
                 torchvision.utils.save_image(rgb, os.path.join(render_path, '{0:05d}'.format(i) + ".png"))
                 torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}'.format(i) + ".png"))
-    
+
     gt_path = args.source_path + '/gt'
 
     # export joint info
     pred_joint_list = [{}] + pred_joint_list
     mesh_files = [f'meshes/start_{i}.ply' for i in range(len(pred_joint_list))]
     export_joint_info_json(pred_joint_list, mesh_files, save_dir)
-    
+
     output = pd.DataFrame()
     if name == 'train' and gt_evaluation_available:
         print('Evaluating CD')
@@ -352,6 +379,8 @@ def render_set(args, load2gpt_on_the_fly, name, iteration, views, gaussians, pip
     output['PSNR'] = [PSNR]
     output['SSIM'] = [SSIM]
     output['LPIPS'] = [LPIPS]
+    output['FG_PSNR'] = [FG_PSNR]
+    output['ALPHA_IOU'] = [ALPHA_IOU]
     output = output.transpose()
     print(output)
     output.to_csv(os.path.join(model_path, name, "ours_{}".format(iteration), "result.csv"), index=True)
@@ -392,6 +421,7 @@ if __name__ == "__main__":
     parser.add_argument("--skip_train", action="store_true")
     parser.add_argument("--skip_test", action="store_true")
     parser.add_argument("--quiet", action="store_true")
+    parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--visualize", action="store_true", help="Visualize the rendered images")
     parser.add_argument("--eval_app", action="store_true", help="Evaluate the rendered images with PSNR, SSIM, and LPIPS")
     parser.add_argument("--mode", default='eval', choices=['render', 'eval'])

@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import uuid
 from contextlib import ExitStack
+from fnmatch import fnmatchcase
 from typing import TypeVar
 
 from pydantic import BaseModel
@@ -39,6 +40,30 @@ from physrealx.errors import DomainValidationError, PhysRealXError, ResourceConf
 from physrealx.plugins import PluginRegistry
 
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
+
+
+def load_episode(store: ArtifactStore, summary: EpisodeSummary) -> Episode:
+    """Load one immutable episode and verify the identity and label in its summary."""
+    if summary.artifact is None:
+        raise DomainValidationError("episode summary has no published artifact")
+    episode = Episode.model_validate_json(store.get_bytes(summary.artifact))
+    if (
+        episode.episode_id,
+        episode.run_id,
+        episode.index,
+        episode.success,
+        len(episode.steps),
+        episode.failure_reason,
+    ) != (
+        summary.episode_id,
+        summary.run_id,
+        summary.index,
+        summary.success,
+        summary.step_count,
+        summary.failure_reason,
+    ):
+        raise DomainValidationError("episode summary differs from its immutable payload")
+    return episode
 
 
 class RunExecutor:
@@ -186,10 +211,7 @@ class RunExecutor:
             raise
 
     def load_episode(self, summary: EpisodeSummary) -> Episode:
-        if summary.artifact is None:
-            raise DomainValidationError("Episode summary has no published artifact")
-        episode = Episode.model_validate_json(self._artifacts.get_bytes(summary.artifact))
-        return episode
+        return load_episode(self._artifacts, summary)
 
     def load_dataset(self, reference: VersionedRef) -> DatasetManifest:
         if reference.resource_type is not ResourceType.DATASET or reference.artifact_id is None:
@@ -240,7 +262,13 @@ class RunExecutor:
                 f"backend does not support action kind {task.action.kind!r}"
             )
         observation_keys = set(getattr(capabilities, "observation_keys", ()))
-        missing = {item.name for item in task.observations} - observation_keys
+        patterns = getattr(capabilities, "observation_patterns", ())
+        missing = {
+            item.name
+            for item in task.observations
+            if item.name not in observation_keys
+            and not any(fnmatchcase(item.name, pattern) for pattern in patterns)
+        }
         if missing:
             raise DomainValidationError(
                 f"backend cannot produce required observations: {sorted(missing)!r}"
@@ -293,7 +321,9 @@ class RunExecutor:
                 current, task.termination_conditions
             )
             final_events = result.events
-            final_terminal = result.terminated or success or task_terminated
+            final_terminal = (
+                result.terminated or (success and spec.stop_on_success) or task_terminated
+            )
             if final_terminal or result.truncated:
                 break
         steps.append(
@@ -306,7 +336,7 @@ class RunExecutor:
                 reward=None,
                 discount=None,
                 is_last=True,
-                is_terminal=final_terminal,
+                is_terminal=final_terminal or success,
                 events=final_events,
             )
         )
@@ -327,7 +357,12 @@ class RunExecutor:
             failure_reason=(
                 None if success else "termination_condition" if final_terminal else "task_timeout"
             ),
-            metadata={"dt_seconds": dt_seconds},
+            metadata={
+                "dt_seconds": dt_seconds,
+                "tags": list(spec.tags),
+                "stop_on_success": spec.stop_on_success,
+                "sensor_metadata": dict(current.metadata),
+            },
         )
 
     @staticmethod

@@ -26,13 +26,14 @@ EXPECTED_APIS = {
         "px.assets.align_cameras_metric(",
         "px.assets.enhance_depth(",
         "px.assets.reconstruct_geometry(",
-        "px.assets.articulate(",
+        "px.assets.import_reference(",
+        "px.assets.prepare_rgbd(",
     ),
     "physical_asset_building": (
         "px.assets.build_collision(",
-        "px.assets.calibrate_physics(",
-        "px.recipes.execute(",
+        "px.assets.assemble(",
         "px.assets.package(",
+        "px.assets.validate(",
     ),
     "scene_and_task_generation": (
         "px.scenes.generate(",
@@ -42,23 +43,19 @@ EXPECTED_APIS = {
         "px.trajectories.generate(",
     ),
     "simulation_and_data_generation": (
-        "px.simulations.run(",
-        "px.renders.generate(",
-        "px.events.synthesize(",
-        "px.pointclouds.project(",
-        "px.episodes.pack(",
+        "px.runs.submit(",
+        "px.datasets.get(",
+        "px.runs.episodes(",
     ),
     "data_management_and_training": (
         "px.datasets.ingest(",
         "px.datasets.snapshot(",
         "px.training.submit(",
-        "px.recipes.execute(",
-        "px.models.register(",
+        "px.world_models.train(",
         "px.world_models.rollout(",
     ),
     "evaluation_and_feedback": (
-        "px.evaluations.run(",
-        "px.deployments.stage(",
+        "px.evaluations.submit(",
         "px.telemetry.record(",
         "px.failures.analyze(",
         "px.feedback.build_dataset(",
@@ -103,12 +100,12 @@ def test_notebook_teaches_and_directly_calls_each_public_api(module_name: str) -
     code_cells = [cell for cell in notebook["cells"] if cell["cell_type"] == "code"]
     source = "\n".join(_cell_source(cell) for cell in code_cells)
 
-    assert "**用途**" in markdown
-    assert "**输出**" in markdown or "**质量门禁**" in markdown
-    assert "method=" in source
+    assert len(markdown) >= 120
+    assert "NotebookRun(" in source and "run.complete()" in source
+    assert "method=" in source or "px.methods.bind(" in source
     assert "load_demo_config" not in source
     assert "configs/" not in source
-    assert "_config" not in source
+    assert "import _config" not in source
     assert "execute_demo" not in source
     assert "workflow(config)" not in source
     assert "lambda:" not in source
@@ -119,6 +116,25 @@ def test_notebook_teaches_and_directly_calls_each_public_api(module_name: str) -
         assert cell["execution_count"] is None
         assert cell["outputs"] == []
         ast.parse(_cell_source(cell))
+    tree = ast.parse(source)
+    declared = next(
+        ast.literal_eval(node.args[1])
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "NotebookRun"
+    )
+    stages = [
+        ast.literal_eval(node.args[0])
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "run"
+        and node.func.attr == "stage"
+    ]
+    assert len(stages) == len(set(stages))
+    assert set(stages) == set(declared)
 
 
 def test_shared_helpers_do_not_hide_business_parameters_or_sdk_calls() -> None:
@@ -136,3 +152,27 @@ def test_artmodeling_input_is_excluded_by_gitignore() -> None:
     source = Path(".gitignore").read_text(encoding="utf-8")
 
     assert "/examples/real_assets_and_digital_twin/input/ArtModeling/" in source
+
+
+def test_notebook_reports_failure_and_invalidates_downstream_receipts(tmp_path: Path) -> None:
+    from examples._common import DemoBlocked, NotebookRun
+
+    path = tmp_path / "report.json"
+    run = NotebookRun(path, ("first", "second"), {"interpreter": "fixture"})
+    with run.stage("first") as stage:
+        stage["artifact"] = "fixture-evidence"
+    with pytest.raises(ValueError, match="bad input"), run.stage("second"):
+        raise ValueError("bad input")
+    report = json.loads(path.read_text())
+    assert report["execution_status"] == "FAILED"
+    assert report["stages"]["second"]["error"] == "bad input"
+    with pytest.raises(DemoBlocked):
+        run.complete()
+    with run.stage("second"):
+        pass
+    assert run.complete()["execution_status"] == "COMPLETED"
+    with run.stage("first"):
+        pass
+    assert json.loads(path.read_text())["stages"]["second"]["status"] == "PENDING"
+    with pytest.raises(DemoBlocked):
+        run.complete()

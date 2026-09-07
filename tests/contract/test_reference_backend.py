@@ -65,7 +65,7 @@ def test_registry_rejects_duplicate_plugins() -> None:
         registry.register_backend(ReferenceDrawerBackend())
 
 
-def test_scripted_policy_can_complete_reference_task() -> None:
+def test_reference_success_does_not_preempt_runtime_termination_policy() -> None:
     asset = reference_asset()
     scene = reference_scene(asset)
     task = reference_task(scene)
@@ -78,10 +78,18 @@ def test_scripted_policy_can_complete_reference_task() -> None:
         for index in range(task.max_steps):
             result = session.step(policy.act(frame, task, index))
             frame = result.frame
-            if result.terminated:
+            if "task_success" in result.events:
                 break
         assert result is not None
-        assert result.terminated
+        assert not result.terminated
+        assert not result.truncated
+        assert "task_success" in result.events
+        # A successful backend state remains usable for fixed-horizon recording.
+        for remaining_index in range(index + 1, task.max_steps):
+            result = session.step(policy.act(frame, task, remaining_index))
+            frame = result.frame
+            assert not result.terminated
+        assert result.truncated
         assert "task_success" in result.events
     finally:
         policy.close()

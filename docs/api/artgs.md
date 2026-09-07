@@ -1,79 +1,55 @@
 # ArtGS 视觉几何重建
 
-`geometry.reconstruct:artgs` 是 PhysReal-X 首个完整内嵌算法方法，用于从同一对象坐标系下的
-多状态 RGB-D 恢复分部 Gaussian、视觉 Mesh 和形变权重。它只负责视觉几何，不把外观指标解释为
-关节、碰撞或物性结论。
+`geometry.reconstruct:artgs` 使用仓库内原生 ArtGS，在当前 PhysReal-X 解释器中执行 CUDA 粗分解、运动类型预测、联合重建和留出视角渲染。源码、上游提交及修改见 `algorithms/artgs/SOURCE.toml`。
 
-## 源码与环境
+## 输入
 
-源码位于 `algorithms/artgs/`，包含上游 ArtGS、Gaussian rasterizer、Simple-KNN、PointNet2 与
-GLM 的固定快照；`SOURCE.toml` 记录来源、提交、许可证和平台修改。所有 Python 依赖安装到当前
-PhysReal-X Conda 环境：
-
-```bash
-conda activate PhysReal-X
-python -m pip install --no-build-isolation -e '.[artgs]'
-```
-
-平台不读取外部 ArtGS clone。首次执行时使用当前 `sys.executable` 与本环境的 CUDA 12.1 工具链
-编译仓库内三个原生扩展；构建失败、GPU 不可见或版本不匹配时，方法保持不可用。
-`--no-build-isolation` 使扩展构建复用当前环境的 Torch，不会安装或启动另一个 Python 环境。
-
-ArtGS 主体为 Apache-2.0，但必需的 Gaussian rasterizer 与 Simple-KNN 限于
-非商业研究/评估；方法有效许可标识为
-`LicenseRef-ArtGS-Research-Only`。统一安装不会改变上游许可边界，
-商业使用前必须完成授权与 PointNet2 来源审核。
-
-## 输入契约
-
-`package_artgs_input(...)` 生成 `MetricMultiStateRGBDBundle/1`，必须满足：
-
-- `CameraRigCalibration/1` 已解析为米制对象坐标；
-- `EnhancedDepthBundle/1` 状态为 `PASSED`，每个 NPY 是有限正值 float32 米制深度；
-- `start` 与 `end` 具有等量、多视角、刚体相机位姿和 8-bit RGBA PNG；
-- `depth_frame_ids` 对训练及留出视图一一映射，禁止复用或遗漏；
-- 默认同时存在独立 `transforms_test_start/end.json`。
-
-平台从增强深度制品读取 NPY，校验 Schema、形状、单位和声明大小后确定性生成 16-bit 毫米
-PNG；目录中预存的深度图不会被采信。输入 ZIP 保存原始证据引用、每帧转换关系和固定顺序。
-
-## 执行
+ArtGS 与 CPU `rgbd_fusion` 共用 `MetricRGBDInput`，不需要另一套预打包目录 API：
 
 ```python
-from physrealx import PhysRealX, package_artgs_input
+from physrealx import MetricRGBDInput
 
-px = PhysRealX.open(".physrealx")
-source = package_artgs_input(
-    prepared_source,
-    scene_id="cabinet2",
-    camera_rig=metric_camera,
-    enhanced_depth=enhanced_depth,
-    depth_frame_ids=frame_bindings,
-    num_slots=3,
-    artifacts=px.artifacts,
+source = px.artifacts.put_json(
+    MetricRGBDInput(
+        camera_rig=metric_camera,
+        enhanced_depth=enhanced_depth,
+        reference_model=reference_model,
+    )
 )
 operation = px.assets.reconstruct_geometry(
     source,
     method="artgs",
     config={
-        "coarse_iterations": 10_000,
-        "joint_iterations": 5_000,
-        "reconstruction_iterations": 20_000,
-        "seed": 0,
+        "num_slots": 2,
+        "state_streams": ["can.start.001.rgb", "can.end.001.rgb"],
+        "coarse_iterations": 5000,
+        "joint_iterations": 3000,
+        "reconstruction_iterations": 10000,
+        "evaluation_resolution": 1,
+        "seed": 2026,
     },
 )
 ```
 
-同一方法、输入、配置和输出契约生成同一操作身份。执行顺序固定为粗分解、部件/关节类型预测、
-联合重建与留出渲染；任一步失败都不发布 `OperationManifest`。
+`num_slots` 必须显式指定为可观测运动组数。cabinet2 实拍仅下层抽屉移动，柜体与静止上层抽屉合为一组；三个 USD 结构部件不能直接推导三个可学习运动组。
 
-## 输出与门禁
+适配器检查相机/RGB/深度身份、刚体变换、米制单位、数组大小与有效性。RGB、Mask、深度一起校正畸变；深度以最近邻转换为毫米 PNG。每状态必须提供足够视角进行训练与独立视角划分。训练各阶段和初始化点云均排除留出视角。
+
+## 输出
 
 | 输出 | 内容 |
 | --- | --- |
-| `VisualGeometryBundle/1` | 每 link PLY、Gaussian 点云、形变权重与关节信息，ZIP 成员逐项登记。 |
-| `GeometryReconstructionReport/1` | 方法 revision、米制证据、训练/留出指标、Mesh 引用和质量门禁。 |
+| `visual_geometry_bundle` | Gaussian 点云、形变权重、重载配置、运动组 Mesh、关节描述、五个连续外观状态及封闭文件清单 |
+| `geometry_reconstruction_report` | 训练/留出 PSNR、SSIM、LPIPS、前景 PSNR、轮廓 IoU，运动组数、坐标系、来源引用、训练配置与证据范围 |
 
-默认只有独立留出视图存在时状态才为 `PASSED`。对缺少留出视图的历史数据显式设置
-`allow_training_view_evaluation=True` 后，结果固定标为 `TRAINING_VIEWS_ONLY`，不能作为后续碰撞、
-物性或可训练资产的通过证据。
+五个状态由上游 `interpolate` 在真实留出相机渲染，取值对应观测运动区间。未知关节限位、未观察部件运动与真实物性不能由外观指标推导。
+
+`model/config.json` 保存网络与渲染配置，排除训练临时目录；配置统一为 JSON，删除旧的 `eval/Namespace` 文件路径。旋转轴使用带轴向约束的最小二乘求解，避免对必然奇异的 `I-R` 求逆；零运动不能发布可辨识关节轴。
+
+接受自监督增强深度和 USD 条件尺度，但报告保留 `MODEL_CONDITIONED`；独立物理验证字段始终不因图像指标而升级。无留出视角、空 Mesh、CUDA 错误或阶段超时均拒绝成功发布，不提供仅训练视角的兼容模式。
+
+## 环境与来源
+
+[安装说明](../getting-started/installation.md)列出统一依赖。原生扩展首次在当前环境编译，GPU/扩展不能执行时明确失败。算法主体为 Apache-2.0，整体运行依赖的 rasterizer/Simple-KNN 为非商业研究许可；方法声明 `LicenseRef-ArtGS-Research-Only`。
+
+示例迭代和分辨率用于流程验收，不能作为论文最优效果或新的 SOTA 结论。

@@ -39,7 +39,7 @@ class DeformModel:
             out_weights_path = os.path.join(model_path, "deform/iteration_{}".format(iteration))
             os.makedirs(out_weights_path, exist_ok=True)
             torch.save(self.deform.state_dict(), os.path.join(out_weights_path, 'deform.pth'))
-        
+
     def load_weights(self, model_path, iteration=-1):
         if iteration == -1:
             loaded_iter = searchForMaxIteration(os.path.join(model_path, "deform"))
@@ -47,7 +47,7 @@ class DeformModel:
             loaded_iter = iteration
         weights_path = os.path.join(model_path, "deform/iteration_{}/deform.pth".format(loaded_iter))
         if os.path.exists(weights_path):
-            self.deform.load_state_dict(torch.load(weights_path))
+            self.deform.load_state_dict(torch.load(weights_path, weights_only=True))
             return True
         else:
             return False
@@ -60,7 +60,7 @@ class DeformModel:
             elif param_group["name"] == 'slot':
                 lr = self.deform_scheduler_args(iteration)
                 param_group['lr'] = lr
-        
+
     def update(self, iteration):
         self.deform.update(iteration)
 

@@ -1,90 +1,35 @@
 # 评测、部署与反馈 API
 
-评测使用冻结模型、任务和独立种子生成报告；真机部署与失败反馈通过能力方法接入，并共享
-Episode、制品和方法证据，不共享仿真后端对象。
-核心包提供这些领域服务与证据契约，但不附带 LIBERO、ROS 2、MCAP、故障归因或反馈构建
-实现；下文方法名均是候选，只有作为项目可选依赖安装、注册且探针通过后才能执行。
+## 独立评测
 
-## `evaluations.submit`
+`evaluations.submit(resource_id=..., version=..., model=..., run=RunSpec, episode_count=..., base_seed=...)` 使用模型精确推理方法实际执行引擎；返回报告 VersionedRef。`evaluations.get_report(ref)` / `evaluations.list_reports()` 读取成功率、失败案例和数据集引用。
 
-```python
-px.evaluations.submit(
-    *,
-    resource_id: str,
-    version: str,
-    model: VersionedRef,
-    run: RunSpec,
-    episode_count: int = 16,
-    base_seed: int = 100_000,
-) -> VersionedRef
-```
+示例在新随机种子上验证同一 cabinet2 任务，不能解读为未见资产或现场机器人泛化。
 
-平台检查模型信号 Schema 与任务观测/动作一致，再把运行策略替换为模型清单登记的精确推理
-`MethodSpec`。评测身份包含模型、运行规格、输出身份、Episode 数和种子，独立报告不会碰撞。
+## 遥测、诊断与回流
 
 ```python
-report_ref = px.evaluations.submit(
-    resource_id="drawer.bc.heldout",
-    version="1.0.0",
-    model=model_ref,
-    run=heldout_run,
-    episode_count=200,
-    base_seed=100_000,
+source = px.artifacts.put_json(
+    {
+        "schema": "physrealx.run-evidence/1",
+        "dataset": dataset_ref.model_dump(mode="json"),
+    }
+)
+telemetry = px.telemetry.record(source, method="episode_telemetry")
+telemetry_ref = next(item.artifact for item in telemetry.outputs if item.name == "telemetry")
+failures = px.failures.analyze(telemetry_ref, method="trajectory_diagnostics")
+report_ref = next(item.artifact for item in failures.outputs if item.name == "failure_report")
+feedback = px.feedback.build_dataset(
+    report_ref,
+    method="failure_episodes",
+    config={"resource_id": "cabinet2.failures", "version": "1.0.0"},
 )
 ```
 
-## `evaluations.get_report` / `evaluations.list_reports`
+全部返回 `OperationManifest`。原始 Episode 与任务用于重新计算指标；篡改遥测不能成为证据。反馈保留失败标签、种子与原始制品，输出再生成计划；模块六实际在同初态执行专家轨迹并发布新增成功集。
 
-```python
-px.evaluations.get_report(ref: VersionedRef) -> EvaluationReport
-px.evaluations.list_reports() -> list[VersionedRef]
-```
+## 设备边界
 
-报告保存模型和评测数据集精确引用、成功率、Episode 数、失败数与结构化失败案例。
+`deployments.stage` 是外部机器人适配器的执行入口，目前未注册现场 ROS 2 方法；`robot_agent.py` 提供接口/限位/租约/看门狗协议。缺少设备、机器人资产与原始日志时，调用契约不能成为真实部署完成的证据。
 
-## 评测方法
-
-```python
-benchmark = px.evaluations.run(model_ref, suite_ref, method=benchmark_method)
-```
-
-推荐 `libero`、`robotwin2` 和 `simpler` 扩展；每个基准必须固定官方任务、初态、种子、超时和成功
-判据，并报告逐任务成功率、Wilson 95% 置信区间、至少三个训练种子和旧版本回归差异。
-
-## 真机部署边界
-
-```python
-deployment = px.deployments.stage(model_ref, robot_ref, method=deployment_method)
-telemetry = px.telemetry.record(robot_run_artifact, method=telemetry_method)
-```
-
-`ros2_control` 方法使用 ros2_control/MoveIt 2 接入机器人，`rosbag2_mcap` 记录观测、动作、TF、诊断、
-接触和任务判据。学习策略只输出期望动作或轨迹；急停、工作空间、速度、力矩、力和 watchdog
-由确定性安全监督器执行。
-
-## 失败与反馈边界
-
-```python
-failure = px.failures.analyze(telemetry.outputs[0].artifact, method=failure_method)
-targeted = px.feedback.build_dataset(
-    failure.outputs[0].artifact,
-    method=feedback_method,
-)
-```
-
-候选 `rules_v1` 适配器根据任务时间线、命令—状态误差、接触/力、TF/时钟和诊断产生证据；RoboFAC
-只能作为二级 critic。输出至少包含原因代码、起始时刻、置信度、证据引用和确认状态，证据不足时
-保留 `unknown`。
-
-`hard_negative` 从确认失败/OOD 切片发布新的 `DatasetRevision`，不得原地修改训练集；提升必须在未
-参与反馈构建的 failure holdout 和旧回归集上同时验证。
-
-上述五个接口都返回可追溯 `OperationManifest`。`deployment.stage` 的 `safety_report` 未通过时，
-部署方法必须拒绝进入 canary；`failure.analyze` 证据不足时必须输出 `unknown`，不得强制归因。
-
-## 发布门禁
-
-- 评测：逐任务成功率、置信区间、完成时间、碰撞/超力/越界和推理延迟；
-- shadow/canary：输入输出 Schema、频率、frame、关节顺序、延迟和安全限制全部通过；
-- 真机：关键安全事件为零，并报告干预率、误停率、跟踪误差和故障检测延迟；
-- 反馈：故障证据可定位、人工确认可审计、新数据集不可变、旧能力无回归。
+规范化实机 Episode 可以进入遥测/反馈，其来源保留 `real`。模拟记录保持 `simulator`，诊断类别属于记录症状，因果归因与物性标定需要独立干预或测量。详见[反馈指南](../user-guide/evaluation-and-feedback.md)。

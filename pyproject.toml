@@ -15,6 +15,9 @@ license-files = [
   "algorithms/artgs/LICENSE",
   "algorithms/artgs/submodules/diff-gaussian-rasterization/LICENSE.md",
   "algorithms/artgs/submodules/simple-knn/LICENSE.md",
+  "algorithms/act/LICENSE",
+  "algorithms/dinov2/LICENSE",
+  "algorithms/dino_wm/LICENSE",
 ]
 authors = [
   { name = "PhysReal-X Contributors" },
@@ -40,11 +43,23 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+physical = [
+  "numpy==1.26.4; python_version >= '3.10'",
+  "scipy==1.13.1; python_version >= '3.10'",
+  "trimesh==4.5.1; python_version >= '3.10'",
+  "coacd==1.0.9; python_version >= '3.10'",
+  "mujoco==3.3.7; python_version >= '3.10'",
+  "usd-core==24.11; python_version >= '3.10'",
+]
 train = [
   "numpy==1.24.4; python_version == '3.8'",
   "numpy==1.26.4; python_version >= '3.9'",
   "safetensors>=0.4.5,<0.5; python_version == '3.8'",
   "safetensors>=0.4.5,<1; python_version >= '3.9'",
+]
+visual-learning = [
+  "einops==0.8.1; python_version >= '3.10'",
+  "torchvision==0.20.1; python_version >= '3.10'",
 ]
 dev = [
   "build>=1.2.2,<2",
@@ -61,35 +76,42 @@ docs = [
 ]
 demo = [
   "jupyterlab>=4.2,<5; python_version >= '3.9'",
+  "ipykernel>=6.29,<7; python_version >= '3.10'",
+  "nbclient>=0.10,<0.11; python_version >= '3.10'",
+  "matplotlib>=3.8,<4; python_version >= '3.10'",
+]
+colmap = [
+  "numpy==1.26.4; python_version >= '3.10' and python_version < '3.13'",
+  "opencv-python==4.10.0.84; python_version >= '3.10' and python_version < '3.13'",
+  "pycolmap==4.1.1; python_version >= '3.10' and python_version < '3.13'",
 ]
 artgs = [
-  "imageio==2.34.1; python_version == '3.10'",
-  "joblib>=1.4,<2; python_version == '3.10'",
-  "lpips==0.1.4; python_version == '3.10'",
-  "matplotlib==3.5.3; python_version == '3.10'",
-  "moviepy==1.0.3; python_version == '3.10'",
-  "ninja>=1.11,<2; python_version == '3.10'",
-  "numpy==1.26.4; python_version == '3.10'",
-  "open3d==0.18.0; python_version == '3.10'",
-  "opencv-python==4.10.0.84; python_version == '3.10'",
-  "pandas>=2.2,<3; python_version == '3.10'",
-  "piq==0.8.0; python_version == '3.10'",
-  "plyfile==1.0.3; python_version == '3.10'",
-  "pytransform3d==3.16.0; python_version == '3.10'",
-  "pytorch-lightning==2.4.0; python_version == '3.10'",
-  "pytorch3d @ git+https://github.com/facebookresearch/pytorch3d.git@e73a7e7bfc580d1f9225ad9ff7d2c753c320aabd ; python_version == '3.10'",
-  "scikit-image==0.22.0; python_version == '3.10'",
-  "scikit-learn==1.5.0; python_version == '3.10'",
-  "scipy==1.13.1; python_version == '3.10'",
-  "seaborn==0.13.2; python_version == '3.10'",
-  "setuptools>=68,<81; python_version == '3.10'",
-  "tensorboard==2.16.2; python_version == '3.10'",
-  "tinycudann @ git+https://github.com/NVlabs/tiny-cuda-nn.git@749dd70c5afc5a9dadb85e5652ed65d55e0ba187#subdirectory=bindings/torch ; python_version == '3.10'",
-  "torch==2.4.1; python_version == '3.10'",
-  "torchaudio==2.4.1; python_version == '3.10'",
-  "torchvision==0.19.1; python_version == '3.10'",
-  "tqdm>=4.66,<5; python_version == '3.10'",
-  "trimesh==4.5.1; python_version == '3.10'",
+  "imageio==2.34.1; python_version >= '3.10' and python_version < '3.13'",
+  "joblib>=1.4,<2; python_version >= '3.10' and python_version < '3.13'",
+  "lpips==0.1.4; python_version >= '3.10' and python_version < '3.13'",
+  "matplotlib>=3.8,<4; python_version >= '3.10' and python_version < '3.13'",
+  "moviepy==1.0.3; python_version >= '3.10' and python_version < '3.13'",
+  "ninja>=1.11,<2; python_version >= '3.10' and python_version < '3.13'",
+  "numpy==1.26.4; python_version >= '3.10' and python_version < '3.13'",
+  "open3d==0.18.0; python_version >= '3.10' and python_version < '3.13'",
+  "opencv-python==4.10.0.84; python_version >= '3.10' and python_version < '3.13'",
+  "pandas>=2.2,<3; python_version >= '3.10' and python_version < '3.13'",
+  "piq==0.8.0; python_version >= '3.10' and python_version < '3.13'",
+  "plyfile==1.0.3; python_version >= '3.10' and python_version < '3.13'",
+  "pytransform3d==3.16.0; python_version >= '3.10' and python_version < '3.13'",
+  "pytorch-lightning==2.4.0; python_version >= '3.10' and python_version < '3.13'",
+  "pytorch3d @ git+https://github.com/facebookresearch/pytorch3d.git@e73a7e7bfc580d1f9225ad9ff7d2c753c320aabd ; python_version >= '3.10' and python_version < '3.13'",
+  "scikit-image==0.22.0; python_version >= '3.10' and python_version < '3.13'",
+  "scikit-learn==1.5.0; python_version >= '3.10' and python_version < '3.13'",
+  "scipy==1.13.1; python_version >= '3.10' and python_version < '3.13'",
+  "seaborn==0.13.2; python_version >= '3.10' and python_version < '3.13'",
+  "setuptools>=68,<81; python_version >= '3.10' and python_version < '3.13'",
+  "tensorboard==2.16.2; python_version >= '3.10' and python_version < '3.13'",
+  "tinycudann @ git+https://github.com/NVlabs/tiny-cuda-nn.git@749dd70c5afc5a9dadb85e5652ed65d55e0ba187#subdirectory=bindings/torch ; python_version >= '3.10' and python_version < '3.13'",
+  "torch==2.5.1; python_version >= '3.10' and python_version < '3.13'",
+  "torchvision==0.20.1; python_version >= '3.10' and python_version < '3.13'",
+  "tqdm>=4.66,<5; python_version >= '3.10' and python_version < '3.13'",
+  "trimesh==4.5.1; python_version >= '3.10' and python_version < '3.13'",
 ]
 
 [project.scripts]
@@ -136,6 +158,9 @@ packages = ["src/physrealx"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "algorithms/artgs" = "physrealx/_embedded/artgs"
+"algorithms/act" = "physrealx/_embedded/act"
+"algorithms/dinov2" = "physrealx/_embedded/dinov2"
+"algorithms/dino_wm" = "physrealx/_embedded/dino_wm"
 "THIRD_PARTY_NOTICES.md" = "physrealx/_embedded/THIRD_PARTY_NOTICES.md"
 
 [tool.pytest.ini_options]
@@ -146,8 +171,9 @@ addopts = [
 ]
 testpaths = ["tests"]
 markers = [
-  "gpu: requires a CUDA-capable GPU and the project's cu121 PyTorch environment",
+  "gpu: requires a usable CUDA GPU and compatible extensions in the current environment",
   "integration: exercises more than one platform component",
+  "real_data: opt-in execution with the local real capture dataset and Jupyter kernel",
 ]
 
 [tool.coverage.run]
@@ -174,6 +200,11 @@ extend-exclude = [
 [tool.ruff.lint]
 select = ["B", "E", "F", "I", "RUF", "SIM", "UP"]
 ignore = ["B008"]
+allowed-confusables = ["，", "：", "；"]
+
+[tool.ruff.lint.per-file-ignores]
+# Notebook bootstrap verifies the selected Conda kernel before SDK imports.
+"examples/**/*.ipynb" = ["E402"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["physrealx"]
@@ -192,4 +223,8 @@ pretty = true
 
 [[tool.mypy.overrides]]
 module = "yaml.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["scipy.*", "trimesh.*", "mujoco.*", "pxr.*", "coacd.*"]
 ignore_missing_imports = true

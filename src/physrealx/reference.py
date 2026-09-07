@@ -139,12 +139,13 @@ class ReferenceDrawerSession:
         self._step_index += 1
         state = self._scalar_state()
         success = all(item.evaluate(state) for item in self._task.success_conditions)
-        terminal_condition = any(item.evaluate(state) for item in self._task.termination_conditions)
-        truncated = self._step_index >= self._task.max_steps and not success
+        # Task success/termination belongs to the run orchestrator. Backend
+        # termination is reserved for conditions intrinsic to the simulator.
+        truncated = self._step_index >= self._task.max_steps
         return StepResult(
             frame=self._frame(),
             reward=1.0 if success else -0.01,
-            terminated=success or terminal_condition,
+            terminated=False,
             truncated=truncated,
             events=("task_success",) if success else (),
         )

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import io
+import json
+import zipfile
 from collections.abc import Callable
 from pathlib import Path
 
@@ -35,12 +38,22 @@ class _CanonicalAdapter:
             media_type = (
                 requirement.media_types[0] if requirement.media_types else "application/json"
             )
+            payload = f"fixture:{requirement.name}".encode()
+            if requirement.content_kind == "json":
+                payload = json.dumps(
+                    {"schema": requirement.schema_discriminator or "fixture"}
+                ).encode()
+            elif requirement.content_kind == "zip":
+                stream = io.BytesIO()
+                with zipfile.ZipFile(stream, "w") as archive:
+                    archive.writestr("manifest.json", "{}")
+                payload = stream.getvalue()
             outputs.append(
                 OperationOutput(
                     name=requirement.name,
                     contract=requirement.contract,
                     artifact=artifacts.put_bytes(
-                        f"fixture:{requirement.name}".encode(),
+                        payload,
                         media_type=media_type,
                     ),
                 )
@@ -114,7 +127,7 @@ AssetInvocation = Callable[[PhysRealX, str, VersionedRef, ArtifactRef], Operatio
             "CalibratedRGBDBundle/1",
             "EnhancedDepthBundle/1+DepthEnhancementReport/1",
             lambda px, method, resource, artifact: px.assets.enhance_depth(
-                resource,
+                artifact,
                 method=method,
             ),
             (
@@ -155,7 +168,7 @@ AssetInvocation = Callable[[PhysRealX, str, VersionedRef, ArtifactRef], Operatio
             "PairedInteractionPointCloudBundle/1",
             "ArticulationModel/1+ArticulationRecoveryReport/1",
             lambda px, method, resource, artifact: px.assets.articulate(
-                resource,
+                artifact,
                 method=method,
             ),
             (
@@ -196,7 +209,7 @@ AssetInvocation = Callable[[PhysRealX, str, VersionedRef, ArtifactRef], Operatio
             "JointSystemIdentificationEvidence/1",
             "IdentifiedJointPhysics/1+PhysicsIdentificationReport/1",
             lambda px, method, resource, artifact: px.assets.calibrate_physics(
-                resource,
+                artifact,
                 method=method,
             ),
             (
@@ -219,11 +232,11 @@ AssetInvocation = Callable[[PhysRealX, str, VersionedRef, ArtifactRef], Operatio
             "AssetAssemblyBundle/1",
             "UsdAssetBundle/1+AssetPackageManifest/1+UsdRoundTripValidationReport/1",
             lambda px, method, resource, artifact: px.assets.package(
-                resource,
+                artifact,
                 method=method,
             ),
             (
-                ("usd_asset_bundle", "UsdAssetBundle/1", "binary", "model/vnd.usd+binary"),
+                ("usd_asset_bundle", "UsdAssetBundle/1", "binary", "model/vnd.usdz+zip"),
                 (
                     "asset_package_manifest",
                     "AssetPackageManifest/1",
@@ -298,7 +311,7 @@ def test_service_rejects_a_method_that_redefines_its_schema(tmp_path: Path) -> N
     assert platform.operations.list() == []
 
 
-def test_service_rejects_artifact_when_adapter_requires_resource_closure(tmp_path: Path) -> None:
+def test_service_rejects_resource_when_adapter_requires_artifact(tmp_path: Path) -> None:
     platform = PhysRealX.open(tmp_path, discover_plugins=False)
     descriptor = builtin_method(
         MethodCapability.ASSET_PACKAGE,
@@ -307,9 +320,9 @@ def test_service_rejects_artifact_when_adapter_requires_resource_closure(tmp_pat
         output_contract=("UsdAssetBundle/1+AssetPackageManifest/1+UsdRoundTripValidationReport/1"),
     )
     platform.methods.register(descriptor)
-    artifact = platform.artifacts.put_json({"schema": "physrealx.asset-assembly-bundle/1"})
+    artifact = platform.assets.register(reference_asset())
 
-    with pytest.raises(DomainValidationError, match="must be an immutable resource"):
+    with pytest.raises(DomainValidationError, match="must be an immutable artifact"):
         platform.methods.execute(
             MethodCapability.ASSET_PACKAGE,
             descriptor.name,

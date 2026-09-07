@@ -56,6 +56,7 @@ nav:
       - 第一个可复现契约实验: getting-started/first-project.md
   - 用户指南:
       - 指南总览: user-guide/index.md
+      - 功能验收与证据范围: acceptance.md
       - 真实资产接入与数字孪生: user-guide/real-assets-and-digital-twin.md
       - 物理可信资产构建: user-guide/physical-assets.md
       - 场景与任务生成: user-guide/scenes-and-tasks.md

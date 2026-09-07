@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from physrealx import ViewAlignmentMode
 from physrealx.errors import SourcePackageError
 from physrealx.platform import PhysRealX
 
@@ -62,17 +63,44 @@ def test_artmodeling_source_is_inspected_and_ingested_immutably(tmp_path: Path) 
         resource_id="cabinet2.observations",
         version="1.0.0",
         display_name="Cabinet 2 observations",
-        config={"depth_unit": "mm", "coordinate_frame": "camera"},
+        config={
+            "depth_unit": "mm",
+            "coordinate_frame": "camera",
+            "view_alignment": {
+                "can.start.001.rgb": {
+                    "mode": "fiducial_assisted",
+                    "fiducial": {"family": "aruco_6x6_50"},
+                },
+                "can.end.001.rgb": {"mode": "natural_features"},
+            },
+        },
     )
     assert reference == platform.assets.ingest(
         source,
         resource_id="cabinet2.observations",
         version="1.0.0",
         display_name="Cabinet 2 observations",
-        config={"depth_unit": "mm", "coordinate_frame": "camera"},
+        config={
+            "depth_unit": "mm",
+            "coordinate_frame": "camera",
+            "view_alignment": {
+                "can.start.001.rgb": {
+                    "mode": "fiducial_assisted",
+                    "fiducial": {"family": "aruco_6x6_50"},
+                },
+                "can.end.001.rgb": {"mode": "natural_features"},
+            },
+        },
     )
     manifest = platform.assets.get_observations(reference)
     assert manifest.metadata["depth_unit"] == "mm"
+    rgb_streams = {
+        stream.name: stream for stream in manifest.streams if stream.name.endswith(".rgb")
+    }
+    assert (
+        rgb_streams["can.start.001.rgb"].view_alignment.mode is ViewAlignmentMode.FIDUCIAL_ASSISTED
+    )
+    assert rgb_streams["can.end.001.rgb"].view_alignment.mode is ViewAlignmentMode.NATURAL_FEATURES
     assert len(manifest.attachments) == 2
     assert all(
         platform.artifacts.verify(artifact)
@@ -99,4 +127,25 @@ def test_artmodeling_ingestion_rejects_incomplete_or_ambiguous_sources(
             version="1.0.0",
             display_name="Bad observations",
             config={"depth_unit": "mm", "coordinate_frame": "camera"},
+        )
+
+
+@pytest.mark.integration
+def test_artmodeling_ingestion_rejects_unknown_alignment_stream(tmp_path: Path) -> None:
+    source = _source(tmp_path / "cabinet2")
+    platform = PhysRealX.open(tmp_path / "workspace", discover_plugins=False)
+
+    with pytest.raises(SourcePackageError, match="unknown or non-RGB"):
+        platform.assets.ingest(
+            source,
+            resource_id="cabinet2.observations",
+            version="1.0.0",
+            display_name="Cabinet 2 observations",
+            config={
+                "depth_unit": "mm",
+                "coordinate_frame": "camera",
+                "view_alignment": {
+                    "missing.rgb": {"mode": "natural_features"},
+                },
+            },
         )

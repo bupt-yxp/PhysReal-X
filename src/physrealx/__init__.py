@@ -3,8 +3,11 @@
 from physrealx.digital_twin import (
     AssetValidationProfile,
     AssetValidationReport,
+    FiducialSpec,
     ObservationSetManifest,
     SourceInspection,
+    ViewAlignmentMode,
+    ViewAlignmentSpec,
 )
 from physrealx.domain import (
     ActionSpec,
@@ -55,10 +58,9 @@ from physrealx.execution_lifecycle import (
     VerifiedEpisodeCollection,
 )
 from physrealx.integrations.artgs import (
-    ArtGSInputManifest,
     ArtGSRunConfig,
-    package_artgs_input,
 )
+from physrealx.integrations.rgbd import MetricRGBDInput
 from physrealx.platform import PhysRealX
 from physrealx.readiness import (
     LifecycleEvidence,
@@ -136,7 +138,6 @@ __version__ = "0.1.0"
 
 __all__ = [
     "ActionSpec",
-    "ArtGSInputManifest",
     "ArtGSRunConfig",
     "ArtifactRef",
     "AssetEvidenceState",
@@ -176,6 +177,7 @@ __all__ = [
     "FeedbackDatasetManifest",
     "FeedbackDatasetSpec",
     "FeedbackLifecycle",
+    "FiducialSpec",
     "InitialRecipeInput",
     "JointSafetyLimit",
     "LifecycleEvidence",
@@ -193,6 +195,7 @@ __all__ = [
     "MethodRecipe",
     "MethodRuntime",
     "MethodSpec",
+    "MetricRGBDInput",
     "ModelKind",
     "ModelManifest",
     "ObservationSetManifest",
@@ -245,10 +248,11 @@ __all__ = [
     "VerifiedEpisodeBundle",
     "VerifiedEpisodeCollection",
     "VersionedRef",
+    "ViewAlignmentMode",
+    "ViewAlignmentSpec",
     "WilsonInterval",
     "WorkspaceBounds",
     "WorldModelBundle",
     "WorldModelTrainingPlan",
     "__version__",
-    "package_artgs_input",
 ]

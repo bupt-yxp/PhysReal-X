@@ -3,7 +3,7 @@
 # GRAPHDECO research group, https://team.inria.fr/graphdeco
 # All rights reserved.
 #
-# This software is free for non-commercial, research and evaluation use 
+# This software is free for non-commercial, research and evaluation use
 # under the terms of the LICENSE.md file.
 #
 # For inquiries contact  george.drettakis@inria.fr
@@ -17,6 +17,7 @@ from utils.loss_utils import l1_loss, ssim
 from gaussian_renderer import render
 import sys
 from scene import Scene, GaussianModel, DeformModel
+from utils.system_utils import searchForMaxIteration
 from utils.general_utils import safe_state
 import tqdm
 from argparse import ArgumentParser
@@ -34,21 +35,24 @@ class Trainer:
         self.coarse_model_path = args.coarse_model_path or os.path.join(
             os.path.dirname(dataset.model_path), args.coarse_name
         )
-        
+        self.coarse_iteration = searchForMaxIteration(os.path.join(self.coarse_model_path, 'point_cloud'))
+        if self.coarse_iteration is None:
+            raise FileNotFoundError('Coarse stage did not publish a numeric checkpoint')
+
         self.gaussians = GaussianModel(dataset.sh_degree)
         self.scene = Scene(dataset, self.gaussians, load_iteration=None)
-        
+
         if self.args.canonical_init == 'cgs':
             self.xyzs = self.gaussians.load_ply_cano(
                 os.path.join(
                     self.coarse_model_path,
-                    'point_cloud/iteration_10000/point_cloud.ply',
+                    f'point_cloud/iteration_{self.coarse_iteration}/point_cloud.ply',
                 )
             )
             print(f'Init canonical gaussians from {self.coarse_model_path}.')
         else:
             print('Init canonical gaussians randomly.')
-        
+
         self.gaussians.training_setup(opt)
         self.deform = DeformModel(self.dataset)
         self.init_deform()
@@ -63,13 +67,13 @@ class Trainer:
         self.progress_bar = tqdm.tqdm(range(self.iteration-1, opt.iterations), desc="Training progress")
 
         self.viewpoint_stacks = [self.scene.getTrainCameras_start(), self.scene.getTrainCameras_end()]
-    
+
     def init_deform(self,):
         if self.args.center_init == 'cgs':
             self.deform.deform.seg_model.init_from_file(
                 os.path.join(
                     self.coarse_model_path,
-                    'point_cloud/iteration_10000/center_info.npy',
+                    f'point_cloud/iteration_{self.coarse_iteration}/center_info.npy',
                 )
             )
             print(f'Init center from {self.coarse_model_path}.')
@@ -83,17 +87,17 @@ class Trainer:
     def train(self, iters=5000):
         for i in tqdm.trange(iters):
             self.train_step()
-    
+
     def train_step(self):
         self.iter_start.record()
         # Every 1000 its we increase the levels of SH up to a maximum degree
         if self.iteration % self.opt.oneupSHdegree_step == 0:
             self.gaussians.oneupSHdegree()
-            
+
         state = randint(0, 1)
         id = randint(0, len(self.viewpoint_stacks[state]) - 1)
         viewpoint_cam = self.viewpoint_stacks[state][id]
-        
+
         # Render
         random_bg = (not self.dataset.white_background and self.opt.random_bg_color) and viewpoint_cam.gt_alpha_mask is not None
         bg = self.background if not random_bg else torch.rand_like(self.background).cuda()
@@ -112,7 +116,7 @@ class Trainer:
 
         Ll1 = l1_loss(image, gt_image)
         loss = (1.0 - self.opt.lambda_dssim) * Ll1 + self.opt.lambda_dssim * (1.0 - ssim(image, gt_image))
-        
+
         loss.backward()
 
         self.iter_end.record()
@@ -145,7 +149,7 @@ class Trainer:
                 os.makedirs(self.dataset.model_path, exist_ok=True)
                 with open(os.path.join(self.dataset.model_path, 'predicted_joint_types.json'), 'w') as stream:
                     json.dump({'joint_types': joint_types}, stream, indent=4)
-            
+
             # Optimizer step
             if self.iteration < self.opt.iterations:
                 self.gaussians.optimizer.step()
@@ -164,14 +168,14 @@ if __name__ == "__main__":
     lp = ModelParams(parser)
     op = OptimizationParams(parser)
     pp = PipelineParams(parser)
-    
+
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--deform-type", type=str, default='mlp')
     parser.add_argument('--seed', type=int, default=0)
 
     args = parser.parse_args(sys.argv[1:])
     args.source_path = f"{args.source_path}/{args.dataset}/{args.subset}/{args.scene_name}"
-    
+
     print("Optimizing " + args.model_path)
     safe_state(args.quiet)
     seed_everything(args.seed)

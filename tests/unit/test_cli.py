@@ -66,13 +66,43 @@ def test_cli_runs_complete_local_workspace_workflow(
     assert status == 0
     assert not error
     methods = json.loads(output)
-    assert {item["name"] for item in methods} == {
+    method_names = {item["name"] for item in methods}
+    required_methods = {
         "artgs",
         "artmodeling",
         "reference_drawer",
         "scripted_drawer",
         "torch_bc",
+        "ransac_umeyama",
+        "usd_depth_scale",
+        "articulated_surface_icp",
+        "registered_artgs",
+        "rgbd_fusion",
+        "rgb_guided_fill",
+        "rigid_pair_fit",
+        "coacd",
+        "bounded_inverse_dynamics",
+        "measured_asset_assembly",
+        "openusd",
+        "mujoco_holdout",
+        "mujoco",
+        "joint_target",
+        "reference_asset_assembly",
+        "bounded_layout",
+        "collision_constraints",
+        "articulated_templates",
+        "joint_constraints",
+        "mujoco_joint_trajectory",
+        "joint_sequence",
+        "episode_dataset",
+        "episode_split",
+        "dino_wm",
+        "episode_telemetry",
+        "trajectory_diagnostics",
+        "failure_episodes",
     }
+    assert required_methods <= method_names
+    assert method_names <= required_methods | {"colmap", "act"}
 
     status, output, error = _invoke(
         capsys,

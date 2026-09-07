@@ -109,7 +109,7 @@ def eval_CD_2states(gt_path, pred_path, id_d_list, n_trials=1):
         print(f'CD_static_{state} {cd_s_2s[state]:.4f}', end=', ')
         for i in range(num_d_joints):
             cd_d_2s[state][i] /= n_trials
-            print(f'CD_dynamic_{state}_{i} {cd_d_2s[state][i]:.4f}', end=', ') 
+            print(f'CD_dynamic_{state}_{i} {cd_d_2s[state][i]:.4f}', end=', ')
         cd_w_2s[state] /= n_trials
         print(f'CD_whole_{state} {cd_w_2s[state]:.4f}')
     return cd_s_2s, cd_d_2s, cd_w_2s
@@ -120,7 +120,7 @@ def interpret_transforms(base_R, base_t, R, t, joint_type='revolute'):
     base_R, base_t, R, t are all from canonical to world
     rewrite the transformation = global transformation (base_R, base_t) {R' part + t'} --> s.t. R' and t' happens in canonical space
     R', t':
-    - revolute: R'p + t' = R'(p - a) + a, R' --> axis-theta representation; axis goes through a = (I - R')^{-1}t'
+    - revolute: R'p + t' = R'(p - a) + a; solve (I - R')a = t' perpendicular to its axis
     - prismatic: R' = I, t' = l * axis_direction
     """
     R = np.matmul(base_R.T, R)
@@ -130,11 +130,8 @@ def interpret_transforms(base_R, base_t, R, t, joint_type='revolute'):
         rotvec = Rotation.from_matrix(R).as_rotvec()
         theta = np.linalg.norm(rotvec, axis=-1)
         axis_direction = rotvec / max(theta, (theta < 1e-8))
-        try:
-            axis_position = np.matmul(np.linalg.inv(np.eye(3) - R), t.reshape(3, 1)).reshape(-1)
-        except:   # TO DO find the best solution
-            axis_position = np.zeros(3)
-        axis_position += axis_direction * np.dot(axis_direction, -axis_position)
+        from utils.joint_geometry import rotation_axis_position
+        axis_position = rotation_axis_position(R, t, axis_direction)
         joint_info = {'axis_position': axis_position,
                       'axis_direction': axis_direction,
                       'theta': np.rad2deg(theta),
@@ -229,7 +226,7 @@ def geodesic_distance(pred_R, gt_R):
     pred_R, gt_R = pred_R.cpu(), gt_R.cpu()
     R_diff = torch.matmul(pred_R, gt_R.T)
     cos_angle = torch.clip((torch.trace(R_diff) - 1.0) * 0.5, min=-1., max=1.)
-    angle = torch.rad2deg(torch.arccos(cos_angle)) 
+    angle = torch.rad2deg(torch.arccos(cos_angle))
     return angle
 
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -45,6 +45,7 @@ class BackendCapabilities:
     batch_execution: bool = False
     deterministic_reset: bool = True
     observation_keys: tuple[str, ...] = ()
+    observation_patterns: tuple[str, ...] = ()
     action_kinds: tuple[str, ...] = ()
 
 
@@ -52,6 +53,7 @@ class BackendCapabilities:
 class Frame:
     observations: Mapping[str, DataValue]
     state: Mapping[str, DataValue]
+    metadata: Mapping[str, JSONValue] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

@@ -1,0 +1,12 @@
+{
+  "source_uri": "https://github.com/huggingface/lerobot",
+  "revision": "b883328e6c95681ca90a18b102e4ae5e1f91e2bf",
+  "tag": "v0.3.3",
+  "source_file": "src/lerobot/policies/act/modeling_act.py",
+  "license": "Apache-2.0",
+  "changes": [
+    "Keep ACT and its neural-network helpers verbatim",
+    "Remove LeRobot policy wrapper and its unrelated training/runtime imports",
+    "Defer config annotations; platform supplies a validated configuration"
+  ]
+}

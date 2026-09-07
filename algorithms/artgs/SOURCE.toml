@@ -50,3 +50,23 @@ description = "修正 RGB 图像转换使用有符号 byte 导致的像素溢出
 [[adaptations]]
 id = "platform-source-root"
 description = "训练和渲染均接收平台物化的数据根目录，不依赖仓库内 data 符号链接。"
+
+[[adaptations]]
+id = "explicit-checkpoint-and-holdout"
+description = "按已发布迭代读取粗训练权重，导出固定最终迭代；所有训练阶段排除留出视角，关节真值不参与模型选择。"
+
+[[adaptations]]
+id = "continuous-heldout-rendering"
+description = "使用上游 interpolate 在实际留出相机渲染五个连续状态，无场景专用相机轨迹；运动组数按采集的可观测运动设置。"
+
+[[adaptations]]
+id = "foreground-quality-and-observed-motion"
+description = "增加真实前景掩码内 PSNR 和预测轮廓 IoU，避免背景掩盖重建误差；导出的起止运动幅度与机械关节极限分开表述。"
+
+[[adaptations]]
+id = "identifiable-joint-axis"
+description = "以带轴向约束的最小二乘替代必然奇异的 I-R 求逆；正确组合两次半程刚体变换，拒绝零运动轴；已提供的关节真值出错时不再静默跳过。"
+
+[[adaptations]]
+id = "portable-model-configuration"
+description = "模型配置统一读写 JSON，删除 eval/Namespace 文件兼容；几何包保存重载所需的网络和渲染配置，排除临时目录；形变权重按 weights_only 模式读取。"

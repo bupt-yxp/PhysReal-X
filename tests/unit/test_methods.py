@@ -66,7 +66,7 @@ def test_workspace_method_catalog_binds_exact_registered_descriptor(tmp_path: Pa
     platform = PhysRealX.open(tmp_path, discover_plugins=False)
     descriptor = builtin_method(
         MethodCapability.COLLISION_BUILD,
-        "coacd",
+        "custom_collision",
         input_contract="TriangleMesh",
         output_contract="CollisionGeometry",
     )
@@ -74,7 +74,7 @@ def test_workspace_method_catalog_binds_exact_registered_descriptor(tmp_path: Pa
 
     selected = platform.methods.bind(
         MethodCapability.COLLISION_BUILD,
-        "coacd",
+        "custom_collision",
         config={"threshold": 0.05},
     )
     assert selected.descriptor == descriptor
@@ -94,7 +94,11 @@ def test_optional_training_method_is_not_advertised_without_dependencies(
     assert "torch_bc" not in {item.name for item in platform.methods.list()}
 
 
-def test_default_catalog_does_not_advertise_candidate_adapters(tmp_path: Path) -> None:
+def test_default_catalog_does_not_advertise_candidate_adapters(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(platform_module, "create_colmap_adapter", lambda: None)
     platform = PhysRealX.open(tmp_path, discover_plugins=False)
     installations = platform.methods.installations()
     names = {item.descriptor.name for item in installations}
@@ -103,18 +107,23 @@ def test_default_catalog_does_not_advertise_candidate_adapters(tmp_path: Path) -
     assert names.isdisjoint(
         {
             "blenderproc",
-            "coacd",
             "colmap",
             "ditto",
             "lerobot_v3",
             "metric_alignment",
-            "mujoco",
             "mujoco_sysid",
             "omni_dc",
-            "openusd",
             "ros2_control",
         }
     )
+    assert {
+        "ransac_umeyama",
+        "rgb_guided_fill",
+        "rigid_pair_fit",
+        "coacd",
+        "mujoco",
+        "openusd",
+    } <= names
     assert all(item.executable for item in installations)
 
 
@@ -217,7 +226,7 @@ def test_metadata_only_method_cannot_be_executed(tmp_path: Path) -> None:
     platform = PhysRealX.open(tmp_path, discover_plugins=False)
     descriptor = builtin_method(
         MethodCapability.COLLISION_BUILD,
-        "coacd",
+        "custom_collision",
         input_contract="VisualMesh/1",
         output_contract="CollisionGeometry/1+CollisionBuildReport/1",
     )
@@ -228,9 +237,9 @@ def test_metadata_only_method_cannot_be_executed(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ResourceNotFoundError, match="metadata only"):
-        platform.assets.build_collision(source, method="coacd")
+        platform.assets.build_collision(source, method="custom_collision")
 
-    installation = platform.methods.inspect(MethodCapability.COLLISION_BUILD, "coacd")
+    installation = platform.methods.inspect(MethodCapability.COLLISION_BUILD, "custom_collision")
     assert not installation.executable
     assert not installation.ready
 

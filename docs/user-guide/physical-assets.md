@@ -1,93 +1,103 @@
 # 物理可信资产构建
 
-本模块将米制视觉几何和关节模型转换为可供仿真与训练使用的物理资产。视觉几何、碰撞几何和物理参数必须分层保存，不能互相替代。
+本模块将米制视觉网格、关节结构、逐刚体测量和逐关节辨识结果组装成可运行资产，再分别验证 USD 序列化与真实动力学。
 
-## 完成目标
-
-```text
-视觉几何与关节 → 碰撞代理 → 物性辨识 → 完整资产组装 → OpenUSD → 物理验证
+```bash
+python -m pip install -e '.[physical]'
 ```
 
-资产状态按证据强度区分：`prior` 表示工程先验，`identified` 表示通过实测辨识，`validated` 表示在独立留出实验中通过验证。
+阶段输入均为已经写入当前制品库的 `ArtifactRef`。所有数值必须明确单位、来源与不确定度，缺失物性不会自动补默认值。
 
-## 1. 构建碰撞几何
+## cabinet2 的显式先验路径
+
+模块二使用 `reference_asset_assembly`：读取 USD 完整部件/关节，逐 link 构建 CoACD 碰撞体，明确给出密度、摩擦、恢复系数、阻尼、关节摩擦和作用力上限。质量从封闭视觉体积与指定密度计算，惯量为包围盒近似，全部保持 `source=default / confidence=0 / evidence_state=prior`。
+
+相邻导轨接触由关节模型表示时，显式记录 `contact_exclusions`；MuJoCo 和 USD FilteredPairsAPI 使用同一排除关系，外部推杆碰撞保持开启。原始非流形 CAD 若需要 CoACD 修复，必须显式选择 `preprocessing="coacd"`，输出几何与体积误差仍受检查。没有把修复网格或模型先验当作独立测量。
+
+下列独立辨识/组装路径仍可使用真实测量，不能由当前先验包自行提供其验收真值。
+
+## 1. 逐 link 碰撞构建
 
 ```python
-collision_operation = px.assets.build_collision(
+collision = px.assets.build_collision(
     visual_mesh,
-    method=collision_method,
-    config={"source_unit": "m", "link": "drawer"},
+    method="coacd",
+    config={"source_unit": "m", "link": "drawer", "threshold_m": 0.005},
 )
+collision_report = next(o.artifact for o in collision.outputs if o.name == "collision_build_report")
 ```
 
-碰撞构建方法从每个 link 的视觉 Mesh 生成近似凸碰撞体。报告必须绑定输入 Mesh 制品、单位、link
-名称和输出 GLB 制品；碰撞体只用于物理解算，不应覆盖高质量视觉几何。CoACD 是候选实现，
-当前发行版未注册该方法。
+输入为自包含 GLB、PLY 或 OBJ。每个部件必须封闭、绕序一致且具有正体积；CoACD 在米制阈值下分解，已凸的部件直接保留。输出验证凸性、体积偏差、部件数量和 GLB 重读。几何须已转换到相应 link 的局部坐标；算法不从图像猜测尺度。
 
-验收关注凸部件数量、体积偏差、表面距离、穿模和目标后端的加载稳定性。非封闭或自交 Mesh 应先修复或使阶段失败。
-
-## 2. 辨识关节物性
+## 2. 关节物性辨识
 
 ```python
-physics_operation = px.assets.calibrate_physics(
-    system_identification_evidence_ref,
-    method=physics_method,
+identified = px.assets.calibrate_physics(
+    identification_evidence,
+    method="bounded_inverse_dynamics",
 )
+joint_physics = next(o.artifact for o in identified.outputs if o.name == "identified_joint_physics")
 ```
 
-系统辨识输入至少包含实测时间戳、`q`、`qdot`、控制量或等效力/力矩、训练—留出切分和采集批次。
-候选实现可使用 MuJoCo 前向模型与有界优化恢复单关节等效惯量、阻尼和摩擦；当前发行版没有
-注册该适配器，也不会猜测 link 质量。
+输入 JSON 对应 `physrealx.integrations.physics.JointIdentificationEvidence`，Schema 为 `physrealx.joint-system-identification-evidence/1`：
 
-以下情况必须返回 `NOT_IDENTIFIABLE`：激励不足、设计矩阵退化、参数触边、多初值不收敛、置信区间无界，或留出误差没有显著优于工程先验。
+- `joint_name`、`joint_type`（`slide` / `hinge`）；
+- `train`、`holdout`：不同采集的 NPY 制品，各列为 `time, q, qdot, qddot, force`；
+- `train_capture_id`、`holdout_capture_id`：独立采集身份；
+- `position_unit` 为 `m` / `rad`，`force_unit` 为 `N` / `N*m`；
+- `gravity_compensated=True`：输入作用量已去除已知重力项；
+- `prior_parameters`：对照先验的惯量、黏性阻尼、库仑摩擦。
 
-## 3. 组装完整资产
+方法检查时序和运动学一致性，剔除近静止区间后求解有界线性逆动力学。退化激励、触边、置信区间过宽或独立验证没有改善时拒绝发布。置信区间基于独立同方差作用量残差；该方法不处理接触耦合、未知重力、柔性或迟滞。
 
-资产组装将以下证据合并为 `AssetAssemblyBundle/1`：
-
-- 米制相机与坐标变换；
-- 每个 link 的视觉和碰撞几何；
-- 已验证的部件层级、关节类型、轴、原点和限位；
-- 每个刚体的质量、质心、惯量、摩擦与恢复系数；
-- 每个关节的阻尼、摩擦、刚度和来源证据；
-- 材质、单位、坐标轴及全部制品闭包。
-
-核心仓库当前不附带资产组装方法。项目必须安装并注册声明 `asset.assemble` 能力的方法，再通过
-显式配方执行；单关节辨识结果不能冒充全资产物性。
-
-## 4. 封装 OpenUSD
+## 3. 完整资产组装
 
 ```python
-usd_operation = px.assets.package(
-    assembly_ref,
-    method=package_method,
+from physrealx.integrations.assembly import AssetAssemblyInput
+
+assembly_input = AssetAssemblyInput(
+    resource_id="cabinet.asset",
+    version="1.0.0",
+    display_name="Cabinet",
+    camera_rig=metric_camera,
+    articulation=articulation_model,
+    collision_reports=tuple(per_link_collision_reports),
+    body_physics=measured_body_physics,
+    joint_physics=tuple(per_joint_identification_results),
+)
+assembled = px.assets.assemble(
+    px.artifacts.put_json(assembly_input),
+    method="measured_asset_assembly",
+)
+assembly = next(o.artifact for o in assembled.outputs if o.name == "asset_assembly")
+```
+
+`body_physics` 的 Schema 是 `physrealx.identified-body-physics/1`，包含 `status="IDENTIFIED"`、`evidence_state="identified"` 和每个 link 的 `bodies`。每项需提供：
+
+- `link`、`evidence_artifact_id`、`center_of_mass_m`、完整 `inertia_kg_m2`；
+- `mass_kg`、`static_friction`、`dynamic_friction`、`restitution`；
+- 每个标量含 `value`、`unit`、`uncertainty`、`confidence`、`source`（`measured` / `inferred`），以及对应的 `evidence_artifact_id`。
+
+组装要求全部 link 同时具有视觉/碰撞几何、全部刚体物性、全部可动关节辨识结果。惯量须正定且满足物理三角不等式。单关节等效惯量仅保留为验证证据，不替代刚体质量或惯量张量。
+
+输出 `AssetAssemblyBundle/1` 内含统一的 `asset_spec` 和证据闭包，可用 `AssetSpec.model_validate(...)` 读取后通过 `px.assets.register(...)` 发布。资产保持 `identified`，序列化不会把它提升为 `validated`。
+
+## 4. USD 封装与物理验收
+
+```python
+packaged = px.assets.package(assembly, method="openusd")
+package_manifest = next(o.artifact for o in packaged.outputs if o.name == "asset_package_manifest")
+physical_validation = px.assets.validate_physics(
+    package_manifest,
+    independent_validation_evidence,
+    method="mujoco_holdout",
 )
 ```
 
-候选 OpenUSD 方法只接受尺度已解析、几何闭包完整且物性已辨识或验证的组装资源。输出包含自包含
-USD、资产清单和往返校验报告；所有 prim target、引用、关节单位和物性值必须能够重新打开并与输入一致。
+USD 输出自包含 USDZ（含纹理与已绑定高斯模型） 和逐字段重读报告。任意关节轴通过关节局部旋转表示；转动关节限位转为 USD 的角度单位。通用 USD Physics 没有库仑关节摩擦字段，该值明确保存于 `physrealx:coulombFriction` 自定义属性，其他引擎导入器须显式处理。
 
-## 5. 物理验证
+`PhysicalValidationEvidence` 位于 `physrealx.integrations.validation`：它绑定精确 `package_manifest`、第三份独立 `capture_id` 与 `trajectory`、单位及 `MujocoConfig`。NPY 列为时间、全部受控关节位置、速度、执行器力；采样间隔必须等于仿真控制周期。方法重读 USD 并核对完整资产，随后用该资产编译的 MuJoCo 模型回放作用量，检查全轨迹位置和速度 RMSE。
 
-至少执行：
+这是固定根节点、给定任务轨迹范围内的物理验证。MuJoCo 使用动态滑动摩擦及其接触求解模型；不能据此宣称全部接触材质或所有场景均与实物等价。USD 重读成功不能替代该物理报告，真实测量也不能由合成回归夹具代替。
 
-1. 静态放置和重力稳定性；
-2. 全关节范围运动与限位检查；
-3. 碰撞、穿模和接触响应检查；
-4. 真实轨迹在仿真中的留出回放；
-5. 质量、摩擦、阻尼与状态轨迹误差统计；
-6. 目标仿真后端的导入与最小交互探针。
-
-`px.assets.validate(asset_ref, profile="digital_twin")` 检查领域资产结构；真实物理一致性还必须由已安装验证方法产生不可变报告，渲染图不能替代定量证据。
-
-## 输出与验收
-
-| 产物 | 必须满足 |
-| --- | --- |
-| 碰撞几何 | 米制、逐 link、来源 Mesh 可追溯且误差达标 |
-| 物性结果 | 参数有范围、置信区间、证据引用和留出改进 |
-| 资产组装 | visual/collision/articulation/body/joint physics 闭包完整 |
-| USD 资产 | 自包含、可重开、单位正确、往返检查全部通过 |
-| 验证报告 | 固定协议、独立数据、失败证据和方法身份完整 |
-
-下一步进入[场景与任务生成](scenes-and-tasks.md)，将资产放入可执行任务。
+验证脚本参见仓库 `tests/integration/test_physical_pipeline.py`。该测试真实执行凸代理、组装、USDZ、MuJoCo、数据集、训练和评测，输入明确标为合成测试数据。

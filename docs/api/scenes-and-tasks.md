@@ -2,7 +2,7 @@
 
 场景明确组合机器人、物体和环境资产；任务绑定场景实体并声明观测、动作、初始条件、成功条件与
 终止条件。自然语言和生成器只能产生待校验草案，不能绕过公共模型直接执行。
-核心包提供注册服务和外部方法执行契约，不内置场景生成、语言编译或运动规划算法；下文的方法名是部署示例，不是已安装默认值。
+当前内置有界布局、开关关节模板和经过 MuJoCo 执行检查的轨迹方法。
 
 ## 场景
 
@@ -68,38 +68,17 @@ px.tasks.list() -> list[VersionedRef]
 
 ## 生成、编译与轨迹
 
-```python
-draft = px.scenes.generate(
-    {"domain": "kitchen", "seed": 2026, "asset_ids": ["cabinet2"]},
-    method="robocasa365",
-)
-scene_result = px.scenes.compose(
-    draft.outputs[0].artifact,
-    method="constraint_solver",
-)
-task_result = px.tasks.compile(
-    "打开柜门并把杯子放入柜体",
-    scene_ref,
-    method="bddl",
-)
-trajectory = px.trajectories.generate(
-    task_result.outputs[0].artifact,
-    method="curobo",
-)
-validation = px.tasks.validate(task_ref, method="task_probe")
-```
-
-| API | 能力 | 强制输出 |
+| API | 已实现方法 | 输出 |
 | --- | --- | --- |
-| `scenes.generate` | `scene.generate` | `scene_draft` |
-| `scenes.compose` | `scene.compose` | `scene_spec` + `constraint_report` |
-| `tasks.compile` | `task.compile` | `task_spec` |
-| `trajectories.generate` | `trajectory.generate` | `trajectory` + `planning_report` |
-| `tasks.validate` | `task.validate` | `validation_report` |
+| `scenes.generate` | `bounded_layout` | `scene_draft` |
+| `scenes.compose` | `collision_constraints` | `scene_spec` / `constraint_report` |
+| `tasks.compile` | `articulated_templates` | `task_spec` |
+| `tasks.validate` | `joint_constraints` | `validation_report` |
+| `trajectories.generate` | `mujoco_joint_trajectory` | `trajectory` / `planning_report` |
 
-生成结果是待发布制品；只有将其反序列化为公共 `SceneSpec` / `TaskSpec` 并通过
-`register` 后，才能被运行引用。LLM 只能生成结构化草案；平台仍会执行实体解析、Schema、
-可满足性、可达性、碰撞和冻结种子仿真检查。生成的 Python 代码不允许直接执行。
+请求与范围见[场景任务指南](../user-guide/scenes-and-tasks.md)。布局固定种子、几何边界和最大尝试次数；模板只支持明确开关意图，绑定具体实体/关节；轨迹通过真实 MuJoCo 检查初态、接触、跟踪与成功判据。
+
+生成结果经公共 `SceneSpec` / `TaskSpec` 校验与 `register` 后用于运行；运动验证不能由静态布局通过替代。
 
 ## 主要错误
 

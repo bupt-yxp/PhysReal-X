@@ -1,61 +1,43 @@
 # 数据集 API
 
-数据集是不可变 Episode 清单，不是目录别名。当前数据集由成功运行原子发布，用户通过服务读取
-清单，并通过运行服务加载经过 Schema 与引用验证的 Episode。
+`DatasetManifest` 是不可变 Episode 清单。`datasets.get(ref)` / `datasets.list()` 读取已登记数据；`runs.episodes(run)` 从制品存储加载并核对 Episode ID、来源运行、成败标签及完整时间线。
 
-## `datasets.get`
+## 合并与发布
 
-```python
-px.datasets.get(ref: VersionedRef) -> DatasetManifest
-```
-
-清单包含 Episode 记录、来源运行、观测/动作 Schema、总步数、创建时间和方法来源元数据；默认
-不加载高带宽 Episode 制品。
-
-## `datasets.list`
+`datasets.register(manifest)` 验证实际数组、dtype/shape、信号单位、时间戳与动作 Schema，原子登记。
 
 ```python
-px.datasets.list() -> list[VersionedRef]
-```
-
-## 加载 Episode
-
-```python
-episodes = px.runs.episodes(run)
-```
-
-每条记录必须包含与 Episode JSON 相同的稳定记录标识和制品引用。读取时平台重新验证时间线、
-信号模式、动作和终止语义。
-
-## 外部格式与快照
-
-```python
-normalized = px.datasets.ingest(
-    raw_mcap,
-    method="<installed-dataset-ingest-method>",
+collection = px.artifacts.put_json(
+    {
+        "schema": "physrealx.episode-collection/1",
+        "datasets": [
+            expert_dataset.model_dump(mode="json"),
+            failure_dataset.model_dump(mode="json"),
+        ],
+    }
 )
-snapshot = px.datasets.snapshot(
-    normalized.outputs[0].artifact,
-    method="dvc",
+operation = px.datasets.ingest(
+    collection,
+    method="episode_dataset",
+    config={"resource_id": "cabinet2.dataset", "version": "1.0.0"},
 )
 ```
 
-`datasets.ingest` 固定输出 `dataset` 和 `quality_report`；`datasets.snapshot` 固定输出
-`snapshot` 和 `snapshot_manifest`。两者都发布 `OperationManifest`，不原地修改 `DatasetManifest`。
+返回 `dataset`（DatasetBundle）和 `quality_report`。源数据集必须同 Schema；同 Episode 不能重复混入。原始成功和失败标签保持不变。
 
-| 能力 | 推荐方法 |
-| --- | --- |
-| `dataset.ingest` | 已安装的 LeRobot v3、RLDS 或 rosbag2/MCAP 适配器 |
-| `dataset.validate` | `episode_contract` |
-| `dataset.snapshot` | `dvc` |
+## 快照
 
-适配器必须发布新的不可变数据集或派生制品，并记录源引用、转换配置、代码版本和输出制品。
-训练切分按资产、场景与采集批次防泄漏，不能依赖文件顺序。
-核心仓库不附带 LeRobot 转换占位实现；示例中的尖括号必须替换为当前项目环境内
-已注册且自检通过的方法名。`raw_mcap` 也必须是已发布的版本化资源。
+```python
+dataset_bundle = next(item.artifact for item in operation.outputs if item.name == "dataset")
+snapshot_operation = px.datasets.snapshot(
+    dataset_bundle, method="episode_split", config={"seed": 2026}
+)
+```
 
-## 主要错误
+返回核心 `DatasetSnapshot` 与 `snapshot_manifest`，固定数据、代码源树、环境和 `split.train/validation/test`。真实采集按 capture_id，仿真按 scene/task/version/seed 分组；窗口不跨 Episode。快照载入时重新检查原始身份与分组交叉。
 
-- `ResourceNotFoundError`：数据集或其来源运行不存在；
-- `ArtifactIntegrityError`：Episode 制品缺失或声明大小不一致；
-- `DomainValidationError`：Episode、总步数、来源运行或信号 Schema 不一致。
+这是当前工作区的快照实现，没有 DVC、LeRobot/RLDS/MCAP 转换占位方法。规范 Episode 已保留面向 IL/RL/VLA/世界模型所需的语言任务引用、观测–动作–下一状态与终止信息；外部数据格式需真实导入适配器。
+
+## 专家训练与反馈补充
+
+`datasets.training_subset(snapshot, resource_id=..., required_tag="expert_demonstration", augmentations=(recovery_dataset,))` 发布成功专家训练集。补充数据必须有相同观测/动作 Schema、通过数据质量检查且无重复 Episode；即使重新生成了 Episode ID，也不能与原 validation/test 的采集或场景–任务–种子分组重叠。

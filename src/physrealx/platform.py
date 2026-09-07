@@ -17,6 +17,7 @@ from physrealx.contracts import ArtifactStore, MethodExecutionOutput, Repository
 from physrealx.digital_twin import (
     AssetValidationProfile,
     AssetValidationReport,
+    ObservationSetManifest,
     SourceInspection,
 )
 from physrealx.domain import (
@@ -45,7 +46,11 @@ from physrealx.errors import (
     ResourceNotFoundError,
     SourcePackageError,
 )
+from physrealx.integrations.act import ACTPolicy, ACTTrainer
 from physrealx.integrations.artgs import ArtGSMethodAdapter
+from physrealx.integrations.colmap import create_colmap_adapter
+from physrealx.integrations.physical import register_physical_methods
+from physrealx.operation_validation import validate_operation_output
 from physrealx.plugins import PluginRegistry
 from physrealx.readiness import ReadinessService
 from physrealx.recipe_executor import RecipeExecutor
@@ -135,6 +140,10 @@ class PhysRealX:
         plugins = PluginRegistry()
         plugins.register_importer(ArtModelingImporter())
         plugins.register_adapter(ArtGSMethodAdapter())
+        colmap = create_colmap_adapter()
+        if colmap is not None:
+            plugins.register_adapter(colmap)
+        register_physical_methods(plugins, artifacts)
         plugins.register_backend(ReferenceDrawerBackend())
         plugins.register_policy(
             ScriptedDrawerPolicy.descriptor,
@@ -146,6 +155,11 @@ class PhysRealX:
                 TorchBehaviorCloningPolicy.descriptor,
                 lambda config: TorchBehaviorCloningPolicy(config, artifacts),
             )
+            if find_spec("torchvision") is not None and find_spec("einops") is not None:
+                plugins.register_trainer(ACTTrainer(artifacts))
+                plugins.register_policy(
+                    ACTPolicy.descriptor, lambda config: ACTPolicy(config, artifacts)
+                )
         return plugins
 
     def _register_asset(self, spec: AssetSpec) -> VersionedRef:
@@ -173,13 +187,23 @@ class PhysRealX:
         config: Mapping[str, JSONValue],
     ) -> VersionedRef:
         try:
-            return self.repository.get_resource(
-                ResourceType.OBSERVATION_SET.value,
-                resource_id,
-                version,
+            existing = self.repository.get_resource(
+                ResourceType.OBSERVATION_SET.value, resource_id, version
             )
         except ResourceNotFoundError:
             pass
+        else:
+            manifest = self._load_registered(existing, ObservationSetManifest)
+            if (
+                manifest.source_uri != source.expanduser().resolve().as_uri()
+                or manifest.importer != importer
+                or manifest.metadata.get("import_config") != dict(config)
+            ):
+                raise ResourceConflictError(
+                    "observation version already exists with a different or unaudited import "
+                    "configuration; use a new explicit version"
+                )
+            return existing
         adapter = self.plugins.importer(importer)
         try:
             manifest = adapter.ingest(
@@ -450,22 +474,7 @@ class PhysRealX:
         if any(not self.artifacts.verify(item.artifact) for item in result.outputs):
             raise MethodExecutionError("method adapter returned unpublished or invalid artifacts")
         for requirement, output in zip(resolved.outputs, result.outputs):
-            if (
-                requirement.media_types
-                and output.artifact.media_type not in requirement.media_types
-            ):
-                raise MethodExecutionError(
-                    f"method output {output.name!r} uses media type "
-                    f"{output.artifact.media_type!r}; expected one of "
-                    f"{requirement.media_types!r}"
-                )
-            if (
-                requirement.max_size_bytes is not None
-                and output.artifact.size_bytes > requirement.max_size_bytes
-            ):
-                raise MethodExecutionError(
-                    f"method output {output.name!r} exceeds its declared size limit"
-                )
+            validate_operation_output(self.artifacts, output, requirement)
 
         try:
             manifest = OperationManifest(

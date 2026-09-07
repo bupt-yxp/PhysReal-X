@@ -1,0 +1,11 @@
+{
+  "source_uri": "https://github.com/gaoyuezhou/dino_wm",
+  "revision": "0a9492fa12044b852ae9e001cc74604b79c8bb0c",
+  "source_file": "models/vit.py",
+  "license": "MIT",
+  "changes": [
+    "Move fixed CUDA mask to a device-following non-persistent registered buffer",
+    "Pass frame and patch counts as constructor dependencies instead of mutable module globals",
+    "Predictor architecture, causal attention, and forward computation retained"
+  ]
+}

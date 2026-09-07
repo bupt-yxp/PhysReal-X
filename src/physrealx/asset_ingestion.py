@@ -22,6 +22,7 @@ from physrealx.digital_twin import (
     SourceInspection,
     SourceIssue,
     SourceStreamSummary,
+    ViewAlignmentSpec,
 )
 from physrealx.domain import JSONValue, MethodCapability
 from physrealx.errors import ArtifactIntegrityError, DomainValidationError, SourcePackageError
@@ -34,7 +35,12 @@ _STREAM_LAYOUT: Final = (
     ("real/video", "video", ObservationStateRole.SEQUENCE),
 )
 _CALIBRATION_MARKERS: Final = ("calib", "intrinsic", "extrinsic", "camera_pose")
-_ALLOWED_CONFIG: Final = {"coordinate_frame", "depth_unit", "include_candidates"}
+_ALLOWED_CONFIG: Final = {
+    "coordinate_frame",
+    "depth_unit",
+    "include_candidates",
+    "view_alignment",
+}
 _MAX_NPY_HEADER_BYTES: Final = 65_536
 _TAKE_ID: Final = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")
 _PACKED_DEPTH_DTYPE: Final = re.compile(r"^[|<>=]S([1-9]\d*)$")
@@ -109,6 +115,34 @@ def _npy_sample_count(path: Path) -> int:
             f"packed depth NPY payload size does not match its header: {path}"
         )
     return sample_count
+
+
+def _view_alignment_specs(
+    value: JSONValue | None,
+    inspection: SourceInspection,
+) -> dict[str, ViewAlignmentSpec]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise SourcePackageError("view_alignment must map exact RGB stream names to policies")
+    valid_streams = {
+        stream.name for stream in inspection.streams if stream.modality is ObservationModality.RGB
+    }
+    unknown = sorted(set(value) - valid_streams)
+    if unknown:
+        raise SourcePackageError(
+            "view_alignment contains unknown or non-RGB streams",
+            details={"stream_names": cast(JSONValue, unknown)},
+        )
+    result: dict[str, ViewAlignmentSpec] = {}
+    for name, document in value.items():
+        if not isinstance(document, dict):
+            raise SourcePackageError(f"view_alignment[{name!r}] must be an object")
+        try:
+            result[name] = ViewAlignmentSpec.model_validate(document)
+        except ValueError as error:
+            raise SourcePackageError(f"view_alignment[{name!r}] is invalid: {error}") from error
+    return result
 
 
 def _source_snapshot(root: Path) -> dict[str, tuple[int, int, int, int]]:
@@ -379,6 +413,7 @@ class ArtModelingImporter:
                 "ArtModeling source package failed inspection",
                 details={"issue_codes": cast(JSONValue, codes)},
             )
+        view_alignments = _view_alignment_specs(config.get("view_alignment"), inspection)
         source_snapshot = _source_snapshot(root)
 
         used: set[Path] = set()
@@ -401,10 +436,11 @@ class ArtModelingImporter:
                     media_type=_media_type(depth_file),
                 )
                 depth_count = _npy_sample_count(depth_file)
+                rgb_stream_name = _stream_name(state, take_id, ObservationModality.RGB)
                 streams.extend(
                     (
                         ObservationStream(
-                            name=_stream_name(state, take_id, ObservationModality.RGB),
+                            name=rgb_stream_name,
                             modality=ObservationModality.RGB,
                             state=state,
                             role=role,
@@ -412,6 +448,10 @@ class ArtModelingImporter:
                             frame_count=len(rgb),
                             artifacts=rgb_artifacts,
                             coordinate_frame=coordinate_frame,
+                            view_alignment=view_alignments.get(
+                                rgb_stream_name,
+                                ViewAlignmentSpec(),
+                            ),
                             metadata={
                                 "take_id": take_id,
                                 "relative_directory": image_directory.relative_to(root).as_posix(),
@@ -480,6 +520,7 @@ class ArtModelingImporter:
                 "coordinate_frame": coordinate_frame,
                 "depth_unit": depth_unit,
                 "source_file_count": inspection.total_files,
+                "import_config": dict(config),
                 "source_total_bytes": inspection.total_bytes,
             },
         )

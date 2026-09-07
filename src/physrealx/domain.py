@@ -802,6 +802,26 @@ class BodyPhysicsSpec(DomainModel):
         )
         if first_minor <= 0 or second_minor <= 0 or determinant <= 0:
             raise ValueError("inertia tensor must be positive definite")
+        # A positive-definite tensor can still violate the moment triangle inequalities.
+        # The second-moment tensor (trace(I)/2) * identity - I must be positive semidefinite.
+        trace = sum(matrix[index][index] for index in range(3))
+        second_moment = tuple(
+            tuple(
+                (0.5 if row == column else 0.0) - matrix[row][column] / trace for column in range(3)
+            )
+            for row in range(3)
+        )
+        c = second_moment
+        minors = [c[i][i] for i in range(3)] + [
+            c[i][i] * c[j][j] - c[i][j] ** 2 for i in range(3) for j in range(i + 1, 3)
+        ]
+        minors.append(
+            c[0][0] * (c[1][1] * c[2][2] - c[1][2] ** 2)
+            - c[0][1] * (c[0][1] * c[2][2] - c[1][2] * c[0][2])
+            + c[0][2] * (c[0][1] * c[1][2] - c[1][1] * c[0][2])
+        )
+        if min(minors) < -1e-10:
+            raise ValueError("inertia tensor violates physical triangle inequalities")
         return self
 
 
@@ -819,6 +839,7 @@ class AssetSpec(DomainModel):
     geometries: tuple[GeometrySpec, ...]
     joints: tuple[JointSpec, ...] = ()
     physics: tuple[BodyPhysicsSpec, ...]
+    contact_exclusions: tuple[tuple[str, str], ...] = ()
     evidence_state: AssetEvidenceState = AssetEvidenceState.PRIOR
     evidence: tuple[ArtifactRef, ...] = ()
     metadata: dict[str, JsonValue] = Field(default_factory=dict)
@@ -852,6 +873,14 @@ class AssetSpec(DomainModel):
     @model_validator(mode="after")
     def validate_asset_graph(self) -> AssetSpec:
         links = set(self.links)
+        excluded_pairs = set()
+        for left, right in self.contact_exclusions:
+            if left not in links or right not in links or left == right:
+                raise ValueError("contact exclusions require two distinct asset links")
+            pair = tuple(sorted((left, right)))
+            if pair in excluded_pairs:
+                raise ValueError("contact exclusion pairs must be unique")
+            excluded_pairs.add(pair)
         if self.root_link not in links:
             raise ValueError("root_link must be present in links")
         if not any(item.role is GeometryRole.VISUAL for item in self.geometries):
@@ -1239,6 +1268,7 @@ class RunSpec(DomainModel):
     backend: MethodSpec
     policy: MethodSpec
     episode_count: int = Field(gt=0, le=1_000_000)
+    stop_on_success: bool = True
     base_seed: int = Field(ge=0, lt=2**63)
     dataset_id: str
     dataset_version: str

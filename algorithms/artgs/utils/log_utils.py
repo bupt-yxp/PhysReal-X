@@ -3,18 +3,18 @@
 # GRAPHDECO research group, https://team.inria.fr/graphdeco
 # All rights reserved.
 #
-# This software is free for non-commercial, research and evaluation use 
+# This software is free for non-commercial, research and evaluation use
 # under the terms of the LICENSE.md file.
 #
 # For inquiries contact  george.drettakis@inria.fr
 #
 
 import os
+import json
 from scene import Scene
 import uuid
 from piq import LPIPS
 lpips = LPIPS()
-from argparse import Namespace
 
 from torch.utils.tensorboard import SummaryWriter
 
@@ -30,8 +30,8 @@ def prepare_output_and_logger(args, use_tensorboard=True):
     # Set up output folder
     print("Output folder: {}".format(args.model_path))
     os.makedirs(args.model_path, exist_ok=True)
-    with open(os.path.join(args.model_path, "cfg_args"), 'w') as cfg_log_f:
-        cfg_log_f.write(str(Namespace(**vars(args))))
+    with open(os.path.join(args.model_path, "cfg_args.json"), 'w') as cfg_log_f:
+        json.dump(vars(args), cfg_log_f, sort_keys=True, allow_nan=False)
 
     if use_tensorboard:
         tb_writer = SummaryWriter(args.model_path)

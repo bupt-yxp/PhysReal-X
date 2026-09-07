@@ -45,3 +45,7 @@ venv/
 # Local example datasets and generated receipts
 /examples/real_assets_and_digital_twin/input/ArtModeling/
 /examples/*/output/
+
+# Workspace-local cache references; weights remain in the artifact store
+/examples/data_management_and_training/input/dinov2-encoder.json
+/examples/output/

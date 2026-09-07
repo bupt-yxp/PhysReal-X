@@ -168,7 +168,7 @@ _SERVICE_METHOD_CONTRACTS: dict[MethodCapability, _ServiceMethodContract] = {
                 schema_discriminator="physrealx.depth-enhancement-report/1",
             ),
         ),
-        input_kinds=("resource",),
+        input_kinds=("artifact",),
     ),
     MethodCapability.GEOMETRY_RECONSTRUCT: _ServiceMethodContract(
         "MetricMultiStateRGBDBundle/1",
@@ -213,7 +213,7 @@ _SERVICE_METHOD_CONTRACTS: dict[MethodCapability, _ServiceMethodContract] = {
                 schema_discriminator="physrealx.articulation-recovery-report/1",
             ),
         ),
-        input_kinds=("resource",),
+        input_kinds=("artifact",),
     ),
     MethodCapability.COLLISION_BUILD: _ServiceMethodContract(
         "VisualMesh/1",
@@ -258,7 +258,37 @@ _SERVICE_METHOD_CONTRACTS: dict[MethodCapability, _ServiceMethodContract] = {
                 schema_discriminator="physrealx.physics-identification-report/1",
             ),
         ),
-        input_kinds=("resource",),
+        input_kinds=("artifact",),
+    ),
+    MethodCapability.ASSET_ASSEMBLE: _ServiceMethodContract(
+        "AssetAssemblyInput/1",
+        ("evidence",),
+        (
+            _output(
+                "asset_assembly",
+                "AssetAssemblyBundle/1",
+                content_kind="json",
+                media_types=("application/json",),
+                max_size_bytes=64 * _MIB,
+                schema_discriminator="physrealx.asset-assembly-bundle/1",
+            ),
+        ),
+        input_kinds=("artifact",),
+    ),
+    MethodCapability.ASSET_VALIDATE: _ServiceMethodContract(
+        "AssetPackageManifest/1+PhysicalValidationEvidence/1",
+        ("package", "evidence"),
+        (
+            _output(
+                "physical_validation_report",
+                "PhysicalAssetValidationReport/1",
+                content_kind="json",
+                media_types=("application/json",),
+                max_size_bytes=64 * _MIB,
+                schema_discriminator="physrealx.asset-validation-report/1",
+            ),
+        ),
+        input_kinds=("artifact", "artifact"),
     ),
     MethodCapability.ASSET_PACKAGE: _ServiceMethodContract(
         "AssetAssemblyBundle/1",
@@ -268,7 +298,7 @@ _SERVICE_METHOD_CONTRACTS: dict[MethodCapability, _ServiceMethodContract] = {
                 "usd_asset_bundle",
                 "UsdAssetBundle/1",
                 content_kind="binary",
-                media_types=("model/vnd.usd+binary",),
+                media_types=("model/vnd.usdz+zip",),
                 max_size_bytes=8 * _GIB,
             ),
             _output(
@@ -288,7 +318,7 @@ _SERVICE_METHOD_CONTRACTS: dict[MethodCapability, _ServiceMethodContract] = {
                 schema_discriminator="physrealx.usd-roundtrip-validation-report/1",
             ),
         ),
-        input_kinds=("resource",),
+        input_kinds=("artifact",),
     ),
     MethodCapability.SCENE_GENERATE: _ServiceMethodContract(
         "SceneGenerationRequest/1",
@@ -375,6 +405,24 @@ _SERVICE_METHOD_CONTRACTS: dict[MethodCapability, _ServiceMethodContract] = {
         "ModelBundle/1",
         ("model",),
         (_output("model_registration", "ModelRegistration/1"),),
+    ),
+    MethodCapability.WORLD_MODEL_TRAIN: _ServiceMethodContract(
+        "DatasetSnapshot/1+PretrainedEncoder/1",
+        ("dataset", "encoder"),
+        (
+            _output(
+                "model",
+                "ModelBundle/1",
+                content_kind="json",
+                schema_discriminator="physrealx.world-model-bundle/1",
+            ),
+            _output(
+                "training_report",
+                "TrainingReport/1",
+                content_kind="json",
+                schema_discriminator="physrealx.training-report/1",
+            ),
+        ),
     ),
     MethodCapability.WORLD_MODEL_ROLLOUT: _ServiceMethodContract(
         "ModelBundle/1+ContextWindow/1+ActionSequence/1",
@@ -470,6 +518,33 @@ class AssetsService:
     def list_observations(self) -> builtins.list[VersionedRef]:
         return self._platform._list_resources(ResourceType.OBSERVATION_SET)
 
+    def import_reference(self, observations: VersionedRef, *, usd_path: str) -> ArtifactRef:
+        """Import supplied USD geometry and kinematics with explicit model provenance."""
+        from physrealx.integrations.usd_reference import import_usd_reference
+
+        return import_usd_reference(
+            self.get_observations(observations), self._platform.artifacts, usd_path=usd_path
+        )
+
+    def prepare_rgbd(
+        self,
+        observations: VersionedRef,
+        camera_rig: ArtifactRef,
+        *,
+        stride: int = 4,
+        max_frames_per_stream: int = 8,
+    ) -> ArtifactRef:
+        """Decode source RGB-D into arrays bound to the recovered metric views."""
+        from physrealx.integrations.capture_rgbd import prepare_rgbd_frames
+
+        return prepare_rgbd_frames(
+            self.get_observations(observations),
+            camera_rig,
+            self._platform.artifacts,
+            stride=stride,
+            max_frames_per_stream=max_frames_per_stream,
+        )
+
     def recover_cameras(
         self,
         observations: VersionedRef,
@@ -509,7 +584,7 @@ class AssetsService:
 
     def enhance_depth(
         self,
-        rgbd: VersionedRef,
+        rgbd: ArtifactRef,
         *,
         method: str | MethodSpec,
         config: Mapping[str, JSONValue] | None = None,
@@ -554,7 +629,7 @@ class AssetsService:
 
     def articulate(
         self,
-        pair: VersionedRef,
+        pair: ArtifactRef,
         *,
         method: str | MethodSpec,
         config: Mapping[str, JSONValue] | None = None,
@@ -582,7 +657,7 @@ class AssetsService:
 
     def calibrate_physics(
         self,
-        evidence: VersionedRef,
+        evidence: ArtifactRef,
         *,
         method: str | MethodSpec,
         config: Mapping[str, JSONValue] | None = None,
@@ -594,9 +669,40 @@ class AssetsService:
             config=config,
         )
 
+    def validate_physics(
+        self,
+        package: ArtifactRef,
+        evidence: ArtifactRef,
+        *,
+        method: str | MethodSpec,
+        config: Mapping[str, JSONValue] | None = None,
+    ) -> OperationManifest:
+        """Validate packaged physics against an independent measured trajectory."""
+        return self._platform.methods.execute(
+            MethodCapability.ASSET_VALIDATE,
+            method,
+            inputs={"package": package, "evidence": evidence},
+            config=config,
+        )
+
+    def assemble(
+        self,
+        evidence: ArtifactRef,
+        *,
+        method: str | MethodSpec,
+        config: Mapping[str, JSONValue] | None = None,
+    ) -> OperationManifest:
+        """Assemble all links and joints from explicit immutable measured evidence."""
+        return self._platform.methods.execute(
+            MethodCapability.ASSET_ASSEMBLE,
+            method,
+            inputs={"evidence": evidence},
+            config=config,
+        )
+
     def package(
         self,
-        asset: VersionedRef,
+        asset: ArtifactRef,
         *,
         method: str | MethodSpec,
         config: Mapping[str, JSONValue] | None = None,
@@ -995,6 +1101,15 @@ class DatasetsService:
     def list(self) -> list[VersionedRef]:
         return self._platform._list_resources(ResourceType.DATASET)
 
+    def register(self, manifest: DatasetManifest) -> VersionedRef:
+        """Publish an assembled or selected dataset after checking its actual episodes."""
+        from physrealx.integrations.datasets import validate_dataset
+
+        validate_dataset(self._platform.artifacts, manifest)
+        return self._platform._register(
+            manifest, manifest.reference(), "application/vnd.physrealx.dataset+json"
+        )
+
     def ingest(
         self,
         source: VersionedRef | ArtifactRef,
@@ -1021,6 +1136,28 @@ class DatasetsService:
             method,
             inputs={"dataset": dataset},
             config=config,
+        )
+
+    def training_subset(
+        self,
+        snapshot: ArtifactRef,
+        *,
+        resource_id: str,
+        version: str = "1.0.0",
+        augmentations: tuple[VersionedRef, ...] = (),
+        required_tag: str | None = None,
+    ) -> VersionedRef:
+        from physrealx.integrations.datasets import training_subset
+
+        return self.register(
+            training_subset(
+                self._platform.artifacts,
+                snapshot,
+                resource_id=resource_id,
+                version=version,
+                augmentations=augmentations,
+                required_tag=required_tag,
+            )
         )
 
 
@@ -1060,6 +1197,21 @@ class ModelsService:
 class WorldModelsService:
     def __init__(self, platform: PhysRealX) -> None:
         self._platform = platform
+
+    def train(
+        self,
+        dataset: ArtifactRef,
+        encoder: ArtifactRef,
+        *,
+        method: str | MethodSpec,
+        config: Mapping[str, JSONValue] | None = None,
+    ) -> OperationManifest:
+        return self._platform.methods.execute(
+            MethodCapability.WORLD_MODEL_TRAIN,
+            method,
+            inputs={"dataset": dataset, "encoder": encoder},
+            config=config,
+        )
 
     def rollout(
         self,

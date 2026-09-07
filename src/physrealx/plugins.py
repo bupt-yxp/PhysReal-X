@@ -209,9 +209,15 @@ class PluginRegistry:
 
     def backend(self, name: str) -> SimulationBackend:
         try:
-            return self._backends[name]
+            backend = self._backends[name]
         except KeyError as error:
             raise ResourceNotFoundError(f"simulation backend {name!r} is not registered") from error
+        probe = self._probe(backend)
+        if not probe.ready:
+            raise MethodUnavailableError(
+                f"simulation backend {name!r} is unavailable", details={"reason": probe.detail}
+            )
+        return backend
 
     def importer(self, name: str) -> ObservationImporter:
         try:
@@ -288,7 +294,7 @@ class PluginRegistry:
         return adapter
 
     @staticmethod
-    def _probe(adapter: MethodAdapter) -> MethodProbe:
+    def _probe(adapter: object) -> MethodProbe:
         probe_method = getattr(adapter, "probe", None)
         if not callable(probe_method):
             return MethodProbe(True, "in-process method adapter is registered")
@@ -316,7 +322,14 @@ class PluginRegistry:
                 ready=False,
                 detail="descriptor is registered without an executable adapter",
             )
-        adapter = self._adapters.get(key)
+        adapter: object = self._adapters.get(key)
+        if adapter is None:
+            if execution_kind == "simulation_backend":
+                adapter = self._backends.get(name)
+            elif execution_kind == "observation_importer":
+                adapter = self._importers.get(name)
+            elif execution_kind == "trainer":
+                adapter = self._trainers.get(name)
         probe = (
             self._probe(adapter) if adapter is not None else MethodProbe(True, "adapter is ready")
         )

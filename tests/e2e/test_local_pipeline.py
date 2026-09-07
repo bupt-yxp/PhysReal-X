@@ -150,3 +150,20 @@ def test_dataset_trains_and_evaluates_torch_policy(tmp_path: Path) -> None:
             run=reference_run(scene, incompatible_task, episode_count=1),
             episode_count=1,
         )
+
+
+def test_fixed_horizon_recording_has_the_same_semantics_on_reference_backend(tmp_path: Path):
+    platform = PhysRealX.open(tmp_path, discover_plugins=False)
+    asset = reference_asset()
+    scene = reference_scene(asset)
+    task = reference_task(scene)
+    platform.assets.register(asset)
+    platform.scenes.register(scene)
+    platform.tasks.register(task)
+    request = reference_run(scene, task, episode_count=1).model_copy(
+        update={"stop_on_success": False}
+    )
+    record = platform.runs.submit(request)
+    episode = platform.runs.episodes(record)[0]
+    assert episode.success
+    assert len(episode.steps) == task.max_steps + 1

@@ -1,131 +1,56 @@
 # 运行与数据生成 API
 
-运行服务编译场景、任务、仿真后端和策略方法，逐 Episode 执行并将合格结果原子发布为数据集。
-核心包不携带仿真、渲染或 Episode 转换的占位实现；本页中的方法参数必须指向
-当前工作区已安装且探针通过的真实适配器。
-
-## `runs.submit`
-
-```python
-px.runs.submit(spec: RunSpec) -> RunRecord
-```
-
-`RunSpec.backend` 必须是 `simulation.run` 能力的 `MethodSpec`，`RunSpec.policy` 必须是
-`policy.inference` 能力的 `MethodSpec`。方法配置保存在各自 `MethodSpec.config` 中，不维护第二套
-`backend_config` / `policy_config` 字段。
+`runs.submit(RunSpec) -> RunRecord` 同步执行已登记场景、任务、后端与策略。`runs.wait(run)` 读取终态 `RunResult`，`runs.get(run)` 读取运行记录，`runs.episodes(run)` 载入并验证不可变轨迹。
 
 ```python
 from physrealx import MethodCapability, RunSpec
 
 backend = px.methods.bind(
     MethodCapability.SIMULATION_RUN,
-    "<installed-simulation-method>",
-    config={"physics_dt": 0.002},
+    "mujoco",
+    config={
+        "controlled_joints": ["cabinet/gui_drawer_1.joint"],
+        "initial_positions": [0.0],
+        "effort_limits": [40.0],
+        "timestep_seconds": 0.002,
+        "substeps": 25,
+    },
 )
 policy = px.methods.bind(
-    MethodCapability.POLICY_INFERENCE,
-    "motion_planner",
+    MethodCapability.POLICY_INFERENCE, "joint_target", config={"target": [0.238]}
 )
-
-record = px.runs.submit(
+run = px.runs.submit(
     RunSpec(
         scene=scene_ref,
         task=task_ref,
         backend=backend,
         policy=policy,
-        episode_count=1000,
+        episode_count=4,
         base_seed=2026,
-        dataset_id="drawer.rollouts",
+        dataset_id="cabinet.simulation",
         dataset_version="1.0.0",
-        record_signals=("camera.front.rgb", "drawer.position"),
+        record_signals=("joint.position", "joint.velocity", "contact.force"),
     )
 )
+dataset = px.datasets.get(px.runs.wait(run).dataset)
 ```
 
-提交前平台解析场景和任务版本，核对方法描述符、检查点、观测信号与后端能力；运行 ID 相同且规格
-相同时返回原成功记录，不允许以相同身份改写任务。
+实际记录信号必须属于任务。后端配置固定在 MethodSpec 中；命令经有限增益、作用力限制后进入 MuJoCo，不直接改写物体状态。`passive_positions` 初始化未驱动关节，支持机器人与被动物体接触。
 
-## `runs.get` / `runs.wait`
+当前 MuJoCo 在一个状态上同步生成多相机 RGB/Depth/Mask/Event/点云/内外参及刚体位姿、外力/力矩，全部保留时间戳和语义标签。配置与信号表见[仿真指南](../user-guide/simulation-and-data-generation.md)。
 
-```python
-px.runs.get(run: str | RunRecord) -> RunRecord
-px.runs.wait(run: str | RunRecord) -> RunResult
+## 生命周期
+
+```text
+解析精确资源 → 能力/单位预检 → reset → 策略动作 / 真实物理步进 → close
+→ 核对 Episode 时间线/成败标签 → 原子发布 DatasetManifest
 ```
 
-当前执行器同步完成本地运行；`wait` 读取终态结果，非终态会明确失败，不以轮询或解析日志推断状态。
+末帧没有待执行动作；运行失败不发布不完整数据集。无论正常、异常或中断，策略/session/渲染器均关闭。同一 run_id 和规格返回原结果，身份相同但规格不同会报冲突。
 
-## `runs.episodes`
+`RunSpec.stop_on_success` 默认 `True`，满足任务成功条件后结束该 episode。
+采集世界模型的固定时长序列时可设为 `False`，继续到任务步数上限，并按末帧判断最终成功。
+后端自身终止、任务显式终止条件和截断仍立即生效；此选项不会覆盖这些停止条件。
+这一规则由运行编排层统一负责，MuJoCo 与 reference 后端保持一致。
 
-```python
-px.runs.episodes(run: str | RunRecord) -> tuple[Episode, ...]
-```
-
-平台从制品存储读取 Episode，重新验证清单引用及全部领域约束。每条 Episode 保留精确场景、任务、
-后端与策略方法、种子、时间线、信号 Schema、动作、结果和失败原因。
-
-## 物理轨迹与离线渲染
-
-`runs.submit` 用于策略在环仿真闭环；需要先生成物理状态轨迹、再离线生成多模态时，使用：
-
-```python
-simulation = px.simulations.run(
-    scene_ref,
-    task_ref,
-    method="<installed-simulation-method>",
-)
-trajectory = simulation.outputs[0].artifact
-
-render = px.renders.generate(
-    trajectory,
-    method="<installed-render-method>",
-)
-events = px.events.synthesize(
-    render.outputs[0].artifact,
-    method="<installed-event-method>",
-)
-points = px.pointclouds.project(
-    depth_artifact,
-    method="<installed-point-cloud-method>",
-)
-episode = px.episodes.pack(
-    trajectory,
-    method="<installed-episode-packer>",
-)
-```
-
-| API | 输出 |
-| --- | --- |
-| `simulations.run` | `state_trajectory` + `simulation_report` |
-| `renders.generate` | `render_streams` + `camera_metadata` |
-| `events.synthesize` | `event_stream` |
-| `pointclouds.project` | `point_cloud` |
-| `episodes.pack` | `episode_bundle` + `episode_manifest` |
-
-渲染方法必须消费 `state_trajectory`，不得重新执行物理。时间戳、相机参数和轨迹记录标识必须进入
-模态清单，否则 RGB、深度、接触和关节状态不具备同步证据。
-上述尖括号是部署方法名的占位说明，不是平台内置默认值。调用前应通过
-`px.methods.installations(...)` 查询实际部署，并校验输入资源的版本、Schema 与依赖闭包。
-
-## 外部执行证据闭包
-
-`ExecutionLifecycle` 不执行仿真器、渲染器或 Episode packer；它只校验已注册方法返回的真实制品
-证据。`StateTrajectoryEvidence` 与 `RenderStreamEvidence` 必须逐帧匹配 index、纳秒时间戳和
-state-frame 记录标识，packer 还必须绑定同一轨迹、渲染结果、场景、任务、方法和种子。通过后
-先得到 `VerifiedEpisodeBundle`，实际物化并校验引用后再聚合为 `VerifiedEpisodeCollection`
-(`physrealx.verified-episode-collection/1`, `FINALIZED`)；它是数据集就绪门禁唯一接受的
-`episodes` 上游契约。测试夹具中的方法名不表示仓库内置了相应方法。
-
-## 发布语义
-
-1. 每条 Episode 先写入标识符寻址制品，再写稳定记录标识；
-2. 信号集合、dtype、shape、单位和 frame 在 Episode 内必须稳定；
-3. 全部 Episode 完成后构建 `DatasetManifest` 并原子登记数据集引用；
-4. 失败运行保存稳定错误码，不发布不完整数据集；
-5. session、策略和临时资源在成功或异常路径均关闭。
-
-## 主要错误
-
-- `ResourceNotFoundError`：场景、任务、资产或方法不存在；
-- `ResourceConflictError`：制品引用、方法身份或运行身份冲突；
-- `DomainValidationError`：任务信号、能力、检查点或 Episode 语义不合法；
-- `BackendExecutionError`：后端 reset/step/close 失败。
+核心 `ExecutionLifecycle` 还支持校验外部离线物理轨迹与渲染证据，但它不代替引擎执行。当前集成多模态通过 `runs.submit` 完成；独立 simulations/renders/events/pointclouds/episodes 方法入口保留为扩展协议，没有注册未实现的方法名。

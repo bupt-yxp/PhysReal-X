@@ -3,7 +3,7 @@
 # GRAPHDECO research group, https://team.inria.fr/graphdeco
 # All rights reserved.
 #
-# This software is free for non-commercial, research and evaluation use 
+# This software is free for non-commercial, research and evaluation use
 # under the terms of the LICENSE.md file.
 #
 # For inquiries contact  george.drettakis@inria.fr
@@ -18,6 +18,7 @@ from random import randint
 from utils.loss_utils import l1_loss, ssim
 from gaussian_renderer import render
 from scene import Scene, GaussianModel, DeformModel
+from utils.system_utils import searchForMaxIteration
 from utils.general_utils import safe_state, get_linear_noise_func, vis_depth
 from argparse import ArgumentParser
 from arguments import ModelParams, PipelineParams, OptimizationParams
@@ -38,9 +39,12 @@ class Trainer:
         self.coarse_model_path = args.coarse_model_path or os.path.join(
             os.path.dirname(dataset.model_path), args.coarse_name
         )
+        self.coarse_iteration = searchForMaxIteration(os.path.join(self.coarse_model_path, 'point_cloud'))
+        if self.coarse_iteration is None:
+            raise FileNotFoundError('Coarse stage did not publish a numeric checkpoint')
 
         self.tb_writer = prepare_output_and_logger(args)
-        
+
         self.gaussians = GaussianModel(dataset.sh_degree)
         self.deform = DeformModel(self.dataset)
         print('Init GaussianModel and DeformModel.')
@@ -50,7 +54,7 @@ class Trainer:
             self.xyzs = self.gaussians.load_ply_cano(
                 os.path.join(
                     self.coarse_model_path,
-                    'point_cloud/iteration_10000/point_cloud.ply',
+                    f'point_cloud/iteration_{self.coarse_iteration}/point_cloud.ply',
                 )
             )
             print(f'Init canonical gaussians from {self.coarse_model_path}.')
@@ -68,10 +72,9 @@ class Trainer:
         self.iteration = 1 if self.scene.loaded_iter is None else self.scene.loaded_iter
 
         self.viewpoint_stacks = [self.scene.getTrainCameras_start(), self.scene.getTrainCameras_end()]
-        
+
         self.ema_loss_for_log = 0.0
-        self.best_iteration = 15000
-        self.best_joint_error = 1e10
+        self.best_iteration = args.iterations
         self.joint_metrics = []
 
         self.progress_bar = tqdm.tqdm(range(self.iteration-1, opt.iterations), desc="Training progress")
@@ -82,13 +85,13 @@ class Trainer:
         self.mono_depth_loss_weight = args.mono_depth_loss_weight
 
         self.depth_loss = DepthLoss()
-    
+
     def init_deform(self,):
         if self.args.center_init == 'cgs':
             center, scale = self.deform.deform.seg_model.init_from_file(
                 os.path.join(
                     self.coarse_model_path,
-                    'point_cloud/iteration_10000/center_info.npy',
+                    f'point_cloud/iteration_{self.coarse_iteration}/center_info.npy',
                 )
             )
             # import torch.nn as nn
@@ -106,7 +109,7 @@ class Trainer:
             print('Init center randomly.')
         self.deform.load_weights(self.dataset.model_path, iteration=-1)
         self.deform.train_setting(self.opt)
-    
+
     def train(self, iters=5000):
         for i in tqdm.trange(iters):
             self.train_step()
@@ -117,11 +120,11 @@ class Trainer:
         # Every 1000 its we increase the levels of SH up to a maximum degree
         if self.iteration % self.opt.oneupSHdegree_step == 0:
             self.gaussians.oneupSHdegree()
-            
+
         state = randint(0, 1)
         id = randint(0, len(self.viewpoint_stacks[state]) - 1)
         viewpoint_cam = self.viewpoint_stacks[state][id]
-        
+
         # Render
         random_bg = (not self.dataset.white_background and self.opt.random_bg_color) and viewpoint_cam.gt_alpha_mask is not None
         bg = self.background if not random_bg else torch.rand_like(self.background).cuda()
@@ -146,7 +149,7 @@ class Trainer:
             xt = self.gaussians.get_xyz.detach() + d_xyz
             cd, _ = chamfer_distance(xt[None], self.xyzs[state][None], single_directional=True)
             cd_loss = self.cd_loss_weight * cd
-            loss = loss + cd_loss   
+            loss = loss + cd_loss
             self.tb_writer.add_scalar('train/cd_loss', cd_loss.item(), self.iteration)
 
 
@@ -172,7 +175,7 @@ class Trainer:
 
         if self.iteration > 3000:
             loss = loss + self.deform.reg_loss
-        
+
         loss.backward()
         self.iter_end.record()
 
@@ -185,23 +188,17 @@ class Trainer:
             if self.iteration == self.opt.iterations:
                 self.progress_bar.close()
 
-            if self.iteration % 1000 == 0:
-                try:
-                    joint_types = self.deform.deform.joint_types[1:]
-                    pred_joint_list = self.deform.deform.get_joint_param(joint_types)
-                    gt_info_list = read_gt(os.path.expanduser(f'{args.source_path}/gt/trans.json'))
-                    self.joint_metrics, real_perm = eval_axis_and_state_all(pred_joint_list, joint_types, gt_info_list)
-                except:
-                    print('No ground truth info for joint evaluation.')
+            gt_path = os.path.join(self.args.source_path, 'gt', 'trans.json')
+            if self.iteration % 1000 == 0 and os.path.isfile(gt_path):
+                joint_types = self.deform.deform.joint_types[1:]
+                pred_joint_list = self.deform.deform.get_joint_param(joint_types)
+                gt_info_list = read_gt(gt_path)
+                self.joint_metrics, real_perm = eval_axis_and_state_all(pred_joint_list, joint_types, gt_info_list)
             # # Log and save
-            training_report(self.tb_writer, self.iteration, Ll1, depth_loss, mono_depth_loss, loss, 
+            training_report(self.tb_writer, self.iteration, Ll1, depth_loss, mono_depth_loss, loss,
                             self.iter_start.elapsed_time(self.iter_end), self.scene, self.joint_metrics)
-            if self.iteration % 100 == 0 and self.iteration > 15000:
-                cur_joint_error = sum([sum(m) for m in self.joint_metrics]) if len(self.joint_metrics) > 0 else 1e5
-                if cur_joint_error < self.best_joint_error or (self.iteration == self.args.iterations and self.best_iteration <= 15000):
-                    self.best_iteration = self.iteration
-                    self.best_joint_error = cur_joint_error
-                
+            # Export the declared final iteration; ground-truth test metrics
+            # never select or tune a training checkpoint.
             if self.iteration in self.saving_iterations:
                 print("\n[ITER {}] Saving Gaussians".format(self.iteration))
                 self.scene.save(self.iteration)
@@ -210,7 +207,7 @@ class Trainer:
                 print("\n[ITER {}] Saving Gaussians".format(self.iteration))
                 self.scene.save(self.iteration, is_best=True)
                 self.deform.save_weights(self.args.model_path, self.iteration, is_best=True)
-            
+
             # Keep track of max radii in image-space for pruning
             if self.gaussians.max_radii2D.shape[0] == 0:
                 self.gaussians.max_radii2D = torch.zeros_like(radii)
@@ -223,7 +220,7 @@ class Trainer:
                     size_threshold = 20 if self.iteration > self.opt.opacity_reset_interval else None
                     threshold = 0.01 if self.iteration > 3000 else 0.005
                     self.gaussians.densify_and_prune(self.opt.densify_grad_threshold, threshold, self.scene.cameras_extent, size_threshold)
-                
+
                 if self.iteration % self.opt.opacity_reset_interval == 0 or (
                         self.dataset.white_background and self.iteration == self.opt.densify_from_iter):
                     self.gaussians.reset_opacity()
@@ -235,7 +232,7 @@ class Trainer:
             self.deform.optimizer.step()
             self.deform.optimizer.zero_grad()
             self.deform.update_learning_rate(self.iteration)
-            
+
             self.deform.update(max(0, self.iteration))
 
         self.iteration += 1
@@ -253,7 +250,7 @@ if __name__ == "__main__":
     lp = ModelParams(parser)
     op = OptimizationParams(parser)
     pp = PipelineParams(parser)
-    
+
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
     parser.add_argument("--save_iterations", nargs="+", type=int, default=[5000, 20_000, 40_000, 60_000, 80_000])
     parser.add_argument("--quiet", action="store_true")

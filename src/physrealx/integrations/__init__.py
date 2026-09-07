@@ -2,18 +2,22 @@
 
 from physrealx.integrations.artgs import (
     ARTGS_DESCRIPTOR,
-    ArtGSInputFile,
-    ArtGSInputManifest,
     ArtGSMethodAdapter,
     ArtGSRunConfig,
-    package_artgs_input,
+)
+from physrealx.integrations.colmap import (
+    COLMAP_DESCRIPTOR,
+    ColmapMethodAdapter,
+    ColmapRunConfig,
+    create_colmap_adapter,
 )
 
 __all__ = [
     "ARTGS_DESCRIPTOR",
-    "ArtGSInputFile",
-    "ArtGSInputManifest",
+    "COLMAP_DESCRIPTOR",
     "ArtGSMethodAdapter",
     "ArtGSRunConfig",
-    "package_artgs_input",
+    "ColmapMethodAdapter",
+    "ColmapRunConfig",
+    "create_colmap_adapter",
 ]

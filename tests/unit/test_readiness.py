@@ -15,6 +15,9 @@ from physrealx.digital_twin import (
 )
 from physrealx.domain import (
     ArtifactRef,
+    AssetSpec,
+    JointSpec,
+    JointType,
     MethodCapability,
     MethodSpec,
     OperationSpec,
@@ -92,7 +95,14 @@ def _register_adapters(
 
 
 def _body_parameter(value: float, unit: str, evidence_artifact_id: str) -> dict[str, object]:
-    return {"value": value, "unit": unit, "evidence_artifact_id": evidence_artifact_id}
+    return {
+        "value": value,
+        "unit": unit,
+        "evidence_artifact_id": evidence_artifact_id,
+        "uncertainty": 0.001,
+        "confidence": 0.95,
+        "source": "measured",
+    }
 
 
 def _joint_parameter(value: float, unit: str) -> dict[str, object]:
@@ -172,6 +182,8 @@ _VALID_SEMANTIC_EVIDENCE: Mapping[LifecycleEvidenceKey, dict[str, object]] = {
     LifecycleEvidenceKey.VALIDATED_ASSET: {
         "schema": "physrealx.asset-validation-report/1",
         "status": "PASSED",
+        "physical_validation": True,
+        "validation_scope": "independent_physical_trajectory",
     },
     LifecycleEvidenceKey.EPISODES: {
         "schema": "physrealx.verified-episode-collection/1",
@@ -421,19 +433,24 @@ def _complete_roots(
     joint_document = semantic_documents[LifecycleEvidenceKey.IDENTIFIED_JOINT_PHYSICS]
     assert isinstance(body_document["bodies"], list)
     assert isinstance(joint_document["joint"], dict)
+    fixture_joint = JointSpec(
+        name="drawer_slide",
+        parent="base",
+        child="drawer",
+        joint_type=JointType.PRISMATIC,
+        axis=(1.0, 0.0, 0.0),
+        lower_limit=0,
+        upper_limit=0.5,
+        damping=0.7,
+        friction=0.24,
+    )
     full_physics = platform.artifacts.put_json(
         {
             "schema": "physrealx.identified-physics/1",
             "status": "IDENTIFIED",
             "evidence_state": "identified",
             "bodies": body_document["bodies"],
-            "joints": [
-                {
-                    **joint_document["joint"],
-                    "parameters": joint_document["parameters"],
-                    "evidence_artifact_id": joint_document["evidence_artifact_id"],
-                }
-            ],
+            "joints": [fixture_joint.model_dump(mode="json")],
         }
     )
     scale_evidence = platform.artifacts.put_bytes(
@@ -448,9 +465,53 @@ def _complete_roots(
         b"body-and-joint-measurements",
         media_type="application/octet-stream",
     )
+    fixture_asset = AssetSpec.model_validate(
+        {
+            "resource_id": "cabinet2.asset",
+            "version": "1.0.0",
+            "display_name": "Readiness fixture",
+            "root_link": "base",
+            "links": ["base", "drawer"],
+            "joints": [fixture_joint.model_dump(mode="json")],
+            "evidence_state": "identified",
+            "evidence": [camera_solution.model_dump(mode="json")],
+            "geometries": [
+                {
+                    "name": f"{link}.{role}",
+                    "link": link,
+                    "role": role,
+                    "representation": "mesh",
+                    "uri": f"artifact://{ref.artifact_id}",
+                }
+                for role, meshes in (("visual", visual_meshes), ("collision", collision_meshes))
+                for link, ref in meshes.items()
+            ],
+            "physics": [
+                {
+                    "link": body["link"],
+                    "center_of_mass_m": body["center_of_mass_m"],
+                    "inertia_kg_m2": body["inertia_kg_m2"],
+                    **{
+                        field: {
+                            key: body[field][key]
+                            for key in ("value", "uncertainty", "confidence", "source")
+                        }
+                        for field in (
+                            "mass_kg",
+                            "static_friction",
+                            "dynamic_friction",
+                            "restitution",
+                        )
+                    },
+                }
+                for body in body_document["bodies"]
+            ],
+        }
+    )
     roots[LifecycleEvidenceKey.ASSET_ASSEMBLY] = platform.artifacts.put_json(
         {
             "schema": "physrealx.asset-assembly-bundle/1",
+            "asset_spec": fixture_asset.model_dump(mode="json"),
             "resource_id": "cabinet2.asset",
             "version": "1.0.0",
             "metric_scale": {

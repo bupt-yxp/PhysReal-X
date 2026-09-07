@@ -1,90 +1,51 @@
-# 训练 API
+# 训练与世界模型 API
 
-训练服务消费不可变数据集，在已注册训练方法中执行，并发布带完整来源的模型清单。大型训练框架应
-通过项目可选依赖启用，未安装时不能成为核心包的导入依赖。
+## 策略
 
-## `training.submit`
-
-```python
-px.training.submit(spec: TrainingSpec) -> VersionedRef
-```
+`training.submit(TrainingSpec) -> VersionedRef` 验证冻结数据、训练方法与权重，实际训练后发布 `ModelManifest`。`training.get_model(ref)` / `training.list_models()` 读取已登记模型。
 
 ```python
 from physrealx import MethodCapability, TrainingSpec
 
-trainer = px.methods.bind(
-    MethodCapability.POLICY_TRAIN,
-    "torch_bc",
-    config={
-        "observation_signals": ["drawer.position", "drawer.velocity"],
-        "epochs": 80,
-        "learning_rate": 0.01,
-        "device": "cpu",
-        "seed": 17,
-    },
-)
-
-model = px.training.submit(
+model_ref = px.training.submit(
     TrainingSpec(
-        resource_id="drawer.bc",
+        resource_id="cabinet2.act",
         version="1.0.0",
-        dataset=dataset_ref,
-        trainer=trainer,
+        dataset=train_dataset,
+        trainer=px.methods.bind(
+            MethodCapability.POLICY_TRAIN,
+            "act",
+            config={"steps": 300, "device": "cuda", "seed": 2026},
+        ),
     )
 )
 ```
 
-提交时平台核对数据集版本、训练方法完整描述符与可选检查点，再将 Episode 流交给训练适配器。
-训练器不得改变输入动作 Schema，权重必须先进入制品存储，模型清单通过校验后才原子发布。
+`act` 执行官方 LeRobot CVAE/Transformer 网络；默认观察 camera.front.rgb、joint.position、joint.velocity，配置在 `ACTTrainConfig` 中验证。推理使用保存的权重、训练归一化与完整动作块。`torch_bc` 作为数值契约基线独立保留，不能冒充 ACT。
 
-## `training.get_model`
-
-```python
-px.training.get_model(model: VersionedRef) -> ModelManifest
-```
-
-`ModelManifest` 保存训练方法与推理方法 `MethodSpec`、数据集精确引用、权重制品、观测/动作
-Schema、规范化训练配置和有限指标。推理方法必须已在当前工作区注册。
-
-## `training.list_models`
+## 世界模型
 
 ```python
-px.training.list_models() -> list[VersionedRef]
-```
-
-## 外部模型登记与世界模型 rollout
-
-```python
-registration = px.models.register(model_ref, method="mlflow")
-rollout = px.world_models.rollout(
-    world_model_ref,
-    context_artifact,
-    action_sequence,
+trained = px.world_models.train(
+    snapshot_ref,
+    encoder_ref,
     method="dino_wm",
+    config={
+        "device": "cuda",
+        "history": 1,
+        "steps": 1800,
+        "training_horizon": 16,
+        "evaluation_horizon": 100,
+    },
+)
+model = next(item.artifact for item in trained.outputs if item.name == "model")
+prediction = px.world_models.rollout(
+    model, context_ref, actions_ref, method="dino_wm", config={"device": "cuda"}
 )
 ```
 
-`models.register` 产生与数据、代码、环境、配置、指标和权重制品绑定的登记证据；
-`world_models.rollout` 产生 `rollout` 和 `uncertainty` 制品。方法只能返回已声明的特征、
-视频、状态或价值输出，平台不伪造缺失模态。
+训练输出 `WorldModelBundle` 与 `TrainingReport`，沿核心 `TrainingLifecycle` 固定快照、代码、环境、编码器和实际 checkpoint。模型包与 ACT 的 `ModelManifest` 按用途区分，不重复定义数据快照。
 
-## 方法选择
+上下文为 `WorldModelContext(episode=EpisodeSummary, start_index=...)`；动作是 `WorldModelActions(values=..., interval_seconds=...)`。上下文只读取起点之前必要帧，检查动作维数、历史完整性、单位及频率，最多生成 128 步未来 RGB 与状态。输出名为 `rollout` 和 `uncertainty`；后者明确标记未校准。
 
-| 目标 | 能力方法 |
-| --- | --- |
-| 可执行契约/数值回归参考 | `torch_bc` |
-| 通用示范学习 | `lerobot_act`、`robomimic_bc` |
-| 多峰连续控制 | `diffusion_policy` |
-| 离散意图与连续动作 | `vqbet` |
-| GPU 强化学习 | `rsl_rl_ppo` |
-| 动作条件世界模型 | `dino_wm`、`irasim`、`dreamerv3`、`tdmpc2` |
-
-外部方法通过独立扩展包注册；是否可用以 `px.methods.list(...)` 为准。方法名称不能替代版本、源码、
-镜像、许可证、权重和配置证据。
-`torch_bc` 不是 LeRobot/ACT 或真机策略的替代实现，其结果不能作为机器人任务成功证据。
-
-## 主要错误
-
-- `ResourceNotFoundError`：数据集、训练方法或推理方法未注册；
-- `ResourceConflictError`：数据版本、方法描述符或输出模型身份冲突；
-- `DomainValidationError`：信号 Schema、检查点、权重或模型清单不符合契约。
+方法依赖按需安装到现有环境，权重不可变发布，训练结束后必须重载推理。配置和适配详情见[训练指南](../user-guide/data-management-and-training.md)。

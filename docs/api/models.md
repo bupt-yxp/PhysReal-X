@@ -94,11 +94,13 @@ ScalarParameter(
 | `resource_id` / `version` | 不可变观测集身份 |
 | `importer` / `importer_version` | 解析源包的插件及版本 |
 | `source_uri` | 源包位置，用于审计而非制品读取 |
-| `streams` | 模态、状态、角色、编码、帧数、单位、frame 和制品 |
+| `streams` | 模态、状态、角色、编码、帧数、单位、frame、视图对齐策略和制品 |
 | `attachments` | 标定、元数据、候选重建或候选仿真制品 |
 | `issues` | 预检中保留的结构化警告 |
 
 `ObservationStream.artifacts` 只允许一个打包制品，或与 `frame_count` 一致的逐帧制品。
+RGB 流的 `view_alignment` 显式区分 `natural_features` 与 `fiducial_assisted`。
+`FiducialSpec` 保存家族、静态 `layout_id` 以及可选的实测尺寸/布局 URI；非 RGB 流禁止声明该字段。
 
 ### `MethodRecipe`
 

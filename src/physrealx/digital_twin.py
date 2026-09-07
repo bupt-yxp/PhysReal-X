@@ -102,6 +102,49 @@ class ObservationStateRole(StrEnum):
     SEQUENCE = "sequence"
 
 
+class ViewAlignmentMode(StrEnum):
+    """Declared source evidence available for cross-view registration."""
+
+    NATURAL_FEATURES = "natural_features"
+    FIDUCIAL_ASSISTED = "fiducial_assisted"
+
+
+class FiducialSpec(DomainModel):
+    """Identity and optional metrology of one fiducial family."""
+
+    family: str
+    layout_id: str | None = None
+    marker_size_m: float | None = Field(default=None, gt=0.0)
+    layout_uri: str | None = None
+
+    @field_validator("family", "layout_id")
+    @classmethod
+    def validate_identifiers(cls, value: str | None, info: object) -> str | None:
+        if value is None:
+            return None
+        return _identifier(value, getattr(info, "field_name", "fiducial identifier"))
+
+    @field_validator("layout_uri")
+    @classmethod
+    def validate_layout_uri(cls, value: str | None) -> str | None:
+        return _uri(value) if value is not None else None
+
+
+class ViewAlignmentSpec(DomainModel):
+    """Per-stream alignment policy; never inferred from unrelated streams."""
+
+    mode: ViewAlignmentMode = ViewAlignmentMode.NATURAL_FEATURES
+    fiducial: FiducialSpec | None = None
+
+    @model_validator(mode="after")
+    def validate_mode(self) -> ViewAlignmentSpec:
+        if self.mode is ViewAlignmentMode.FIDUCIAL_ASSISTED and self.fiducial is None:
+            raise ValueError("fiducial-assisted alignment requires a fiducial specification")
+        if self.mode is ViewAlignmentMode.NATURAL_FEATURES and self.fiducial is not None:
+            raise ValueError("natural-feature alignment cannot declare a fiducial specification")
+        return self
+
+
 class SourceStreamSummary(DomainModel):
     name: str
     modality: ObservationModality
@@ -161,6 +204,7 @@ class ObservationStream(DomainModel):
     artifacts: tuple[ArtifactRef, ...]
     unit: str | None = Field(default=None, min_length=1, max_length=31)
     coordinate_frame: str | None = Field(default=None, min_length=1, max_length=127)
+    view_alignment: ViewAlignmentSpec | None = None
     metadata: dict[str, JsonValue] = Field(default_factory=dict)
 
     @field_validator("name", "state")
@@ -195,6 +239,8 @@ class ObservationStream(DomainModel):
             raise ValueError("a stream must use one packed artifact or one artifact per frame")
         if self.modality is ObservationModality.DEPTH and self.unit is None:
             raise ValueError("a depth stream requires an explicit unit")
+        if self.view_alignment is not None and self.modality is not ObservationModality.RGB:
+            raise ValueError("view_alignment is only valid for RGB streams")
         return self
 
 
@@ -307,6 +353,7 @@ __all__ = [
     "AssetValidationProfile",
     "AssetValidationReport",
     "AttachmentRole",
+    "FiducialSpec",
     "IssueSeverity",
     "ObservationModality",
     "ObservationSetManifest",
@@ -316,4 +363,6 @@ __all__ = [
     "SourceInspection",
     "SourceIssue",
     "SourceStreamSummary",
+    "ViewAlignmentMode",
+    "ViewAlignmentSpec",
 ]

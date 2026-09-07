@@ -1,114 +1,25 @@
-# 评测与真机反馈闭环
+# 评测与反馈闭环
 
-本模块先在冻结任务矩阵上评测模型，再逐级部署到真实机器人，保存可回放遥测、确认失败原因，并将确认样本发布为新的训练数据集版本。
+模块六从模块五的 ACT 权重开始，在独立仿真种子上评测，并对保留的真实 MuJoCo 失败轨迹执行遥测归档、诊断、样本回流和同初态再生成。
 
-## 完成目标
+## 评测和日志
 
-```text
-固定基准 → 离线回放 → shadow → 限速/限力 canary → 真机运行
-→ MCAP 留证 → 故障归因 → 定向数据集 → 再训练 → 全量回归
-```
+`evaluations.submit` 固定模型、场景、任务、后端和种子，使用重载权重实际控制引擎。`telemetry.record(..., method="episode_telemetry")` 消费指向数据集的 `RunEvidence`，重新读取原始 Episode 与 TaskSpec，计算目标误差、轨迹跟踪 RMSE、运动范围、作用力及采样接触峰值。
 
-核心仓库提供评测、部署安全和反馈证据契约，不附带可直接控制真实机器人的 ROS 2 方法。
-真实部署需要节点本地 Agent、硬件驱动、机器人规格和现场安全授权。
+归档接受已规范化为核心 Episode 的实机数据，但保留 `source=real` 与 capture_id。仿真记录保留 `source=simulator`；归档行为本身不是现场部署。外部机器人原始日志必须先提供真实 Schema、时钟、动作语义与相应导入适配器。
 
-## 1. 冻结独立评测
+## 失败回流
 
-```python
-report_ref = px.evaluations.submit(
-    resource_id="drawer.policy.heldout",
-    version="1.0.0",
-    model=model_ref,
-    run=heldout_run,
-    episode_count=200,
-    base_seed=100_000,
-)
+`failures.analyze(..., method="trajectory_diagnostics")` 检查记录中的接触异常、命令目标不符、动力学跟踪异常与进度不足，并给出相应检查或采集建议。它重新计算不可变轨迹指标，拒绝篡改后的遥测。
 
-report = px.evaluations.get_report(report_ref)
-```
+这些分类属于可观察症状；因果判断需要受控干预或独立测量。`feedback.build_dataset(..., method="failure_episodes")` 保留失败 Episode 的 ID、标签、来源和原始制品，同时输出再生成种子及关联关系。
 
-评测套件固定 Episode 顺序、输入记录标识、种子、超时、成功谓词和安全阈值。超时计为失败，
-每个 Episode 都必须产生证据；禁止筛选种子或只报告成功轨迹。
+模块六使用失败时相同的场景、任务、后端参数与种子，执行专家轨迹生成新的成功样本。原失败集不覆盖、不改标签。`datasets.training_subset(snapshot, augmentations=...)` 只接受成功专家示范，并拒绝任何与原 validation/test 场景分组重叠的补充数据。
 
-策略报告至少包含逐任务成功率及 Wilson 95% 置信区间、完成时间、碰撞/超力/越界、推理 p50/p95/p99 延迟和未见资产最差分组。世界模型还需报告多步状态误差、漂移、接触 F1、规划成功率和反事实动作敏感性；视觉指标只能作为辅助。
+模块六确实调用 `training.submit` 产生新的 ACT 权重；恢复数据和动作窗口调整共同记录，不能将改善单独归因于新增数据。最后使用未参加反馈的另一组相同种子配对比较新旧模型，验收物体目标、成功率、接触时间及峰值。
 
-实际 cabinet2 工程先验基线的普通/OOD 固定闭环成功率分别为 40% 和 48%。这是真实执行结果，但不等于真实 cabinet2 或真机评测。
+## 现场机器人边界
 
-## 2. 准备机器人与安全策略
+核心 `robot_agent.py` 保留机器人接口、安全约束、影子/受限执行和看门狗协议；当前仓库没有实际 ROS 2 硬件适配器，也未提供现场机器人、控制器配置或部署日志。因此 Notebook 不调用不存在的部署方法，亦不将推杆仿真和协议测试标为机械臂真机验收。
 
-部署输入至少包括：
-
-- URDF/SRDF、关节映射、控制器类型、单位和频率；
-- ros2_control 硬件接口与 MoveIt 2 配置；
-- 急停、watchdog、工作空间、关节、速度、力矩和末端力限制；
-- 模型观测/动作 Schema、归一化和推理延迟预算；
-- 统一时钟、TF 树、遥测主题和任务成功谓词。
-
-学习策略只输出期望动作或轨迹，不能绕过确定性安全监督器。
-
-## 3. 分级部署
-
-```python
-deployment = px.deployments.stage(
-    model_ref,
-    robot_interface_ref,
-    method=deployment_method,
-    config={"mode": "shadow"},
-)
-```
-
-该调用只生成 `DeploymentPlan/1` 和安全报告，不直接控制硬件。节点本地 Agent 使用租约、心跳和撤销执行计划并发布 `DeploymentRun/1`。状态只能按 `shadow → canary → active` 晋级；急停、心跳超时、陈旧/重放观测、NaN、越界动作或控制周期超时均应立即 fail-closed。
-
-## 4. 记录真机遥测
-
-```python
-telemetry = px.telemetry.record(
-    deployment_run_ref,
-    method=telemetry_method,
-)
-```
-
-`deployment_run_ref` 必须来自真实节点本地 Agent。MCAP 保存观测、动作、TF、控制器状态、诊断、接触/力、任务谓词和安全事件，并绑定 topic Schema、统一时钟、CRC、模型、机器人及部署计划。
-
-## 5. 分析并确认失败
-
-```python
-telemetry_bundle = next(
-    output.artifact for output in telemetry.outputs if output.name == "telemetry"
-)
-failure_report = px.failures.analyze(
-    telemetry_bundle,
-    method=failure_method,
-)
-```
-
-确定性规则优先分析传感/同步/标定、感知/姿态/语义、策略无进展/振荡、控制跟踪/超时、接触滑移/卡死/超力/碰撞、任务谓词与基础设施。每条记录包含原因码、发生区间、置信度和证据；无法确认时保留 `unknown`。
-
-视频或世界模型 critic 只能提供二级建议，结论需要规则或人工确认。
-
-## 6. 构建反馈数据集
-
-```python
-feedback_dataset = px.feedback.build_dataset(
-    confirmed_failure_query,
-    method=feedback_method,
-)
-```
-
-`confirmed_failure_query` 是由规则或人工确认的 `FailureQuery/1`，明确选择故障记录和证据区间。失败、OOD 和人工纠正数据生成新的不可变数据集版本，并保留父 Episode、模型、资产、任务及故障来源；禁止原地修改旧训练集。
-
-再训练只有在独立 failure holdout 改善、旧任务没有退化且安全回归通过时才能晋级。
-
-## 发布门禁
-
-1. 固定基准完整执行，全部失败均有证据；
-2. 模型与机器人 Schema、frame、频率和关节顺序一致；
-3. 急停、watchdog 与全部硬安全限制测试通过；
-4. 推理 p99 延迟低于控制周期，陈旧观测能触发停车；
-5. shadow 与 canary 没有关键安全事件；
-6. 遥测可完整回放，故障结论具有证据区间；
-7. 反馈训练通过独立 holdout 和原有全量回归。
-
-cabinet2 当前没有机器人规格、硬件接口、急停配置和真实 ROS2 遥测，因此真机阶段保持 `BLOCKED`。仿真策略权重或 Mock Agent 不能替代真实部署证据。
-
-完成本模块后，训练数据回到[数据管理与模型训练](data-management-and-training.md)，物性偏差回到[物理可信资产构建](physical-assets.md)。
+独立质量、摩擦/力觉测量、机器人规格与原始日志到位后，可沿已有物理校准和反馈契约接入；软件与仿真完成状态保持独立。见[功能验收](../acceptance.md)。
