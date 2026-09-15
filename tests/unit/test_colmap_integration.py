@@ -218,9 +218,11 @@ def _platform_with_fake_colmap(
     return platform
 
 
+@pytest.mark.parametrize("frame_budget", [3, None])
 def test_colmap_adapter_converts_observations_outputs_and_metrics(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    frame_budget: int | None,
 ) -> None:
     platform = _platform_with_fake_colmap(tmp_path, monkeypatch)
     observations = _observation_resource(platform)
@@ -228,7 +230,7 @@ def test_colmap_adapter_converts_observations_outputs_and_metrics(
     operation = platform.assets.recover_cameras(
         observations,
         method="colmap",
-        config={"max_frames_per_stream": 3, "random_seed": 7},
+        config={"max_frames_per_stream": frame_budget, "random_seed": 7},
     )
 
     assert operation.metrics == {
@@ -436,3 +438,50 @@ def test_pycolmap_aligns_streams_with_a_shared_fiducial_layout() -> None:
     assert alignments[0]["scale"] == pytest.approx(2.0)
     assert alignments[0]["inlier_ratio"] == 1.0
     assert alignments[0]["normalized_rmse"] == pytest.approx(0.0, abs=1e-12)
+
+
+@pytest.mark.parametrize("count", [33, 404, 4096])
+def test_all_camera_views_are_preserved(count):
+    from physrealx.integrations.colmap import _selected_indexes
+
+    config = ColmapRunConfig(max_frames_per_stream=None, min_registered_images=150)
+    assert _selected_indexes(count, config.max_frames_per_stream) == tuple(range(count))
+
+
+def test_all_camera_views_preserve_safety_limit():
+    from physrealx.errors import DomainValidationError
+    from physrealx.integrations.colmap import _selected_indexes
+
+    with pytest.raises(DomainValidationError, match="safety limit"):
+        _selected_indexes(4097, None)
+    assert len(_selected_indexes(5000, 32)) == 32
+    with pytest.raises(ValueError):
+        ColmapRunConfig(max_frames_per_stream=None, min_registered_images=4097)
+
+
+def test_sfm_seed_components_are_removed_without_dropping_independent_views():
+    from physrealx.integrations.colmap import _maximal_components
+
+    def component(identifier, names, error=0.5):
+        return _ComponentResult(
+            component_id=identifier,
+            cameras=(),
+            images=tuple({"name": name} for name in names),
+            sparse_point_count=25,
+            observation_count=75,
+            mean_track_length=3,
+            mean_reprojection_error_px=error,
+            fiducial_tracks=(),
+            files=(),
+        )
+
+    seed = component(0, ["a", "b"], 0.01)
+    full = component(1, ["a", "b", "c"])
+    duplicate = component(2, ["a", "b", "c"], 2)
+    independent = component(3, ["d", "e"])
+    overlapping = component(4, ["c", "f"])
+    assert _maximal_components((seed, duplicate, independent, full, overlapping)) == (
+        full,
+        independent,
+        overlapping,
+    )

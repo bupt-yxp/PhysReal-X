@@ -41,6 +41,8 @@ venv/
 /data/
 /logs/
 /runs/
+/workspace/
+/algorithms/dtart/weights/
 
 # Local example datasets and generated receipts
 /examples/real_assets_and_digital_twin/input/ArtModeling/

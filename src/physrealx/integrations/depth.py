@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import io
 import zipfile
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import Field, model_validator
 
@@ -25,6 +25,10 @@ from physrealx.integrations._artifacts import (
     read_json,
 )
 from physrealx.methods import builtin_method
+
+if TYPE_CHECKING:
+    import numpy as np
+    from numpy.typing import NDArray
 
 
 class DepthFrame(DomainModel):
@@ -88,29 +92,49 @@ def complete_depth(
     depth = np.asarray(depth, dtype=float)
     rgb = np.asarray(rgb, dtype=float)
     valid = depth > 0
-    weighted, weights = np.zeros_like(depth), np.zeros_like(depth)
-    low, high = np.full_like(depth, np.inf), np.full_like(depth, -np.inf)
-    height, width = depth.shape
+    missing_y, missing_x = np.nonzero(~valid)
+    if not len(missing_y):
+        return depth.astype(np.float32)
+    weighted = np.zeros(len(missing_y), dtype=float)
+    weights = np.zeros(len(missing_y), dtype=float)
+    low = np.full(len(missing_y), np.inf)
+    high = np.full(len(missing_y), -np.inf)
     r = config.radius
     padded_depth = np.pad(depth, r)
     padded_rgb = np.pad(rgb, ((r, r), (r, r), (0, 0)))
     for dy in range(-r, r + 1):
         for dx in range(-r, r + 1):
-            neighbor = padded_depth[r + dy : r + dy + height, r + dx : r + dx + width]
-            color = padded_rgb[r + dy : r + dy + height, r + dx : r + dx + width]
+            neighbor = padded_depth[missing_y + r + dy, missing_x + r + dx]
+            color = padded_rgb[missing_y + r + dy, missing_x + r + dx]
             support = neighbor > 0
-            weight = np.exp(-np.sum((rgb - color) ** 2, axis=2) / (2 * config.color_sigma**2))
+            color_delta = rgb[missing_y, missing_x] - color
+            weight = np.exp(-np.sum(color_delta**2, axis=1) / (2 * config.color_sigma**2))
             weight *= np.exp(-(dx * dx + dy * dy) / (2 * r * r)) * support
             weighted += weight * neighbor
             weights += weight
             low = np.minimum(low, np.where(support, neighbor, np.inf))
             high = np.maximum(high, np.where(support, neighbor, -np.inf))
-    fill = (~valid) & (weights > 1e-12) & ((high - low) <= config.max_neighbor_spread_m)
+    fill = (weights > 1e-12) & ((high - low) <= config.max_neighbor_spread_m)
     result = depth.copy()
-    result[fill] = weighted[fill] / weights[fill]
+    result[missing_y[fill], missing_x[fill]] = weighted[fill] / weights[fill]
     if require_complete and not (result > 0).all():
         raise MethodExecutionError("depth holes lack local support or cross a depth discontinuity")
     return result.astype(np.float32)
+
+
+def local_depth_range(
+    depth: object, radius: int
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Return positive-neighbor minima and maxima using a zero-copy window view."""
+    import numpy as np
+
+    depth = np.asarray(depth, dtype=float)
+    size = 2 * radius + 1
+    positive = np.pad(np.where(depth > 0, depth, np.inf), radius, constant_values=np.inf)
+    padded = np.pad(depth, radius)
+    low = np.lib.stride_tricks.sliding_window_view(positive, (size, size)).min(axis=(-2, -1))
+    high = np.lib.stride_tricks.sliding_window_view(padded, (size, size)).max(axis=(-2, -1))
+    return low, high
 
 
 class DepthEnhancementAdapter:
@@ -120,6 +144,7 @@ class DepthEnhancementAdapter:
         input_contract="CalibratedRGBDBundle/1",
         output_contract="EnhancedDepthBundle/1+DepthEnhancementReport/1",
         python=">=3.10,<3.13",
+        version="1.1.0",
     )
 
     def probe(self) -> MethodProbe:
@@ -175,17 +200,7 @@ class DepthEnhancementAdapter:
                 interior[:, [0, -1]] = False
                 # Evaluate small holes on locally continuous surfaces. Discontinuities
                 # remain unfilled, and their coverage is reported separately.
-                r = config.radius
-                padded = np.pad(depth, r)
-                low = np.full(depth.shape, np.inf)
-                high = np.zeros(depth.shape)
-                for dy in range(-r, r + 1):
-                    for dx in range(-r, r + 1):
-                        neighbor = padded[
-                            r + dy : r + dy + depth.shape[0], r + dx : r + dx + depth.shape[1]
-                        ]
-                        low = np.minimum(low, np.where(neighbor > 0, neighbor, np.inf))
-                        high = np.maximum(high, neighbor)
+                low, high = local_depth_range(depth, config.radius)
                 interior &= high - low <= config.max_neighbor_spread_m
                 available = np.flatnonzero(interior)
                 if len(available) < config.min_reference_pixels * 4:

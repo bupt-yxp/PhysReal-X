@@ -12,13 +12,13 @@
 
 ```python
 operation = px.tasks.compile(
-    "打开上方抽屉",
+    "打开烤箱门",
     scene_ref,
     method="articulated_templates",
     config={
-        "resource_id": "cabinet.open",
-        "entity": "cabinet",
-        "joint": "gui_drawer_1.joint",
+        "resource_id": "oven4.open",
+        "entity": "oven",
+        "joint": "e_door_197.joint",
         "target_fraction": 0.85,
         "max_steps": 100,
     },
@@ -32,10 +32,10 @@ operation = px.tasks.compile(
 接触任务在模板配置中增加 `actuation={"entity": "pusher", "joint": "extension", "initial_position": 0.0, "target_position": 0.195}`，
 并用 `initial_fraction` 声明被动物体初态。模板检查驱动实体的机器人角色、关节与作用力上限；
 `joint.position/velocity/effort` 描述驱动关节，成功谓词引用物体的具名关节观测。
-模块三 Notebook 给出推杆关闭下层抽屉的完整配置，避免把机器人命令完成误判为物体任务完成。
+模块三 Notebook 给出推杆关闭烤箱门的完整配置，避免把机器人命令完成误判为物体任务完成。
 
 ## 轨迹
 
 `trajectories.generate(..., method="mujoco_joint_trajectory")` 消费 `TaskInstance`，其中包含任务引用、`MujocoConfig` 与目标向量。采用五次平滑位置轨迹，逐步执行 MuJoCo，检查初态、跟踪误差、接触力及最终成功判据；缺少位置/接触观测、越界或超过任务时域时拒绝发布。
 
-模块四进一步执行直线推杆与被动抽屉接触、随机化及成功/失败样本扩展。更复杂机器人运动规划可以接入同一协议，但目前没有把未接入的 RoboCasa、BDDL 或 cuRobo 注册为可用方法。
+模块四进一步执行直线推杆与被动旋转门接触、随机化及成功/失败样本扩展。更复杂机器人运动规划可以接入同一协议，但目前没有把未接入的 RoboCasa、BDDL 或 cuRobo 注册为可用方法。

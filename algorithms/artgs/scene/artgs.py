@@ -96,10 +96,14 @@ class ArtGS(nn.Module):
         self.tau_decay_steps = args.tau_decay_steps
 
     @torch.no_grad()
+    def joint_rotation_degrees(self):
+        qr, _ = self.get_slot_deform()
+        _, theta = quaternion_to_axis_angle(qr[1:])
+        return theta.rad2deg().flatten()
+
+    @torch.no_grad()
     def cal_art_type(self):
-        qr, qd = self.get_slot_deform()
-        axis_dir, theta = quaternion_to_axis_angle(qr[1:])
-        theta = theta.rad2deg()
+        theta = self.joint_rotation_degrees()
         self.joint_types = ['s']
         self.joint_types += ['r' if t.item() > 10 else 'p' for t in theta]
         self.use_art_type_prior = True

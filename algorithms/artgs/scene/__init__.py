@@ -64,7 +64,8 @@ class Scene:
         
         if gaussians1 is not None:
             self.gaussians1 = gaussians1
-            self.gaussians1.create_from_pcd(scene_info.point_cloud, self.cameras_extent)
+            if init_with_random_pcd:
+                self.gaussians1.create_from_pcd(scene_info.point_cloud, self.cameras_extent)
     
 
     def save(self, iteration, is_best=False):

@@ -412,3 +412,25 @@ def test_missing_queries_do_not_conflate_absence_with_empty_results(tmp_path: Pa
         repository.list_episodes("missing")
     with pytest.raises(ResourceNotFoundError):
         repository.get_episode("missing", _EPISODE_ID)
+
+
+def test_export_verifies_all_files_before_replacing_existing_results(tmp_path):
+    store = LocalArtifactStore(tmp_path / "artifacts")
+    destination = tmp_path / "export"
+    payload = store.put_bytes(b"original")
+    result = store.export(destination, {"status": "old"}, files={"model.bin": payload})
+    old_index = (destination / "results.json").read_bytes()
+    assert old_index == store.get_bytes(result)
+    missing = payload.model_copy(update={"artifact_id": _artifact_id("missing")})
+    with pytest.raises(ResourceNotFoundError):
+        store.export(destination, {"status": "new"}, files={"model.bin": missing})
+    assert (destination / "results.json").read_bytes() == old_index
+    assert (destination / "model.bin").read_bytes() == b"original"
+    assert not list(destination.glob(".export-*"))
+
+
+@pytest.mark.parametrize("name", ["../escape", "/tmp/escape", "nested/file", "results.json", ".."])
+def test_export_rejects_unsafe_or_reserved_names(tmp_path, name):
+    store = LocalArtifactStore(tmp_path / "artifacts")
+    with pytest.raises(DomainValidationError):
+        store.export(tmp_path / "out", {}, files={name: store.put_bytes(b"content")})

@@ -16,11 +16,15 @@ def main() -> None:
     import numpy as np
     import torch
     from scipy.spatial import cKDTree
+    from scipy.spatial.transform import Rotation
+
+    from physrealx.reconstruction import joint_transform
 
     scene = import_module("scene")
     cameras = import_module("scene.cameras")
     renderer = import_module("gaussian_renderer")
     graphics = import_module("utils.graphics_utils")
+    quaternion_mul = import_module("utils.dual_quaternion").quaternion_mul
     root = Path(sys.argv[1])
     request = json.loads((root / "request.json").read_text())
     configuration = json.loads((root / "config.json").read_text())
@@ -56,16 +60,31 @@ def main() -> None:
             raise ValueError("registered Gaussian appearance has insufficient reference coverage")
         mask = model.deform.get_mask(gaussians.get_xyz, False).argmax(-1)
         moving = mask == request["moving_group"]
-        axis = torch.tensor(request["capture_axis"], device="cuda", dtype=torch.float32)
+        initial_points = gaussians.get_xyz + translations[0]
         for position in request["positions"]:
-            delta = moving[:, None] * (position - request["start_position"]) * axis
+            motion = joint_transform(
+                request["joint_kind"],
+                request["capture_axis"],
+                request["capture_origin"],
+                position - request["start_position"],
+            )
+            rotation = torch.tensor(motion[:3, :3], device="cuda", dtype=torch.float32)
+            shift = torch.tensor(motion[:3, 3], device="cuda", dtype=torch.float32)
+            delta = (initial_points @ rotation.T + shift - initial_points) * moving[:, None]
+            quaternion = Rotation.from_matrix(motion[:3, :3]).as_quat()[[3, 0, 1, 2]]
+            quaternion = torch.tensor(quaternion, device="cuda", dtype=torch.float32).expand(
+                len(moving), -1
+            )
+            posed_rotations = torch.where(
+                moving[:, None], quaternion_mul(quaternion, rotations[0]), rotations[0]
+            )
             image = renderer.render(
                 viewpoint,
                 gaussians,
                 Namespace(debug=False, compute_cov3D_python=False),
                 torch.zeros(3, device="cuda"),
                 translations[0] + delta,
-                rotations[0],
+                posed_rotations,
                 vis_mask=visible,
             )
             outputs["rgb"].append(
@@ -82,7 +101,7 @@ def main() -> None:
             "gaussians": len(mask),
             "moving_gaussians": int(moving.sum()),
             "rejected_background_gaussians": int((~visible).sum()),
-            "physical_motion_span_m": max(request["positions"]) - min(request["positions"]),
+            "physical_motion_span": max(request["positions"]) - min(request["positions"]),
             "foreground_pixels": int((np.stack(outputs["alpha"]) > 0.5).sum()),
         }
         (root / "diagnostics.json").write_text(json.dumps(diagnostics))

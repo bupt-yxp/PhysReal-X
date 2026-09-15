@@ -23,7 +23,7 @@ import matplotlib
 import numpy as np
 matplotlib.use('module://matplotlib_inline.backend_inline')
 from matplotlib import pyplot as plt
-from examples._common import show_rgbd, show_image_strip
+from examples._display import show_rgbd, show_image_strip
 figure, axis = plt.subplots()
 axis.plot([0, 1], [0, 1])
 image = io.BytesIO()
@@ -36,7 +36,7 @@ with TemporaryDirectory() as directory:
     rgb = np.zeros((8, 12, 3), dtype=np.uint8)
     depth = np.ones((8, 12), dtype=float)
     depth[0, :2] = [0, np.nan]
-    show_rgbd(rgb, depth, destination / 'depth.png')
+    show_rgbd(rgb, depth, destination / 'depth.png', mask=np.ones((8, 12), dtype=np.uint8))
     show_image_strip({'closed': rgb, 'open': rgb}, destination / 'motion.png')
     assert plt.get_fignums() == before
     assert all((destination / name).stat().st_size > 1000 for name in ('depth.png', 'motion.png'))

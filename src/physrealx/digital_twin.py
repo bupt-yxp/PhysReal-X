@@ -89,6 +89,7 @@ class SourceIssue(DomainModel):
 class ObservationModality(StrEnum):
     RGB = "rgb"
     DEPTH = "depth"
+    MASK = "mask"
     EVENT = "event"
     POINT_CLOUD = "point_cloud"
     FORCE_TORQUE = "force_torque"

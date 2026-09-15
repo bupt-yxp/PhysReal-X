@@ -10,8 +10,12 @@ python -m ipykernel install --sys-prefix --name physreal-x --display-name PhysRe
 
 同名 Conda 环境可能位于不同目录；Jupyter 右上角的 **PhysReal-X** 名称不足以确认环境。
 在 Notebook 中执行 `import sys; print(sys.executable, sys.version)`，核对其完整解释器路径与验收回执。
-2026-09-07 六模块验收使用 `/home/yxp/miniconda3/envs/PhysReal-X/bin/python`（Python 3.11.15）；
-`/mnt/9a3ba77c-153a-457f-81c6-ecac7abd9c22/yxp/conda-envs/PhysReal-X/bin/python`（Python 3.10.21）是另一套环境。
+验收以当前 Notebook 内核的 `sys.executable` 为准；Notebook、脚本和配置不得硬编码本机 Conda
+安装路径。
+
+更新 SDK 源码后也必须点击 **Restart（重启内核）→ 全部运行**。可编辑安装只让新导入读取最新文件，
+不会替换正在运行的内核中的旧类和已有实例。若磁盘源码有 `OperationManifest.output()`，
+当前对象却报没有 `output`，应先重启内核；重新打开 Notebook 或清除输出不等于重启。
 
 若出现 `AttributeError: 'RcParams' object has no attribute '_get'`，已复现的原因是
 Matplotlib 3.5.3 与 matplotlib-inline 0.2.2 不兼容。项目 Demo 与 ArtGS 现统一要求 Matplotlib ≥3.8。
@@ -114,3 +118,5 @@ physrealx doctor --strict
 在同一 Python 3.10–3.12 项目环境安装 `python -m pip install -e '.[physical]'`。该 extra 固定 NumPy 1.26.4、SciPy 1.13.1、Trimesh 4.5.1、CoACD 1.0.9、MuJoCo 3.3.7 与 usd-core 24.11。核心 SDK 的 Python 3.8–3.12 支持范围不变；ArtGS 的 CUDA/扩展条件仍需独立满足。
 
 无界面 RGB/Depth 渲染可在启动解释器前设置 `MUJOCO_GL=egl`；缺少可用图形驱动会明确失败。数值物理运行无需创建渲染器。
+
+MuJoCo 无窗口渲染使用 `PyOpenGL==3.1.10`。DTArt 的间接依赖 pyrender 采用官方固定提交 `a59963ef890891656fd17c90e12d663233dcaa99`，其 PyOpenGL 约束已放宽；避免旧发行版将环境降回缺少 EGL 类型的 3.1.0。

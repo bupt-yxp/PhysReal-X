@@ -58,10 +58,11 @@ class RegisteredGaussianRenderer:
         output_contract="RenderStreams/1+CameraMetadata/1",
         accelerator=MethodAccelerator.CUDA,
         python=">=3.10,<3.13",
+        version="1.1.0",
     ).model_copy(
         update={
             "source_uri": "https://github.com/YuLiu-LY/ArtGS",
-            "source_revision": "7c1f41be2cb8b96a.physrealx3",
+            "source_revision": "7c1f41be2cb8b96a.physrealx10",
             "license_spdx": "LicenseRef-ArtGS-Research-Only",
         }
     )
@@ -190,12 +191,22 @@ class RegisteredGaussianRenderer:
 
             trimesh = import_module("trimesh")
             reference_model = read_json(artifacts, reference, "physrealx.usd-reference/1")
+            from physrealx.integrations.usd_reference import reference_link_transforms
+
+            reference_joint = next(j for j in reference_model["joints"] if j["name"] == joint.name)
+            reference_poses = reference_link_transforms(
+                reference_model,
+                {
+                    j["name"]: start if j["name"] == joint.name else j["lower_limit"]
+                    for j in reference_model["joints"]
+                },
+            )
             samples = []
             for link in reference_model["links"]:
                 for mesh in load_meshes(artifacts, ArtifactRef.model_validate(link["geometry"])):
                     points = trimesh.sample.sample_surface(mesh, 10000, seed=config.seed)[0]
-                    if link["name"] == joint.child:
-                        points += np.asarray(joint.axis) * start
+                    link_pose = reference_poses[link["name"]]
+                    points = points @ link_pose[:3, :3].T + link_pose[:3, 3]
                     samples.append(points)
             np.save(root / "reference.npy", np.concatenate(samples), allow_pickle=False)
             with zipfile.ZipFile(io.BytesIO(artifacts.get_bytes(visual))) as archive:
@@ -212,8 +223,16 @@ class RegisteredGaussianRenderer:
                 "registration_translation": registration["translation_m"],
                 "max_surface_distance_m": config.max_surface_distance_m,
                 "start_position": start,
+                "joint_kind": reference_joint["joint_type"],
+                "capture_origin": (
+                    np.asarray(registration["rotation"]).T
+                    @ (
+                        np.asarray(reference_joint["origin_m"])
+                        - np.asarray(registration["translation_m"])
+                    )
+                ).tolist(),
                 "capture_axis": (
-                    np.asarray(registration["rotation"]).T @ np.asarray(joint.axis)
+                    np.asarray(registration["rotation"]).T @ np.asarray(reference_joint["axis"])
                 ).tolist(),
                 "moving_group": int(
                     next(
@@ -258,6 +277,7 @@ class RegisteredGaussianRenderer:
             "frame_indices": indices,
             "timestamps_seconds": timestamps,
             "recorded_joint_positions": positions,
+            "joint_position_unit": reference_joint["limit_unit"],
             "outside_observed_span": [
                 not min(start, end) <= q <= max(start, end) for q in positions
             ],

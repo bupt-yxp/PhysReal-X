@@ -23,10 +23,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final, Literal, NoReturn, Protocol
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from physrealx.contracts import ArtifactStore, MethodExecutionOutput, MethodProbe
 from physrealx.domain import (
+    ArtifactRef,
     DomainModel,
     JSONValue,
     MethodAccelerator,
@@ -42,11 +43,12 @@ from physrealx.domain import (
 from physrealx.errors import DomainValidationError, MethodExecutionError
 from physrealx.integrations.artgs_capture import ArtGSPreparedInput, prepare_artgs_capture
 from physrealx.integrations.rgbd import MetricRGBDInput
+from physrealx.reconstruction import ReconstructedPart, ReconstructionPrediction
 
 _BUNDLE_SCHEMA: Final = "physrealx.visual-geometry-bundle/1"
 _REPORT_SCHEMA: Final = "physrealx.geometry-reconstruction-report/1"
 _UPSTREAM_REVISION: Final = "7c1f41be2cb8b96abca13c6a9668dcf7e06d8c2a"
-_SOURCE_REVISION: Final = "7c1f41be2cb8b96a.physrealx3"
+_SOURCE_REVISION: Final = "7c1f41be2cb8b96a.physrealx10"
 _SOURCE_REVISION_LINE = re.compile(r'^revision\s*=\s*"([0-9a-f]{40})"\s*$', re.MULTILINE)
 _GENERATED_SOURCE_DIRECTORIES: Final = frozenset({"__pycache__", "build", "dist"})
 _GENERATED_SOURCE_SUFFIXES: Final = frozenset({".o", ".pyc", ".pyd", ".so"})
@@ -92,6 +94,8 @@ class ArtGSRunConfig(DomainModel):
     """Bound, finite ArtGS execution configuration."""
 
     num_slots: int = Field(ge=2, le=32)
+    joint_types: tuple[Literal["hinge", "slide"], ...] | None = None
+    reference_joint: str | None = Field(default=None, min_length=1)
 
     coarse_iterations: int = Field(default=10_000, ge=100, le=200_000)
     joint_iterations: int = Field(default=5_000, ge=100, le=100_000)
@@ -101,14 +105,27 @@ class ArtGSRunConfig(DomainModel):
     seed: int = Field(default=0, ge=0, le=2**31 - 1)
     max_stage_seconds: int = Field(default=86_400, ge=60, le=604_800)
     state_streams: tuple[str, str] | None = None
+    training_frames_per_state: int | None = Field(default=None, ge=2, le=2048, strict=True)
+    max_initial_points: int = Field(default=1_000_000, ge=4096, le=2_000_000, strict=True)
+    point_loss_weight: float = Field(default=100.0, ge=0.0, le=10_000.0)
     metric_depth_loss_weight: float = Field(default=1.0, ge=0.0, le=1_000.0)
     mono_depth_loss_weight: float = Field(default=0.0, ge=0.0, le=1_000.0)
+
+    @model_validator(mode="after")
+    def validate_joint_types(self) -> ArtGSRunConfig:
+        if self.joint_types is not None and len(self.joint_types) != self.num_slots - 1:
+            raise ValueError("joint_types must describe every non-root motion slot")
+        if self.reference_joint is not None and (
+            self.num_slots != 2 or not self.reference_joint.strip()
+        ):
+            raise ValueError("reference_joint requires one root and one moving slot")
+        return self
 
 
 ARTGS_DESCRIPTOR = MethodDescriptor(
     capability=MethodCapability.GEOMETRY_RECONSTRUCT,
     name="artgs",
-    version="2.1.0",
+    version="2.5.0",
     api_version="1",
     source_uri="https://github.com/bupt-yxp/PhysReal-X/tree/main/algorithms/artgs",
     source_revision=_SOURCE_REVISION,
@@ -172,6 +189,7 @@ class _ArtGSRunResult:
     mesh_paths: tuple[Path, ...]
     metrics: Mapping[str, float]
     evaluation_scope: Literal["held_out_views"]
+    stage_diagnostics: tuple[Path, ...] = ()
 
 
 class _ArtGSRunner(Protocol):
@@ -405,6 +423,138 @@ for module_name, relative_root in json.loads(sys.argv[2]):
             raise MethodExecutionError("ArtGS evaluation must include image and foreground metrics")
         return values
 
+    @staticmethod
+    def _stage_diagnostics(
+        model_root: Path,
+        *,
+        coarse_iterations: int,
+        joint_types: str,
+    ) -> tuple[Path, ...]:
+        """Render the native output of each ArtGS stage without changing it."""
+        import numpy as np
+        from matplotlib.figure import Figure
+        from PIL import Image
+
+        diagnostics = model_root / "diagnostics"
+        diagnostics.mkdir(parents=True, exist_ok=False)
+        coarse = model_root / "coarse" / "point_cloud" / f"iteration_{coarse_iterations}"
+
+        def points(name: str) -> tuple[Any, int]:
+            path = coarse / name
+            if not path.is_file():
+                raise MethodExecutionError(f"ArtGS coarse diagnostic is missing: {path}")
+            values = np.load(path, allow_pickle=False)
+            if values.ndim != 2 or values.shape[1] != 3 or not np.isfinite(values).all():
+                raise MethodExecutionError(f"ArtGS coarse diagnostic is invalid: {path}")
+            total = len(values)
+            if total > 30_000:
+                values = values[np.linspace(0, len(values) - 1, 30_000, dtype=int)]
+            return values, total
+
+        def equal_axes(axis: Any, groups: Sequence[Any]) -> None:
+            cloud = np.concatenate([group for group in groups if len(group)])
+            lower, upper = cloud.min(0), cloud.max(0)
+            center = (lower + upper) / 2
+            radius = max(float((upper - lower).max()) / 2, 1e-3)
+            axis.set_xlim(center[0] - radius, center[0] + radius)
+            axis.set_ylim(center[1] - radius, center[1] + radius)
+            axis.set_zlim(center[2] - radius, center[2] + radius)
+            axis.set_box_aspect((1, 1, 1))
+            axis.view_init(elev=24, azim=-58)
+            axis.set_axis_off()
+
+        coarse_groups = {
+            state_index: (
+                points(f"xyz_static_{state_index}.npy"),
+                points(f"xyz_dynamic_{state_index}.npy"),
+            )
+            for state_index in (0, 1)
+        }
+        figure = Figure(figsize=(10, 4), constrained_layout=True)
+        for index, (state_index, (static_result, dynamic_result)) in enumerate(
+            coarse_groups.items(), start=1
+        ):
+            static, static_count = static_result
+            dynamic, dynamic_count = dynamic_result
+            axis = figure.add_subplot(1, 2, index, projection="3d")
+            axis.scatter(*static.T, s=0.35, c="#667085", alpha=0.45, depthshade=False)
+            axis.scatter(*dynamic.T, s=0.45, c="#f79009", alpha=0.65, depthshade=False)
+            equal_axes(axis, (static, dynamic))
+            axis.set_title(
+                f"State {state_index}: static {static_count:,} / moving {dynamic_count:,}"
+            )
+        figure.suptitle("Stage 1 - independent-state coarse reconstruction and matching")
+        coarse_preview = diagnostics / "01-coarse.png"
+        figure.savefig(coarse_preview, dpi=150)
+
+        static, _ = points("xyz_static.npy")
+        dynamic, _ = points("xyz_dynamic.npy")
+        center_path = coarse / "center_info.npy"
+        centers = np.load(center_path, allow_pickle=False)
+        if (
+            centers.ndim != 2
+            or centers.shape[1] != 4
+            or not np.isfinite(centers).all()
+            or len(centers) != len(joint_types.split(","))
+        ):
+            raise MethodExecutionError("ArtGS predicted joint centers are invalid")
+        figure = Figure(figsize=(6, 5), constrained_layout=True)
+        axis = figure.add_subplot(1, 1, 1, projection="3d")
+        axis.scatter(*static.T, s=0.35, c="#667085", alpha=0.35, depthshade=False)
+        axis.scatter(*dynamic.T, s=0.45, c="#f79009", alpha=0.65, depthshade=False)
+        axis.scatter(*centers[:, :3].T, s=90, c="#d92d20", marker="x", depthshade=False)
+        equal_axes(axis, (static, dynamic, centers[:, :3]))
+        axis.set_title(f"Predicted native joint types: {joint_types}")
+        figure.suptitle("Stage 2 - motion-type prediction")
+        joint_preview = diagnostics / "02-joints.png"
+        figure.savefig(joint_preview, dpi=150)
+
+        interpolation = model_root / "reconstruction" / "test" / "ours_best" / "interpolation"
+        images = []
+        try:
+            for index in (0, 2, 4):
+                with Image.open(interpolation / f"{index:02d}.png") as source_image:
+                    images.append(np.asarray(source_image.convert("RGB")))
+        except (OSError, ValueError) as error:
+            raise MethodExecutionError("ArtGS final interpolation preview is invalid") from error
+        if len({image.shape for image in images}) != 1:
+            raise MethodExecutionError("ArtGS final interpolation previews have different sizes")
+        figure = Figure(figsize=(12, 4), constrained_layout=True)
+        for panel, (amount, pixels) in enumerate(zip((0.0, 0.5, 1.0), images), start=1):
+            axis = figure.add_subplot(1, 3, panel)
+            axis.imshow(pixels)
+            axis.set_title(f"Observed-state interpolation: {amount:.1f}")
+            axis.set_axis_off()
+        figure.suptitle("Stage 3 - joint reconstruction")
+        reconstruction_preview = diagnostics / "03-reconstruction.png"
+        figure.savefig(reconstruction_preview, dpi=150)
+
+        metadata = diagnostics / "stages.json"
+        joint_type_values: list[JSONValue] = list(joint_types.split(","))
+        document: dict[str, JSONValue] = {
+            "schema": "physrealx.artgs-stage-diagnostics/1",
+            "joint_types": joint_type_values,
+            "stages": [
+                {
+                    "name": "coarse",
+                    "preview": coarse_preview.name,
+                    "source": "independent-state Gaussian matching",
+                },
+                {
+                    "name": "joint_prediction",
+                    "preview": joint_preview.name,
+                    "source": "predicted_joint_types.json",
+                },
+                {
+                    "name": "reconstruction",
+                    "preview": reconstruction_preview.name,
+                    "source": "held-out observed-state interpolation",
+                },
+            ],
+        }
+        metadata.write_bytes(canonical_json_bytes(document))
+        return coarse_preview, joint_preview, reconstruction_preview, metadata
+
     def run(
         self,
         dataset_root: Path,
@@ -422,6 +572,8 @@ for module_name, relative_root in json.loads(sys.argv[2]):
         prediction_root = model_root / "prediction"
         reconstruction_root = model_root / "reconstruction"
         common = [
+            "--data_device",
+            "cpu",
             "--source_path",
             str(dataset_root.parent.parent.parent),
             "--dataset",
@@ -431,6 +583,15 @@ for module_name, relative_root in json.loads(sys.argv[2]):
             "--scene_name",
             manifest.scene_id,
         ]
+        joint_initialization = []
+        if manifest.joint_initialization_file is not None:
+            initialization_path = dataset_root / manifest.joint_initialization_file
+            if not initialization_path.is_file():
+                raise MethodExecutionError("ArtGS reference joint initialization is missing")
+            joint_initialization = [
+                "--joint_initialization_path",
+                str(initialization_path),
+            ]
         self._run_stage(
             [
                 str(self.source_root / "train_coarse.py"),
@@ -444,6 +605,7 @@ for module_name, relative_root in json.loads(sys.argv[2]):
                 "--iterations",
                 str(config.coarse_iterations),
                 "--eval",
+                "--init_from_pcd",
                 "--opacity_reg_weight",
                 "0.1",
                 "--random_bg_color",
@@ -454,38 +616,52 @@ for module_name, relative_root in json.loads(sys.argv[2]):
             environment,
             config.max_stage_seconds,
         )
-        self._run_stage(
-            [
-                str(self.source_root / "train_predict.py"),
-                *common,
-                "--model_path",
-                str(prediction_root),
-                "--coarse_model_path",
-                str(coarse_root),
-                "--eval",
-                "--resolution",
-                str(config.evaluation_resolution),
-                "--num_slots",
-                str(manifest.num_slots),
-                "--iterations",
-                str(config.joint_iterations),
-                "--densify_grad_threshold",
-                "0.001",
-                "--random_bg_color",
-                "--seed",
-                str(config.seed),
-            ],
-            logs / "02-joints.log",
-            environment,
-            config.max_stage_seconds,
-        )
-        joint_file = prediction_root / "predicted_joint_types.json"
-        joint_document = _strict_json(joint_file.read_bytes(), "ArtGS joint prediction")
-        joint_types = (
-            joint_document.get("joint_types") if isinstance(joint_document, dict) else None
-        )
-        if not isinstance(joint_types, str) or len(joint_types.split(",")) != manifest.num_slots:
-            raise MethodExecutionError("ArtGS joint prediction has an invalid slot count")
+        if config.joint_types is not None:
+            joint_types = ",".join(
+                ["s", *({"hinge": "r", "slide": "p"}[kind] for kind in config.joint_types)]
+            )
+        else:
+            self._run_stage(
+                [
+                    str(self.source_root / "train_predict.py"),
+                    *common,
+                    "--model_path",
+                    str(prediction_root),
+                    "--coarse_model_path",
+                    str(coarse_root),
+                    "--eval",
+                    "--resolution",
+                    str(config.evaluation_resolution),
+                    "--num_slots",
+                    str(manifest.num_slots),
+                    *joint_initialization,
+                    "--iterations",
+                    str(config.joint_iterations),
+                    "--densify_grad_threshold",
+                    "0.001",
+                    "--random_bg_color",
+                    "--metric_depth_loss_weight",
+                    str(config.metric_depth_loss_weight),
+                    "--cd_loss_weight",
+                    str(config.point_loss_weight),
+                    "--seed",
+                    str(config.seed),
+                ],
+                logs / "02-joints.log",
+                environment,
+                config.max_stage_seconds,
+            )
+            joint_file = prediction_root / "predicted_joint_types.json"
+            joint_document = _strict_json(joint_file.read_bytes(), "ArtGS joint prediction")
+            inferred_joint_types = (
+                joint_document.get("joint_types") if isinstance(joint_document, dict) else None
+            )
+            if (
+                not isinstance(inferred_joint_types, str)
+                or len(inferred_joint_types.split(",")) != manifest.num_slots
+            ):
+                raise MethodExecutionError("ArtGS joint prediction has an invalid slot count")
+            joint_types = inferred_joint_types
         self._run_stage(
             [
                 str(self.source_root / "train.py"),
@@ -499,6 +675,7 @@ for module_name, relative_root in json.loads(sys.argv[2]):
                 str(config.training_resolution),
                 "--joint_types",
                 joint_types,
+                *joint_initialization,
                 "--iterations",
                 str(config.reconstruction_iterations),
                 "--seed",
@@ -509,6 +686,8 @@ for module_name, relative_root in json.loads(sys.argv[2]):
                 "0.001",
                 "--metric_depth_loss_weight",
                 str(config.metric_depth_loss_weight),
+                "--cd_loss_weight",
+                str(config.point_loss_weight),
                 "--mono_depth_loss_weight",
                 str(config.mono_depth_loss_weight),
             ],
@@ -550,12 +729,65 @@ for module_name, relative_root in json.loads(sys.argv[2]):
                 "validation",
             )
         )
+        stage_diagnostics = list(
+            self._stage_diagnostics(
+                model_root,
+                coarse_iterations=config.coarse_iterations,
+                joint_types=joint_types,
+            )
+        )
+        if manifest.joint_initialization_file is not None:
+            audit_path = model_root / "diagnostics" / "reference-joint-initialization.json"
+            shutil.copyfile(dataset_root / manifest.joint_initialization_file, audit_path)
+            stage_diagnostics.append(audit_path)
         return _ArtGSRunResult(
             model_root=model_root,
             mesh_paths=mesh_paths,
             metrics=metrics,
             evaluation_scope="held_out_views",
+            stage_diagnostics=tuple(stage_diagnostics),
         )
+
+
+def normalize_artgs_prediction(
+    entries: Any, mesh_refs: Sequence[ArtifactRef], state_pair: tuple[str, str]
+) -> ReconstructionPrediction:
+    """Translate native ArtGS output once, at the adapter boundary."""
+    try:
+        if not isinstance(entries, list) or len(entries) != len(mesh_refs):
+            raise ValueError("every mesh needs a native joint record")
+        parts = {}
+        for item in entries:
+            index = item["id"]
+            if type(index) is not int or not 0 <= index < len(mesh_refs) or str(index) in parts:
+                raise ValueError("invalid or duplicate native motion group identity")
+            if item["visuals"] != [f"meshes/start_{index}.ply"]:
+                raise ValueError("native motion group references a different mesh")
+            kind = {"heavy": "fixed", "slider": "slide", "hinge": "hinge"}[item["joint"]]
+            data = item["jointData"]
+            motion = {}
+            if kind != "fixed":
+                observed = data["observed_span"]
+                if observed["unit"] != ("m" if kind == "slide" else "deg"):
+                    raise ValueError("predicted observed span unit differs from joint type")
+                motion = dict(
+                    axis=data["axis"]["direction"],
+                    origin=data["axis"]["origin"],
+                    span=math.radians(observed["value"]) if kind == "hinge" else observed["value"],
+                )
+            parts[str(index)] = ReconstructedPart(
+                kind=kind, parent=None if item["parent"] == -1 else str(item["parent"]), **motion
+            )
+        return ReconstructionPrediction(
+            parts=parts,
+            states={
+                state_pair[0]: {str(i): ref for i, ref in enumerate(mesh_refs)},
+                state_pair[1]: {},
+            },
+            motion_pair=state_pair,
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        raise MethodExecutionError(f"invalid ArtGS reconstruction output: {error}") from error
 
 
 def _bundle_outputs(result: _ArtGSRunResult, destination: Path) -> tuple[Path, int]:
@@ -567,7 +799,12 @@ def _bundle_outputs(result: _ArtGSRunResult, destination: Path) -> tuple[Path, i
     if not isinstance(configuration, dict):
         raise MethodExecutionError("ArtGS model configuration must be an object")
     # Save architecture and rendering parameters without expired temporary paths.
-    for key in ("source_path", "model_path", "coarse_model_path"):
+    for key in (
+        "source_path",
+        "model_path",
+        "coarse_model_path",
+        "joint_initialization_path",
+    ):
         configuration.pop(key, None)
     inference_config = result.model_root / "reconstruction" / "inference.json"
     inference_config.write_bytes(canonical_json_bytes(configuration))
@@ -579,6 +816,7 @@ def _bundle_outputs(result: _ArtGSRunResult, destination: Path) -> tuple[Path, i
         *result.mesh_paths,
         *(previews / f"{index:02d}.png" for index in range(5)),
         previews / "states.json",
+        *result.stage_diagnostics,
     ]
     for candidate in candidates:
         if not candidate.is_file() or candidate.stat().st_size == 0:
@@ -592,6 +830,8 @@ def _bundle_outputs(result: _ArtGSRunResult, destination: Path) -> tuple[Path, i
             name = f"meshes/{candidate.name}"
         elif candidate.parent == previews:
             name = f"appearance/{candidate.name}"
+        elif candidate in result.stage_diagnostics:
+            name = f"diagnostics/{candidate.name}"
         elif candidate.suffix == ".pth":
             name = "model/deform.pth"
         elif candidate.name == "joint_info.json":
@@ -661,7 +901,19 @@ class ArtGSMethodAdapter:
                 extracted,
                 num_slots=config.num_slots,
                 state_streams=config.state_streams,
+                training_frames_per_state=config.training_frames_per_state,
+                max_initial_points=config.max_initial_points,
+                reference_joint=config.reference_joint,
+                seed=config.seed,
             )
+            if (
+                config.joint_types is not None
+                and manifest.reference_depth_alignment is not None
+                and config.joint_types != (manifest.reference_depth_alignment.joint_type,)
+            ):
+                raise DomainValidationError(
+                    "ArtGS joint type prior conflicts with the selected reference joint"
+                )
             output_root = root / "output"
             output_root.mkdir()
             result = self._runner.run(extracted, output_root, manifest, config)
@@ -675,10 +927,21 @@ class ArtGSMethodAdapter:
             mesh_refs = tuple(
                 artifacts.put_file(path, media_type="model/ply") for path in result.mesh_paths
             )
+            prediction = normalize_artgs_prediction(
+                _strict_json(
+                    (
+                        result.model_root / "reconstruction/train/ours_best/joint_info.json"
+                    ).read_bytes(),
+                    "ArtGS joints",
+                ),
+                mesh_refs,
+                manifest.state_pair,
+            )
             heldout = result.evaluation_scope == "held_out_views"
             independently_scaled = manifest.metric_evidence_scope == "independent_metric_alignment"
             independent_depth = manifest.depth_evaluation_scope == "independent_reference"
-            passed = heldout and independently_scaled and independent_depth
+            reference_guided = manifest.reference_depth_alignment is not None
+            passed = heldout and independently_scaled and independent_depth and not reference_guided
             report = {
                 "schema": _REPORT_SCHEMA,
                 "status": "PASSED" if passed else "MODEL_CONDITIONED",
@@ -686,12 +949,22 @@ class ArtGSMethodAdapter:
                 "depth_evaluation_scope": manifest.depth_evaluation_scope,
                 "training_frame_ids": manifest.training_frame_ids,
                 "validation_frame_ids": manifest.validation_frame_ids,
+                "initial_point_count": manifest.initial_point_count,
                 "rectification": "calibrated pinhole warp; nearest metric depth",
                 "independent_physical_validation": False,
                 "part_scope": "observable motion groups; stationary reference links may be merged",
                 "reference_link_count": manifest.reference_link_count,
                 "motion_group_count": manifest.num_slots,
+                "joint_type_source": "explicit_prior"
+                if config.joint_types is not None
+                else (
+                    "reference_initialized_capture_inference"
+                    if reference_guided
+                    else "capture_inference"
+                ),
+                "joint_type_prior": config.joint_types,
                 "unit": "m",
+                "prediction": prediction.model_dump(mode="json"),
                 "coordinate_frame": manifest.coordinate_frame,
                 "source_camera_artifact_id": manifest.source_camera.artifact_id,
                 "source_depth_artifact_id": manifest.source_depth.artifact_id,
@@ -716,8 +989,13 @@ class ArtGSMethodAdapter:
                     "two_state_capture": manifest.training_frames >= 4,
                     "complete_link_meshes": len(mesh_refs) == manifest.num_slots,
                     "held_out_evaluation": heldout,
+                    "reference_guided_initialization": reference_guided,
                 },
             }
+            if manifest.reference_depth_alignment is not None:
+                report["reference_depth_alignment"] = manifest.reference_depth_alignment.model_dump(
+                    mode="json", by_alias=True
+                )
             report_ref = artifacts.put_json(report, media_type="application/json")
             metrics = {key: float(value) for key, value in result.metrics.items()}
             metrics.update(
@@ -727,6 +1005,13 @@ class ArtGSMethodAdapter:
                     "validation_frames": float(manifest.validation_frames),
                 }
             )
+            if manifest.reference_depth_alignment is not None:
+                metrics.update(
+                    {
+                        f"reference_alignment_{key}": float(value)
+                        for key, value in manifest.reference_depth_alignment.metrics.items()
+                    }
+                )
             return MethodExecutionOutput(
                 outputs=(
                     OperationOutput(

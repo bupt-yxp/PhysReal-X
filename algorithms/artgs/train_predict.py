@@ -13,7 +13,7 @@ import os
 import json
 import torch
 from random import randint
-from utils.loss_utils import l1_loss, ssim
+from utils.loss_utils import l1_loss, masked_metric_depth_loss, ssim
 from gaussian_renderer import render
 import sys
 from scene import Scene, GaussianModel, DeformModel
@@ -24,6 +24,8 @@ from argparse import ArgumentParser
 from arguments import ModelParams, PipelineParams, OptimizationParams
 from pytorch_lightning import seed_everything
 from utils.metrics import *
+from pytorch3d.loss import chamfer_distance
+from utils.joint_geometry import initial_half_transform
 
 
 class Trainer:
@@ -56,6 +58,8 @@ class Trainer:
         self.gaussians.training_setup(opt)
         self.deform = DeformModel(self.dataset)
         self.init_deform()
+        self.metric_depth_loss_weight = args.metric_depth_loss_weight
+        self.cd_loss_weight = args.cd_loss_weight
 
         bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
         self.background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
@@ -69,13 +73,29 @@ class Trainer:
         self.viewpoint_stacks = [self.scene.getTrainCameras_start(), self.scene.getTrainCameras_end()]
 
     def init_deform(self,):
+        self.joint_initialization = {"method": "near_identity"}
         if self.args.center_init == 'cgs':
-            self.deform.deform.seg_model.init_from_file(
-                os.path.join(
-                    self.coarse_model_path,
-                    f'point_cloud/iteration_{self.coarse_iteration}/center_info.npy',
-                )
+            checkpoint = os.path.join(
+                self.coarse_model_path,
+                f'point_cloud/iteration_{self.coarse_iteration}',
             )
+            self.deform.deform.seg_model.init_from_file(
+                os.path.join(checkpoint, 'center_info.npy')
+            )
+            if self.args.num_slots == 2:
+                quaternion, translation, diagnostics = initial_half_transform(
+                    checkpoint, self.args.joint_initialization_path
+                )
+                joint = np.r_[quaternion, translation]
+                with torch.no_grad():
+                    self.deform.deform.joints[0].copy_(
+                        torch.as_tensor(
+                            joint,
+                            dtype=self.deform.deform.joints.dtype,
+                            device=self.deform.deform.joints.device,
+                        )
+                    )
+                self.joint_initialization = {"method": "coarse_motion_geometry", **diagnostics}
             print(f'Init center from {self.coarse_model_path}.')
         elif self.args.center_init == 'pcd':
             self.deform.deform.seg_model.init_from_file(f'{self.args.source_path}/center_info.npy')
@@ -117,6 +137,26 @@ class Trainer:
         Ll1 = l1_loss(image, gt_image)
         loss = (1.0 - self.opt.lambda_dssim) * Ll1 + self.opt.lambda_dssim * (1.0 - ssim(image, gt_image))
 
+        if self.metric_depth_loss_weight > 0:
+            if viewpoint_cam.depth is None:
+                raise ValueError('metric depth supervision was requested but depth is unavailable')
+            depth_loss = masked_metric_depth_loss(
+                render_pkg_re['depth'], viewpoint_cam.depth.cuda(), gt_alpha_mask
+            )
+            if depth_loss is not None:
+                loss = loss + depth_loss * self.metric_depth_loss_weight
+
+        if (
+            self.cd_loss_weight > 0
+            and self.iteration > self.args.cd_min_steps
+            and self.iteration < self.args.cd_max_steps
+        ):
+            transformed = self.gaussians.get_xyz.detach() + d_xyz
+            point_loss, _ = chamfer_distance(
+                transformed[None], self.xyzs[state][None], single_directional=True
+            )
+            loss = loss + point_loss * self.cd_loss_weight
+
         loss.backward()
 
         self.iter_end.record()
@@ -145,10 +185,16 @@ class Trainer:
                 self.progress_bar.update(10)
             if self.iteration == self.opt.iterations:
                 self.progress_bar.close()
+                rotation_degrees = self.deform.deform.joint_rotation_degrees().cpu().tolist()
                 joint_types = self.deform.deform.cal_art_type()
                 os.makedirs(self.dataset.model_path, exist_ok=True)
                 with open(os.path.join(self.dataset.model_path, 'predicted_joint_types.json'), 'w') as stream:
-                    json.dump({'joint_types': joint_types}, stream, indent=4)
+                    json.dump({
+                        'joint_types': joint_types,
+                        'optimized_half_rotation_degrees': rotation_degrees,
+                        'classification_threshold_degrees': 10.0,
+                        'initialization': self.joint_initialization,
+                    }, stream, indent=4)
 
             # Optimizer step
             if self.iteration < self.opt.iterations:

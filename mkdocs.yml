@@ -69,6 +69,7 @@ nav:
       - 技术能力与方法 API: api/capability-methods.md
       - 内嵌方法:
           - ArtGS 视觉几何重建: api/artgs.md
+          - DTArt 几何与运动重建: api/dtart.md
       - 资产 API: api/assets.md
       - 场景与任务 API: api/scenes-and-tasks.md
       - 运行与数据生成 API: api/runs.md

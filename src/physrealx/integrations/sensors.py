@@ -9,7 +9,7 @@ from typing import Any
 from pydantic import Field
 
 from physrealx.contracts import ArtifactStore
-from physrealx.domain import DataValue, DomainModel, PoseSpec, SignalDType, SignalSpec
+from physrealx.domain import DataValue, DomainModel, PoseSpec, SignalDType, SignalSpec, TaskSpec
 from physrealx.errors import DomainValidationError, MethodExecutionError
 
 CAMERA_MODALITIES = (
@@ -34,6 +34,60 @@ class CameraSpec(DomainModel):
     max_depth_m: float = Field(default=10.0, gt=0, allow_inf_nan=False)
     event_threshold: float = Field(default=0.2, ge=0.01, le=2.0)
 
+    @classmethod
+    def look_at(
+        cls, position: Any, target: Any, *, up: Any = (0, 0, 1), **config: Any
+    ) -> CameraSpec:
+        """Construct an OpenGL camera; reject coincident or collinear view axes."""
+        import numpy as np
+        from scipy.spatial.transform import Rotation
+
+        position, target, up = (np.asarray(v, dtype=float) for v in (position, target, up))
+        if any(v.shape != (3,) or not np.isfinite(v).all() for v in (position, target, up)):
+            raise DomainValidationError("look-at vectors must be finite three-vectors")
+        backward = position - target
+        right = np.cross(up, backward)
+        if min(np.linalg.norm(backward), np.linalg.norm(right)) < 1e-10:
+            raise DomainValidationError("look-at position/target/up do not define a camera frame")
+        backward /= np.linalg.norm(backward)
+        right /= np.linalg.norm(right)
+        vertical = np.cross(backward, right)
+        return cls(
+            pose=PoseSpec(
+                translation_m=position,
+                rotation_xyzw=Rotation.from_matrix(
+                    np.column_stack([right, vertical, backward])
+                ).as_quat(),
+            ),
+            **config,
+        )
+
+    def signals(self, name: str, *, frequency_hz: float) -> tuple[SignalSpec, ...]:
+        """Declare synchronized modalities from this camera's actual resolution."""
+        if not name or "." in name:
+            raise DomainValidationError("camera name must be a nonempty signal-path segment")
+        h, w = self.height, self.width
+        return tuple(
+            SignalSpec(
+                name=f"camera.{name}.{modality}",
+                shape=shape,
+                dtype=dtype,
+                unit=unit,
+                frame="world" if modality in {"position", "orientation"} else f"camera.{name}",
+                frequency_hz=frequency_hz,
+            )
+            for modality, shape, dtype, unit in (
+                ("rgb", (h, w, 3), SignalDType.UINT8, "1"),
+                ("depth", (h, w), SignalDType.FLOAT32, "m"),
+                ("mask", (h, w), SignalDType.INT32, "1"),
+                ("events", (h, w, 2), SignalDType.INT32, "1"),
+                ("pointcloud", (h, w, 3), SignalDType.FLOAT32, "m"),
+                ("intrinsics", (3, 3), SignalDType.FLOAT64, "1"),
+                ("position", (3,), SignalDType.FLOAT64, "m"),
+                ("orientation", (4,), SignalDType.FLOAT64, "1"),
+            )
+        )
+
     def intrinsics(self) -> Any:
         import numpy as np
 
@@ -41,6 +95,46 @@ class CameraSpec(DomainModel):
         return np.array(
             [[focal, 0, (self.width - 1) / 2], [0, focal, (self.height - 1) / 2], [0, 0, 1]]
         )
+
+
+def with_sensor_signals(
+    task: TaskSpec,
+    cameras: dict[str, CameraSpec],
+    *,
+    link_count: int,
+    resource_id: str,
+    frequency_hz: float,
+) -> TaskSpec:
+    """Derive camera/body signal contracts; incompatible duplicate declarations fail validation."""
+    if isinstance(link_count, bool) or not isinstance(link_count, int) or link_count < 1:
+        raise DomainValidationError("body signals require a positive link count")
+    signals = list(task.observations)
+    for name, camera in cameras.items():
+        signals.extend(camera.signals(name, frequency_hz=frequency_hz))
+    for name, size, unit in (
+        ("body.position", 3, "m"),
+        ("body.orientation", 4, "1"),
+        ("body.external_force", 3, "N"),
+        ("body.external_torque", 3, "N*m"),
+        ("body.wrench_origin", 3, "m"),
+    ):
+        signals.append(
+            SignalSpec(
+                name=name,
+                shape=(link_count, size),
+                dtype=SignalDType.FLOAT32,
+                unit=unit,
+                frame="world",
+                frequency_hz=frequency_hz,
+            )
+        )
+    return TaskSpec.model_validate(
+        {
+            **task.model_dump(),
+            "resource_id": resource_id,
+            "observations": signals,
+        }
+    )
 
 
 def project_depth(depth: Any, intrinsics: Any) -> Any:

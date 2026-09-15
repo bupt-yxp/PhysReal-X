@@ -4,7 +4,7 @@
 
 `evaluations.submit(resource_id=..., version=..., model=..., run=RunSpec, episode_count=..., base_seed=...)` 使用模型精确推理方法实际执行引擎；返回报告 VersionedRef。`evaluations.get_report(ref)` / `evaluations.list_reports()` 读取成功率、失败案例和数据集引用。
 
-示例在新随机种子上验证同一 cabinet2 任务，不能解读为未见资产或现场机器人泛化。
+示例在新随机种子上验证同一 oven4 任务，不能解读为未见资产或现场机器人泛化。
 
 ## 遥测、诊断与回流
 
@@ -22,7 +22,7 @@ report_ref = next(item.artifact for item in failures.outputs if item.name == "fa
 feedback = px.feedback.build_dataset(
     report_ref,
     method="failure_episodes",
-    config={"resource_id": "cabinet2.failures", "version": "1.0.0"},
+    config={"resource_id": "oven4.failures", "version": "1.0.0"},
 )
 ```
 

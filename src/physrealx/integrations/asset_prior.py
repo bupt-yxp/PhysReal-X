@@ -81,6 +81,7 @@ def reference_prior_asset(source: ArtifactRef, artifacts: ArtifactStore) -> Asse
     if set(origins) != set(links):
         raise DomainValidationError("reference joints must cover every link")
     reports: dict[str, Any] = {}
+    collision_volumes: dict[str, float] = {}
     for ref in request.collision_reports:
         report = read_json(artifacts, ref, "physrealx.collision-build-report/1")
         name = report.get("link")
@@ -96,6 +97,7 @@ def reference_prior_asset(source: ArtifactRef, artifacts: ArtifactStore) -> Asse
         if any(not mesh.is_volume or not mesh.is_convex for mesh in collision):
             raise DomainValidationError("collision artifact does not contain closed convex parts")
         reports[name] = report
+        collision_volumes[name] = sum(float(mesh.volume) for mesh in collision)
     if set(reports) != set(links):
         raise DomainValidationError("collision geometry must cover exactly the reference links")
 
@@ -111,9 +113,9 @@ def reference_prior_asset(source: ArtifactRef, artifacts: ArtifactStore) -> Asse
         lower, upper = vertices.min(axis=0), vertices.max(axis=0)
         dimensions = upper - lower
         # This is an explicit shape-and-density prior, never a measured body tensor.
-        volume = sum(float(mesh.volume) for mesh in visual)
+        volume = collision_volumes[name]
         if volume <= 0 or not np.isfinite(volume) or np.any(dimensions <= 0):
-            raise DomainValidationError("reference mesh has no finite positive volume estimate")
+            raise DomainValidationError("collision proxy has no finite positive volume")
         mass = volume * request.physics_prior.density_kg_m3
         moments = mass * (np.sum(dimensions**2) - dimensions**2) / 12
         bodies.append(
@@ -197,7 +199,7 @@ def reference_prior_asset(source: ArtifactRef, artifacts: ArtifactStore) -> Asse
             **appearance,
             "evidence_scope": "usd_reference_with_explicit_physics_priors",
             "independent_physical_validation": False,
-            "mass_model": "oriented_visual_volume_times_assumed_density",
+            "mass_model": "convex_collision_volume_sum_times_assumed_density",
             "inertia_model": "uniform_bounding_box_at_assumed_mass",
             "physics_prior": request.physics_prior.model_dump(mode="json"),
         },
@@ -208,7 +210,7 @@ class ReferenceAssemblyAdapter:
     descriptor = builtin_method(
         MethodCapability.ASSET_ASSEMBLE,
         "reference_asset_assembly",
-        version="2.0.0",
+        version="2.1.0",
         input_contract="AssetAssemblyInput/1",
         output_contract="AssetAssemblyBundle/1",
         python=">=3.10,<3.13",

@@ -69,6 +69,7 @@ def test_cli_runs_complete_local_workspace_workflow(
     method_names = {item["name"] for item in methods}
     required_methods = {
         "artgs",
+        "dtart",
         "artmodeling",
         "reference_drawer",
         "scripted_drawer",

@@ -47,3 +47,29 @@ def test_events_accumulate_subthreshold_changes_and_reset_without_a_false_burst(
 def test_projection_rejects_invalid_depth(depth):
     with pytest.raises(DomainValidationError):
         project_depth(depth, np.eye(3))
+
+
+def test_look_at_camera_axes_and_resolution_contract():
+    from scipy.spatial.transform import Rotation
+
+    from physrealx.integrations.sensors import CameraSpec
+
+    camera = CameraSpec.look_at([2, 3, 4], [0, 0, 1], width=80, height=64)
+    direction = Rotation.from_quat(camera.pose.rotation_xyzw).apply([0, 0, -1])
+    np.testing.assert_allclose(direction, np.array([-2, -3, -3]) / np.sqrt(22))
+    signals = {s.name: s for s in camera.signals("front", frequency_hz=20)}
+    assert signals["camera.front.rgb"].shape == (64, 80, 3)
+    assert signals["camera.front.depth"].unit == "m"
+    assert signals["camera.front.position"].frame == "world"
+    assert len(signals) == 8
+
+
+@pytest.mark.parametrize(
+    "position,target",
+    [([0, 0, 0], [0, 0, 0]), ([0, 0, 1], [0, 0, 0]), ([float("nan"), 0, 0], [1, 0, 0])],
+)
+def test_look_at_rejects_degenerate_axes(position, target):
+    from physrealx.integrations.sensors import CameraSpec
+
+    with pytest.raises(DomainValidationError):
+        CameraSpec.look_at(position, target)

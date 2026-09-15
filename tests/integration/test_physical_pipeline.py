@@ -1029,3 +1029,87 @@ def test_contact_task_goal_is_passive_object_not_robot_actuation(px: PhysRealX):
     config["actuation"]["entity"] = "cabinet"
     with pytest.raises(DomainValidationError, match="robot"):
         px.tasks.compile("关闭抽屉", scene_ref, method="articulated_templates", config=config)
+
+
+def test_collision_welding_joins_material_boundaries(tmp_path):
+    px = PhysRealX.open(tmp_path / "workspace", discover_plugins=False)
+    box = trimesh.creation.box(extents=[0.2, 0.15, 0.1])
+    scene = trimesh.Scene()
+    for index, faces in enumerate(np.array_split(box.faces, 2)):
+        mesh = trimesh.Trimesh(vertices=box.vertices, faces=faces, process=False)
+        mesh.visual = trimesh.visual.TextureVisuals(uv=np.full((len(mesh.vertices), 2), index))
+        scene.add_geometry(mesh, geom_name=f"material_{index}")
+    source = px.artifacts.put_bytes(scene.export(file_type="glb"), media_type="model/gltf-binary")
+    operation = px.assets.build_collision(
+        source,
+        method="coacd",
+        config={
+            "source_unit": "m",
+            "link": "body",
+            "weld_tolerance_m": 0.000001,
+            "preprocessing": "strict",
+            "max_parts": 1,
+        },
+    )
+    report = json.loads(px.artifacts.get_bytes(operation.output("collision_build_report")))
+    assert report["preprocessing"]["source_closed_positive_volume"]
+    assert operation.metrics["convex_parts"] == 1
+    assert operation.metrics["relative_volume_error"] == pytest.approx(0, abs=1e-6)
+
+
+@pytest.mark.parametrize("thickness,passes", [(0.002, True), (0.1, False)])
+def test_open_collision_surface_uses_distance_not_undefined_volume(
+    tmp_path, monkeypatch, thickness, passes
+):
+    import coacd
+
+    px = PhysRealX.open(tmp_path / "workspace", discover_plugins=False)
+    closed = trimesh.creation.box(extents=[0.2, 0.2, thickness])
+    top = np.all(closed.vertices[closed.faces, 2] > 0, axis=1)
+    opened = trimesh.Trimesh(vertices=closed.vertices, faces=closed.faces[~top], process=False)
+    assert not opened.is_watertight
+    source = px.artifacts.put_bytes(opened.export(file_type="glb"), media_type="model/gltf-binary")
+    monkeypatch.setattr(
+        coacd, "run_coacd", lambda *args, **kwargs: [(closed.vertices, closed.faces)]
+    )
+    config = {"source_unit": "m", "link": "body", "preprocessing": "coacd", "threshold_m": 0.005}
+    if not passes:
+        with pytest.raises(MethodExecutionError, match="surface P95"):
+            px.assets.build_collision(source, method="coacd", config=config)
+        return
+    operation = px.assets.build_collision(source, method="coacd", config=config)
+    report = json.loads(px.artifacts.get_bytes(operation.output("collision_build_report")))
+    assert "relative_volume_error" not in operation.metrics
+    assert operation.metrics["bidirectional_surface_p95_m"] <= 0.005
+    assert report["preprocessing"]["volume_comparison_scope"] == "not_applicable_open_surface"
+    assert "volume_error" not in report["gates"]
+    assert report["gates"]["surface_error"]
+
+
+def test_proxy_surface_samples_exclude_internal_partition_faces():
+    from physrealx.integrations.collision import _exterior_samples
+
+    parts = [trimesh.creation.box(extents=[0.1, 0.2, 0.2]) for _ in range(2)]
+    parts[0].apply_translation([-0.05, 0, 0])
+    parts[1].apply_translation([0.05, 0, 0])
+    samples = _exterior_samples(parts, trimesh.util.concatenate(parts), 7)
+    outer = trimesh.creation.box(extents=[0.2, 0.2, 0.2])
+    distance = trimesh.proximity.closest_point(outer, samples)[1]
+    assert distance.max() < 1e-9
+
+
+def test_contact_support_uses_actual_contact_window_not_remote_handle():
+    from physrealx.integrations.scenes import _contact_support
+
+    panel = trimesh.creation.box(extents=[0.01, 0.3, 0.3])
+    handle = trimesh.creation.box(extents=[0.04, 0.05, 0.02])
+    handle.apply_translation([0.025, 0, 0.14])
+    # The panel triangles cross this window even though their vertices lie outside it.
+    assert _contact_support(
+        [panel, handle], np.eye(4), [-0.03, -0.02], [0.03, 0.02]
+    ) == pytest.approx(0.005)
+    assert _contact_support(
+        [panel, handle], np.eye(4), [-0.03, 0.12], [0.03, 0.16]
+    ) == pytest.approx(0.045)
+    with pytest.raises(DomainValidationError, match="contact window"):
+        _contact_support([panel], np.eye(4), [1, 1], [2, 2])

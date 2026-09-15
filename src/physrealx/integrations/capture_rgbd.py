@@ -8,9 +8,7 @@ independent metrology or a replacement for a calibrated sensor certificate.
 from __future__ import annotations
 
 import io
-import tempfile
 from collections.abc import Iterator
-from pathlib import Path
 from typing import Any
 
 from pydantic import Field
@@ -21,6 +19,8 @@ from physrealx.domain import ArtifactRef, DomainModel, MethodCapability, Operati
 from physrealx.errors import DomainValidationError, MethodExecutionError
 from physrealx.integrations._artifacts import dependency_probe, input_artifact, publish, read_json
 from physrealx.methods import builtin_method
+
+_MAX_FRAMES_PER_STREAM = 512
 
 
 def put_array(artifacts: ArtifactStore, array: Any) -> ArtifactRef:
@@ -36,44 +36,66 @@ def capture_frames(
     artifacts: ArtifactStore,
     stream_name: str,
     images: list[dict[str, Any]],
-) -> Iterator[tuple[dict[str, Any], Any, Any]]:
+) -> Iterator[tuple[dict[str, Any], Any, Any, Any]]:
     import cv2
     import numpy as np
 
     streams = {stream.name: stream for stream in observations.streams}
     rgb_stream = streams.get(stream_name)
     depth_stream = streams.get(stream_name.removesuffix(".rgb") + ".depth")
-    if rgb_stream is None or depth_stream is None or depth_stream.encoding != "npy.packed_png16":
-        raise DomainValidationError("capture requires paired imported RGB and packed-PNG16 depth")
-    with tempfile.TemporaryDirectory(prefix="physrealx-capture-") as directory:
-        packed = Path(directory) / "depth.npy"
-        artifacts.materialize(depth_stream.artifacts[0], packed)
-        array = np.load(packed, mmap_mode="r", allow_pickle=False)
-        if array.ndim != 1 or array.dtype.kind != "S" or len(array) != rgb_stream.frame_count:
-            raise DomainValidationError("packed depth does not match the RGB sequence")
-        for image in images:
-            index = image["source_frame_index"]
-            if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < len(array):
-                raise DomainValidationError("camera frame index is outside its source capture")
-            ref = rgb_stream.artifacts[index]
-            if ref.artifact_id != image["source_artifact_id"]:
-                raise DomainValidationError("camera image is bound to a different capture artifact")
-            rgb = cv2.imdecode(np.frombuffer(artifacts.get_bytes(ref), np.uint8), cv2.IMREAD_COLOR)
-            depth = cv2.imdecode(np.frombuffer(array[index], np.uint8), cv2.IMREAD_UNCHANGED)
-            if (
-                rgb is None
-                or depth is None
-                or depth.dtype != np.uint16
-                or depth.ndim != 2
-                or rgb.shape[:2] != depth.shape
-            ):
-                raise DomainValidationError(
-                    "RGB/depth must decode into registered images of equal size"
-                )
-            depth = depth.copy()
-            depth[depth == 65535] = 0
-            yield image, cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB), depth
-        del array
+    mask_stream = streams.get(stream_name.removesuffix(".rgb") + ".mask")
+    if (
+        rgb_stream is None
+        or depth_stream is None
+        or mask_stream is None
+        or depth_stream.encoding != "npy.depth.uint16"
+        or mask_stream.encoding != "png.mask.uint8"
+        or depth_stream.frame_count != rgb_stream.frame_count
+        or mask_stream.frame_count != rgb_stream.frame_count
+        or len(depth_stream.artifacts) != rgb_stream.frame_count
+    ):
+        raise DomainValidationError(
+            "capture requires paired imported RGB, uint16 NPY depth and frame masks"
+        )
+    for image in images:
+        index = image["source_frame_index"]
+        if (
+            isinstance(index, bool)
+            or not isinstance(index, int)
+            or not 0 <= index < rgb_stream.frame_count
+        ):
+            raise DomainValidationError("camera frame index is outside its source capture")
+        ref = rgb_stream.artifacts[index]
+        if ref.artifact_id != image["source_artifact_id"]:
+            raise DomainValidationError("camera image is bound to a different capture artifact")
+        rgb = cv2.imdecode(np.frombuffer(artifacts.get_bytes(ref), np.uint8), cv2.IMREAD_COLOR)
+        try:
+            depth = np.load(
+                io.BytesIO(artifacts.get_bytes(depth_stream.artifacts[index])),
+                allow_pickle=False,
+            )
+        except (OSError, ValueError) as error:
+            raise DomainValidationError("cannot decode imported depth frame") from error
+        mask = cv2.imdecode(
+            np.frombuffer(artifacts.get_bytes(mask_stream.artifacts[index]), np.uint8),
+            cv2.IMREAD_GRAYSCALE,
+        )
+        if (
+            rgb is None
+            or depth.dtype != np.uint16
+            or depth.ndim != 2
+            or mask is None
+            or rgb.shape[:2] != depth.shape
+            or mask.shape != depth.shape
+            or not set(np.unique(mask)).issubset({0, 255})
+            or not 0 < int(np.count_nonzero(mask)) < mask.size
+        ):
+            raise DomainValidationError(
+                "RGB/depth/mask must be registered, nonempty and use binary mask values 0/255"
+            )
+        depth = depth.copy()
+        depth[depth == 65535] = 0
+        yield image, cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB), depth, mask
 
 
 def camera_rays(camera: dict[str, Any], xy: Any) -> Any:
@@ -171,7 +193,7 @@ class ModelScaleAdapter:
         input_contract="CameraRigCalibration/1+MetricAlignmentEvidence/1",
         output_contract="CameraRigCalibration/1+MetricAlignmentReport/1",
         python=">=3.10,<3.13",
-        version="1.1.0",
+        version="1.2.0",
     )
 
     def probe(self) -> MethodProbe:
@@ -217,6 +239,17 @@ class ModelScaleAdapter:
         height_m = float(reference["dimensions_m"][2])
         if not np.isfinite(height_m) or height_m <= 0 or reference.get("unit") != "m":
             raise DomainValidationError("reference model has no positive metre height")
+        selected_stream_names = {stream["stream_name"] for stream in camera["streams"]}
+        depth_units = {
+            stream.unit
+            for stream in observations.streams
+            if stream.name.removesuffix(".depth") + ".rgb" in selected_stream_names
+            and stream.name.endswith(".depth")
+        }
+        if len(depth_units) != 1:
+            raise DomainValidationError(
+                "metric alignment requires one shared depth unit across capture streams"
+            )
         estimates = {}
         for stream in camera["streams"]:
             if len(stream["components"]) != 1:
@@ -232,7 +265,7 @@ class ModelScaleAdapter:
                         (track["xyz"], observation["xy"])
                     )
             heights, records = [], []
-            for image, rgb, depth in capture_frames(
+            for image, rgb, depth, _ in capture_frames(
                 observations, artifacts, stream["stream_name"], component["images"]
             ):
                 geometry = support_geometry(rgb, depth, calibration[image["camera_id"]])
@@ -264,7 +297,6 @@ class ModelScaleAdapter:
                 raise MethodExecutionError(
                     "USD-conditioned height scale is inconsistent across held-out views"
                 )
-            depth_scale = height_m / native_height
             image_names = sorted({name for name, _, _ in records})
             holdout = set(image_names[::3])
             train = np.array([(p, z) for name, p, z in records if name not in holdout])
@@ -282,20 +314,30 @@ class ModelScaleAdapter:
                 )
             estimates[stream["stream_name"]] = {
                 "component_id": component["component_id"],
-                "scale_m": native_scale * depth_scale,
-                "depth_scale_m": depth_scale,
+                "native_height": native_height,
+                "native_scale": native_scale,
                 "support_frames": len(heights),
                 "support_views": [name for name, _ in heights],
                 "height_holdout_relative_error": height_error,
                 "depth_holdout_relative_error_median": float(np.median(error)),
                 "depth_holdout_inlier_fraction": fraction,
-                "depth_holdout_rmse_m": float(
+                "depth_holdout_rmse_native": float(
                     np.sqrt(np.mean((test[:, 1] - test[:, 0] * native_scale) ** 2))
-                )
-                * depth_scale,
+                ),
                 "fit_views": sorted(set(image_names) - holdout),
                 "holdout_views": sorted(holdout),
             }
+        # All streams originate from one capture package and declare one depth unit.  Its
+        # metre conversion is therefore shared.  Articulation may change the object's
+        # observed height between states, so applying the complete USD height to every
+        # state independently is physically invalid.  The largest endpoint observation
+        # anchors the supplied model envelope; marker similarities validate the remaining
+        # streams without inventing state-specific sensor units.
+        depth_scale = height_m / max(item["native_height"] for item in estimates.values())
+        for item in estimates.values():
+            item["depth_scale_m"] = depth_scale
+            item["scale_m"] = item["native_scale"] * depth_scale
+            item["depth_holdout_rmse_m"] = item.pop("depth_holdout_rmse_native") * depth_scale
         # Keep explicitly connected streams in a single metric reconstruction frame.
         anchor = camera["streams"][0]["stream_name"]
         anchor_scale = estimates[anchor]["scale_m"]
@@ -334,7 +376,7 @@ class ModelScaleAdapter:
             relative_error = abs(scale / estimates[name]["scale_m"] - 1)
             if relative_error > config.max_height_relative_error:
                 raise MethodExecutionError(
-                    "independent stream scale conflicts with shared-marker alignment"
+                    "shared depth scale conflicts with cross-stream marker alignment"
                 )
             estimates[name]["cross_stream_relative_error"] = relative_error
             # Anchor is a measured capture frame; no claim of a recovered USD pose is made.
@@ -360,7 +402,7 @@ class ModelScaleAdapter:
             },
             source_camera_artifact_id=camera_ref.artifact_id,
             metric_alignment_evidence_artifact_id=evidence_ref.artifact_id,
-            metric_evidence_scope="model_conditioned",
+            metric_evidence_scope="model_conditioned_shared_depth_unit",
             reference_height_m=height_m,
             depth_calibrations=estimates,
         )
@@ -376,7 +418,7 @@ class ModelScaleAdapter:
         report = {
             "schema": "physrealx.metric-alignment-report/1",
             "status": "MODEL_CONDITIONED",
-            "evidence_scope": "usd_height_and_capture_depth",
+            "evidence_scope": "usd_height_shared_capture_depth_and_markers",
             "independent_metrology": False,
             "source_camera_artifact_id": camera_ref.artifact_id,
             "evidence_artifact_id": evidence_ref.artifact_id,
@@ -450,21 +492,65 @@ def capture_support_region(camera: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def support_object_mask(points: Any, valid: Any, region: dict[str, Any]) -> Any:
-    """Segment measured points above the table inside its observed footprint."""
-    import cv2
+def _metric_object_depth_validity(
+    depth_m: Any,
+    rays: Any,
+    object_mask: Any,
+    cam_from_world: Any,
+    support: dict[str, Any],
+) -> Any:
+    """Validate foreground depth in the observed metric support frame.
+
+    The RGB mask defines object membership; this function only decides whether
+    a positive depth measurement places that pixel inside the physically
+    declared metric object-height envelope.  Camera distance is deliberately not
+    bounded, so valid captures remain valid at any working distance.
+    """
     import numpy as np
 
-    relative = points - region["origin"]
-    heights = relative @ region["normal"]
-    xy = relative @ region["basis"].T
-    equations = region["footprint"]
-    height = region["height_m"]
-    inside = (xy @ equations[:, :2].T + equations[:, 2] <= height * 0.05).all(-1)
-    mask = valid & inside & (heights > max(6 * region["plane_rmse_m"], height * 0.03))
-    mask &= heights < height * 1.15
-    # Close only tiny raster holes; this does not invent depth in the mask.
-    return cv2.morphologyEx(mask.astype(np.uint8), cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+    depth = np.asarray(depth_m, dtype=float)
+    rays = np.asarray(rays, dtype=float)
+    mask = np.asarray(object_mask, dtype=bool)
+    pose = np.asarray(cam_from_world, dtype=float)
+    origin = np.asarray(support["origin"], dtype=float)
+    normal = np.asarray(support["normal"], dtype=float)
+    height = float(support["height_m"])
+    plane_rmse = float(support["plane_rmse_m"])
+    if (
+        depth.ndim != 2
+        or rays.shape != (*depth.shape, 3)
+        or mask.shape != depth.shape
+        or pose.shape != (3, 4)
+        or origin.shape != (3,)
+        or normal.shape != (3,)
+        or not np.isfinite(depth).all()
+        or not np.isfinite(rays).all()
+        or not np.isfinite(pose).all()
+        or not np.isfinite(origin).all()
+        or not np.isfinite(normal).all()
+        or not np.isfinite(height)
+        or height <= 0
+        or not np.isfinite(plane_rmse)
+        or plane_rmse < 0
+    ):
+        raise DomainValidationError("metric object-depth evidence is malformed")
+    normal_length = float(np.linalg.norm(normal))
+    if normal_length <= 1e-12:
+        raise DomainValidationError("metric object-depth support normal is degenerate")
+    normal = normal / normal_length
+    # x_camera = R x_world + t, hence x_world = (x_camera - t) R.
+    normal_in_camera = pose[:, :3] @ normal
+    world_height = np.einsum(
+        "ijk,k->ij", rays * depth[..., None] - pose[:, 3], normal_in_camera
+    ) - float(origin @ normal)
+    lower_tolerance = max(6 * plane_rmse, height * 0.05, 0.005)
+    upper_tolerance = max(6 * plane_rmse, height * 0.15, 0.005)
+    return (
+        mask
+        & (depth > 0)
+        & (world_height >= -lower_tolerance)
+        & (world_height <= height + upper_tolerance)
+    )
 
 
 def prepare_rgbd_frames(
@@ -473,7 +559,7 @@ def prepare_rgbd_frames(
     artifacts: ArtifactStore,
     *,
     stride: int = 4,
-    max_frames_per_stream: int = 8,
+    max_frames_per_stream: int | None = 8,
 ) -> ArtifactRef:
     """Publish real depth/RGB arrays and exact view bindings for downstream methods."""
     import numpy as np
@@ -484,9 +570,18 @@ def prepare_rgbd_frames(
         isinstance(stride, bool)
         or not isinstance(stride, int)
         or not 1 <= stride <= 16
-        or not 3 <= max_frames_per_stream <= 64
+        or (
+            max_frames_per_stream is not None
+            and (
+                isinstance(max_frames_per_stream, bool)
+                or not isinstance(max_frames_per_stream, int)
+                or not 3 <= max_frames_per_stream <= _MAX_FRAMES_PER_STREAM
+            )
+        )
     ):
-        raise DomainValidationError("capture sampling requires stride 1..16 and 3..64 frames")
+        raise DomainValidationError(
+            "capture sampling requires integer stride 1..16 and 3..512 frames or None (all)"
+        )
     camera = read_json(artifacts, camera_ref, "physrealx.camera-rig-calibration/1")
     source = camera.get("source_observations", {})
     if (
@@ -494,18 +589,27 @@ def prepare_rgbd_frames(
         or source.get("version") != observations.version
     ):
         raise DomainValidationError("RGB-D observations differ from the metric camera source")
-    region = capture_support_region(camera)
+    if max_frames_per_stream is None:
+        for stream in camera["streams"]:
+            count = len(stream["components"][0]["images"])
+            if count > _MAX_FRAMES_PER_STREAM:
+                raise DomainValidationError(
+                    f"RGB-D all-view stream {stream['stream_name']!r} has {count} frames; "
+                    f"safety limit is {_MAX_FRAMES_PER_STREAM} per stream"
+                )
+    support = capture_support_region(camera)
     frames = []
     for stream in camera["streams"]:
         component = stream["components"][0]
         candidates = component["images"]
-        indexes = np.linspace(
-            0, len(candidates) - 1, min(len(candidates), max_frames_per_stream), dtype=int
-        )
+        count = len(candidates)
+        if max_frames_per_stream is not None:
+            count = min(count, max_frames_per_stream)
+        indexes = np.linspace(0, len(candidates) - 1, count, dtype=int)
         images = [candidates[index] for index in indexes]
         calibration = {c["camera_id"]: c for c in component["cameras"]}
         depth_scale = camera["depth_calibrations"][stream["stream_name"]]["depth_scale_m"]
-        for image, rgb, depth in capture_frames(
+        for image, rgb, depth, mask in capture_frames(
             observations, artifacts, stream["stream_name"], images
         ):
             intrinsics = calibration[image["camera_id"]]
@@ -514,18 +618,26 @@ def prepare_rgbd_frames(
             rays = camera_rays(intrinsics, np.column_stack([x.ravel(), y.ravel()])).reshape(
                 *y.shape, 3
             )
-            pose = np.asarray(image["cam_from_world"])
-            points = (rays * (depth[y, x] * depth_scale)[..., None] - pose[:, 3]) @ pose[:, :3]
-            object_mask = support_object_mask(points, depth[y, x] > 0, region)
-            if object_mask.sum() < 100:
+            object_mask = (mask[y, x] > 0).astype(np.uint8)
+            sampled_depth = depth[y, x].copy()
+            measured = (object_mask > 0) & (sampled_depth > 0)
+            accepted = _metric_object_depth_validity(
+                sampled_depth.astype(float) * depth_scale,
+                rays,
+                object_mask,
+                image["cam_from_world"],
+                support,
+            )
+            sampled_depth[measured & ~accepted] = 0
+            if object_mask.sum() < 100 or accepted.sum() < 100:
                 raise MethodExecutionError(
-                    f"registered view {image['name']} has insufficient supported object depth"
+                    f"registered view {image['name']} has insufficient valid object depth"
                 )
             frames.append(
                 DepthFrame(
                     frame_id=f"{stream['stream_name']}.{image['source_frame_index']}",
                     rgb=put_array(artifacts, rgb[::stride, ::stride].copy()),
-                    depth=put_array(artifacts, depth[::stride, ::stride].copy()),
+                    depth=put_array(artifacts, sampled_depth),
                     depth_scale_m=depth_scale,
                     capture_id=f"{observations.resource_id}.{observations.version}.{stream['stream_name']}",
                     view={
@@ -538,8 +650,17 @@ def prepare_rgbd_frames(
                         "object_mask": put_array(artifacts, object_mask).model_dump(mode="json"),
                         "cam_from_world": image["cam_from_world"],
                         "source_rgb_artifact_id": image["source_artifact_id"],
-                        "mask_source": "shared_metric_support_volume",
-                        "support_plane_rmse_m": region["plane_rmse_m"],
+                        "mask_source": "dataset_annotation",
+                        "view_alignment": stream.get("view_alignment"),
+                        "depth_validity": {
+                            "method": "metric_support_envelope",
+                            "measured_foreground_pixels": int(measured.sum()),
+                            "accepted_foreground_pixels": int(accepted.sum()),
+                            "rejected_foreground_pixels": int((measured & ~accepted).sum()),
+                            "support_height_m": support["height_m"],
+                            "support_plane_rmse_m": support["plane_rmse_m"],
+                            "evidence_scope": camera.get("metric_evidence_scope"),
+                        },
                     },
                 )
             )

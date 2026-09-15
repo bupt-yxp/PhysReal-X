@@ -14,8 +14,9 @@ import sys
 import tqdm
 import torch
 import torchvision
+import numpy as np
 from random import randint
-from utils.loss_utils import l1_loss, ssim
+from utils.loss_utils import l1_loss, masked_metric_depth_loss, ssim
 from gaussian_renderer import render
 from scene import Scene, GaussianModel, DeformModel
 from utils.system_utils import searchForMaxIteration
@@ -27,6 +28,7 @@ from pytorch_lightning import seed_everything
 from utils.metrics import *
 from pytorch3d.loss import chamfer_distance
 from utils.depth_loss import DepthLoss
+from utils.joint_geometry import initial_half_transform
 
 
 class Trainer:
@@ -87,12 +89,13 @@ class Trainer:
         self.depth_loss = DepthLoss()
 
     def init_deform(self,):
+        checkpoint = os.path.join(
+            self.coarse_model_path,
+            f'point_cloud/iteration_{self.coarse_iteration}',
+        )
         if self.args.center_init == 'cgs':
             center, scale = self.deform.deform.seg_model.init_from_file(
-                os.path.join(
-                    self.coarse_model_path,
-                    f'point_cloud/iteration_{self.coarse_iteration}/center_info.npy',
-                )
+                os.path.join(checkpoint, 'center_info.npy')
             )
             # import torch.nn as nn
             # joints = torch.randn_like(self.deform.deform.joints) * 1e-5
@@ -107,7 +110,18 @@ class Trainer:
             print('Init center from pcd.')
         else:
             print('Init center randomly.')
-        self.deform.load_weights(self.dataset.model_path, iteration=-1)
+        loaded = self.deform.load_weights(self.dataset.model_path, iteration=-1)
+        if not loaded and self.args.num_slots == 2:
+            quaternion, translation, _ = initial_half_transform(
+                checkpoint, self.args.joint_initialization_path
+            )
+            joint = torch.as_tensor(
+                np.r_[quaternion, translation],
+                dtype=self.deform.deform.joints.dtype,
+                device=self.deform.deform.joints.device,
+            )
+            with torch.no_grad():
+                self.deform.deform.joints[0].copy_(joint)
         self.deform.train_setting(self.opt)
 
     def train(self, iters=5000):
@@ -156,13 +170,13 @@ class Trainer:
         # depth loss
         depth_loss = torch.tensor([0.])
         if self.metric_depth_loss_weight > 0:
-            depth = render_pkg_re['depth']
-            gt_depth = viewpoint_cam.depth.cuda()
-            invalid_mask = (gt_depth < 0.1) & (gt_alpha_mask > 0.5)
-            valid_mask = ~invalid_mask
-            n_valid_pixel = valid_mask.sum()
-            if n_valid_pixel > 100:
-                depth_loss = (torch.log(1 + torch.abs(depth - gt_depth)) * valid_mask).sum() / n_valid_pixel
+            if viewpoint_cam.depth is None:
+                raise ValueError('metric depth supervision was requested but depth is unavailable')
+            measured_depth_loss = masked_metric_depth_loss(
+                render_pkg_re['depth'], viewpoint_cam.depth.cuda(), gt_alpha_mask
+            )
+            if measured_depth_loss is not None:
+                depth_loss = measured_depth_loss
                 loss = loss + depth_loss * self.metric_depth_loss_weight
 
         mono_depth_loss = torch.tensor([0.])

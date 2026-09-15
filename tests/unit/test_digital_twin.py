@@ -37,11 +37,11 @@ def test_depth_observation_requires_explicit_unit() -> None:
     )
     with pytest.raises(ValidationError, match="explicit unit"):
         ObservationStream(
-            name="can.start.001.depth",
+            name="can.start.depth",
             modality=ObservationModality.DEPTH,
             state="can.start",
             role=ObservationStateRole.RECONSTRUCTION,
-            encoding="npy.packed_png16",
+            encoding="npy.depth.uint16",
             frame_count=1,
             artifacts=(artifact,),
             coordinate_frame="camera",
@@ -64,11 +64,11 @@ def test_view_alignment_policy_is_explicit_and_modality_scoped() -> None:
     )
     with pytest.raises(ValidationError, match="only valid for RGB"):
         ObservationStream(
-            name="can.start.001.depth",
+            name="can.start.depth",
             modality=ObservationModality.DEPTH,
             state="can.start",
             role=ObservationStateRole.RECONSTRUCTION,
-            encoding="npy.packed_png16",
+            encoding="npy.depth.uint16",
             frame_count=1,
             artifacts=(depth,),
             unit="mm",

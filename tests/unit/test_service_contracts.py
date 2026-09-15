@@ -40,9 +40,22 @@ class _CanonicalAdapter:
             )
             payload = f"fixture:{requirement.name}".encode()
             if requirement.content_kind == "json":
-                payload = json.dumps(
-                    {"schema": requirement.schema_discriminator or "fixture"}
-                ).encode()
+                document = {"schema": requirement.schema_discriminator or "fixture"}
+                if requirement.schema_discriminator == "physrealx.geometry-reconstruction-report/1":
+                    document.update(
+                        unit="m",
+                        coordinate_frame="capture",
+                        prediction={
+                            "parts": {"whole": {}},
+                            "segmented": False,
+                            "states": {
+                                "observed": {
+                                    "whole": artifacts.put_bytes(b"mesh").model_dump(mode="json")
+                                }
+                            },
+                        },
+                    )
+                payload = json.dumps(document).encode()
             elif requirement.content_kind == "zip":
                 stream = io.BytesIO()
                 with zipfile.ZipFile(stream, "w") as archive:

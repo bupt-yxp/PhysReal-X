@@ -35,7 +35,7 @@ def mesh_reference(uri: str, store: ArtifactStore) -> Any:
     return ArtifactRef(artifact_id=identifier, size_bytes=len(payload), media_type=media)
 
 
-def load_meshes(store: ArtifactStore, reference: ArtifactRef) -> list[Any]:
+def load_meshes(store: ArtifactStore, reference: ArtifactRef, *, process: bool = True) -> list[Any]:
     from importlib import import_module
 
     import numpy as np
@@ -51,6 +51,7 @@ def load_meshes(store: ArtifactStore, reference: ArtifactRef) -> list[Any]:
             file_type=formats[reference.media_type],
             force="scene",
             resolver={},
+            process=process,
         )
         meshes = list(scene.dump())
     except (ValueError, OSError, KeyError) as error:
@@ -66,6 +67,33 @@ def load_meshes(store: ArtifactStore, reference: ArtifactRef) -> list[Any]:
         ):
             raise DomainValidationError("mesh must contain finite triangulated geometry")
     return meshes
+
+
+def _exterior_samples(parts: list[Any], proxy: Any, seed: int) -> Any:
+    """Sample the proxy union boundary, excluding buried convex partition faces."""
+    import numpy as np
+    import trimesh
+    from scipy.spatial import ConvexHull
+
+    samples, faces = trimesh.sample.sample_surface(proxy, 5000, seed=seed)
+    epsilon = max(float(np.ptp(proxy.vertices, axis=0).max()) * 1e-7, 1e-9)
+    outside = samples + proxy.face_normals[faces] * epsilon
+    buried = np.zeros(len(samples), dtype=bool)
+    for part in parts:
+        bounds = part.bounds
+        candidates = np.flatnonzero(
+            (~buried) & np.all(outside > bounds[0], axis=1) & np.all(outside < bounds[1], axis=1)
+        )
+        if not len(candidates):
+            continue
+        equations = ConvexHull(part.vertices).equations
+        buried[candidates] |= np.all(
+            outside[candidates] @ equations[:, :3].T + equations[:, 3] < -epsilon / 10,
+            axis=1,
+        )
+    if int((~buried).sum()) < 500:
+        raise MethodExecutionError("collision proxy has insufficient exterior surface samples")
+    return samples[~buried]
 
 
 class CollisionConfig(DomainModel):
@@ -86,7 +114,7 @@ class CollisionAdapter:
         input_contract="VisualMesh/1",
         output_contract="CollisionGeometry/1+CollisionBuildReport/1",
         python=">=3.10,<3.13",
-        version="1.2.0",
+        version="1.4.0",
     )
 
     def probe(self) -> MethodProbe:
@@ -95,6 +123,7 @@ class CollisionAdapter:
                 "numpy": ("numpy", "1.26.4"),
                 "trimesh": ("trimesh", "4.5.1"),
                 "coacd": ("coacd", "1.0.9"),
+                "rtree": ("rtree", "1.4.1"),
             }
         )
 
@@ -122,9 +151,10 @@ class CollisionAdapter:
         if config.weld_tolerance_m:
             # Explicitly bounded seam welding; never fill missing surfaces or cabinet openings.
             digits = math.ceil(-math.log10(config.weld_tolerance_m / math.sqrt(3)))
+            meshes = [trimesh.util.concatenate(meshes)]
             for mesh in meshes:
                 original_count = len(mesh.vertices)
-                mesh.merge_vertices(digits_vertex=digits)
+                mesh.merge_vertices(digits_vertex=digits, merge_tex=True, merge_norm=True)
                 mesh.update_faces(mesh.nondegenerate_faces())
                 mesh.remove_unreferenced_vertices()
                 welded_vertices += original_count - len(mesh.vertices)
@@ -139,7 +169,7 @@ class CollisionAdapter:
             convex_volume_agrees = mesh.volume > 0 and math.isclose(
                 float(hull.volume), float(mesh.volume), rel_tol=1e-6
             )
-            if mesh.is_convex or convex_volume_agrees:
+            if mesh.is_volume and (mesh.is_convex or convex_volume_agrees):
                 parts.append(hull)
             else:
                 decomposition = coacd.run_coacd(
@@ -148,6 +178,19 @@ class CollisionAdapter:
                     real_metric=True,
                     max_convex_hull=config.max_parts,
                     preprocess_mode="off" if mesh.is_volume else "on",
+                    preprocess_resolution=max(
+                        50,
+                        min(
+                            256,
+                            math.ceil(
+                                math.sqrt(3)
+                                * float(np.ptp(mesh.vertices, axis=0).max())
+                                / config.threshold_m
+                            ),
+                        ),
+                    )
+                    if not mesh.is_volume
+                    else 50,
                     seed=config.seed,
                 )
                 # Rebuild each convex hull from its vertices. Native triangulation can
@@ -157,18 +200,43 @@ class CollisionAdapter:
                     trimesh.Trimesh(vertices=v, faces=f, process=True).convex_hull
                     for v, f in decomposition
                 )
+        # GLB stores positions as float32. Build topology at that precision so
+        # quantization cannot turn nearly coplanar hull faces non-convex on reload.
+        parts = [trimesh.convex.convex_hull(part.vertices.astype(np.float32)) for part in parts]
         invalid = sum(not part.is_volume or not part.is_convex for part in parts)
         if not parts or len(parts) > config.max_parts or invalid:
             raise MethodExecutionError(
                 f"CoACD collision gates failed: {len(parts)} parts (limit {config.max_parts}), "
                 f"{invalid} invalid convex volumes"
             )
-        volume = sum(float(mesh.volume) for mesh in meshes)
-        volume_error = abs(sum(float(part.volume) for part in parts) - volume) / volume
-        if volume <= 0 or not np.isfinite(volume_error):
-            raise MethodExecutionError("collision source has no positive oriented volume estimate")
-        if volume_error > config.max_volume_error:
-            raise MethodExecutionError("collision proxy volume error exceeds tolerance")
+        quality_metrics: dict[str, float] = {}
+        if source_closed:
+            volume = sum(float(mesh.volume) for mesh in meshes)
+            volume_error = abs(sum(float(part.volume) for part in parts) - volume) / volume
+            if not np.isfinite(volume_error) or volume_error > config.max_volume_error:
+                raise MethodExecutionError(
+                    f"collision proxy volume error {volume_error:.6g} exceeds "
+                    f"tolerance {config.max_volume_error:.6g}"
+                )
+            quality_metrics["relative_volume_error"] = volume_error
+        else:
+            # An open surface has no defined enclosed volume. Verify geometry
+            # directly instead of comparing signed, origin-dependent estimates.
+            source_mesh = trimesh.util.concatenate(meshes)
+            proxy_mesh = trimesh.util.concatenate(parts)
+            source_samples, _ = trimesh.sample.sample_surface(source_mesh, 5000, seed=config.seed)
+            proxy_samples = _exterior_samples(parts, proxy_mesh, config.seed)
+            source_distance = trimesh.proximity.closest_point(proxy_mesh, source_samples)[1]
+            proxy_distance = trimesh.proximity.closest_point(source_mesh, proxy_samples)[1]
+            p95 = max(
+                float(np.quantile(distance, 0.95)) for distance in (source_distance, proxy_distance)
+            )
+            if not np.isfinite(p95) or p95 > config.threshold_m:
+                raise MethodExecutionError(
+                    f"collision proxy surface P95 {p95:.6g} m exceeds "
+                    f"threshold {config.threshold_m:.6g} m"
+                )
+            quality_metrics["bidirectional_surface_p95_m"] = p95
         scene = trimesh.Scene()
         for index, part in enumerate(parts):
             scene.add_geometry(
@@ -178,11 +246,12 @@ class CollisionAdapter:
             scene.export(file_type="glb"), media_type="model/gltf-binary"
         )
         # Reopen the actual exported bytes, rather than reporting only in-memory quality.
-        if len(load_meshes(artifacts, collision)) != len(parts):
-            raise MethodExecutionError("collision GLB roundtrip changed the convex part count")
+        decoded = load_meshes(artifacts, collision)
+        if len(decoded) != len(parts) or any(not p.is_volume or not p.is_convex for p in decoded):
+            raise MethodExecutionError("collision GLB roundtrip changed valid convex geometry")
         metrics = {
             "convex_parts": float(len(parts)),
-            "relative_volume_error": volume_error,
+            **quality_metrics,
             "welded_vertices": float(welded_vertices),
         }
         report = {
@@ -199,13 +268,15 @@ class CollisionAdapter:
                 "source_closed_positive_volume": source_closed,
                 "volume_comparison_scope": "closed_surface"
                 if source_closed
-                else "oriented_surface_estimate",
+                else "not_applicable_open_surface",
+                "source_surface_samples": 0 if source_closed else len(source_samples),
+                "proxy_surface_samples": 0 if source_closed else len(proxy_samples),
             },
             "metrics": metrics,
             "gates": {
                 "convex": True,
                 "closed_positive_volume": True,
-                "volume_error": True,
+                ("volume_error" if source_closed else "surface_error"): True,
                 "roundtrip": True,
             },
         }

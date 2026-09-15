@@ -1,0 +1,3 @@
+repository = "https://github.com/NVlabs/DigitalTwinArt"
+revision = "1a48b402e4bf4bb7731296e8e230f0db3d86fe4f"
+license = "LicenseRef-NVIDIA-Research"

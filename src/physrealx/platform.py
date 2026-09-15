@@ -6,8 +6,9 @@ import uuid
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from importlib.util import find_spec
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TypeVar
+from urllib.parse import quote, unquote, urlsplit
 
 from pydantic import BaseModel
 
@@ -49,6 +50,7 @@ from physrealx.errors import (
 from physrealx.integrations.act import ACTPolicy, ACTTrainer
 from physrealx.integrations.artgs import ArtGSMethodAdapter
 from physrealx.integrations.colmap import create_colmap_adapter
+from physrealx.integrations.dtart import DTArtMethodAdapter
 from physrealx.integrations.physical import register_physical_methods
 from physrealx.operation_validation import validate_operation_output
 from physrealx.plugins import PluginRegistry
@@ -140,6 +142,7 @@ class PhysRealX:
         plugins = PluginRegistry()
         plugins.register_importer(ArtModelingImporter())
         plugins.register_adapter(ArtGSMethodAdapter())
+        plugins.register_adapter(DTArtMethodAdapter())
         colmap = create_colmap_adapter()
         if colmap is not None:
             plugins.register_adapter(colmap)
@@ -165,16 +168,60 @@ class PhysRealX:
     def _register_asset(self, spec: AssetSpec) -> VersionedRef:
         return self._register(spec, spec.reference(), "application/vnd.physrealx.asset+json")
 
-    def _inspect_asset_source(self, source: Path, importer: str) -> SourceInspection:
+    def _inspect_asset_source(
+        self, source: Path, importer: str, config: Mapping[str, JSONValue] | None = None
+    ) -> SourceInspection:
         adapter = self.plugins.importer(importer)
         try:
-            return adapter.inspect(source)
+            inspection = adapter.inspect(source, config=config)
         except PhysRealXError:
             raise
         except Exception as error:
             raise SourcePackageError(
                 f"observation importer {adapter.descriptor.name!r} failed during inspection"
             ) from error
+        return inspection.model_copy(update={"source_uri": self._source_locator(source)})
+
+    def _source_locator(self, source: Path) -> str:
+        """Return a stable project-relative URI when the source belongs to this checkout."""
+
+        resolved = source.expanduser().resolve(strict=True)
+        if self.workspace.name == ".physrealx":
+            try:
+                relative = resolved.relative_to(self.workspace.parent)
+            except ValueError:
+                pass
+            else:
+                return f"project:///{quote(relative.as_posix(), safe='/')}"
+        return resolved.as_uri()
+
+    def _source_path(self, locator: str) -> Path | None:
+        """Resolve supported source locators without making their spelling an identity."""
+
+        parsed = urlsplit(locator)
+        if parsed.query or parsed.fragment:
+            return None
+        if parsed.scheme == "project" and not parsed.netloc and self.workspace.name == ".physrealx":
+            relative = PurePosixPath(unquote(parsed.path).lstrip("/"))
+            if not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
+                return None
+            candidate = self.workspace.parent.joinpath(*relative.parts)
+        elif parsed.scheme == "file" and parsed.netloc in {"", "localhost"}:
+            candidate = Path(unquote(parsed.path))
+        else:
+            return None
+        try:
+            return candidate.resolve(strict=True)
+        except (OSError, RuntimeError):
+            return None
+
+    def _same_source(self, locator: str, source: Path) -> bool:
+        stored = self._source_path(locator)
+        try:
+            requested = source.expanduser().resolve(strict=True)
+        except (OSError, RuntimeError):
+            return False
+        return stored == requested
 
     def _ingest_asset_source(
         self,
@@ -186,6 +233,7 @@ class PhysRealX:
         display_name: str,
         config: Mapping[str, JSONValue],
     ) -> VersionedRef:
+        source_locator = self._source_locator(source)
         try:
             existing = self.repository.get_resource(
                 ResourceType.OBSERVATION_SET.value, resource_id, version
@@ -195,7 +243,7 @@ class PhysRealX:
         else:
             manifest = self._load_registered(existing, ObservationSetManifest)
             if (
-                manifest.source_uri != source.expanduser().resolve().as_uri()
+                not self._same_source(manifest.source_uri, source)
                 or manifest.importer != importer
                 or manifest.metadata.get("import_config") != dict(config)
             ):
@@ -227,6 +275,7 @@ class PhysRealX:
             or manifest.importer_version != adapter.descriptor.version
         ):
             raise DomainValidationError("observation importer returned mismatched identity")
+        manifest = manifest.model_copy(update={"source_uri": source_locator})
         referenced = tuple(
             artifact for stream in manifest.streams for artifact in stream.artifacts
         ) + tuple(item.artifact for item in manifest.attachments)

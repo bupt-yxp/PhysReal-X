@@ -142,3 +142,69 @@ def load_rgbd(
         if set(names) != expected or not result:
             raise DomainValidationError("RGB-D archive payload differs from its manifest")
     return camera, depth_manifest, result
+
+
+def centered_pinhole(views: list[RGBDView]) -> dict[str, Any]:
+    """Choose one centered pinhole covering calibrated views at their RGB-D resolution."""
+    import pycolmap
+
+    if not views or len({view.depth.shape for view in views}) != 1:
+        raise DomainValidationError("rectification requires a common nonempty RGB-D resolution")
+    height, width = views[0].depth.shape
+    models = [
+        pycolmap.Camera(
+            model=v.camera["model"],
+            width=v.camera["width"],
+            height=v.camera["height"],
+            params=v.camera["params"],
+        )
+        for v in views
+    ]
+    fx = min(m.focal_length_x * width / m.width for m in models)
+    fy = min(m.focal_length_y * height / m.height for m in models)
+    return {
+        "model": "PINHOLE",
+        "width": width,
+        "height": height,
+        "params": [fx, fy, width / 2, height / 2],
+    }
+
+
+def rectify_rgbd(view: RGBDView, target: dict[str, Any]) -> RGBDView:
+    """Resample RGB, depth and masks together; poses and metric depth values stay fixed."""
+    import cv2
+    import numpy as np
+    import pycolmap
+
+    height, width = target["height"], target["width"]
+    fx, fy, cx, cy = target["params"]
+    y, x = np.mgrid[:height, :width]
+    rays = np.column_stack(((x.ravel() - cx) / fx, (y.ravel() - cy) / fy, np.ones(height * width)))
+    model = pycolmap.Camera(
+        model=view.camera["model"],
+        width=view.camera["width"],
+        height=view.camera["height"],
+        params=view.camera["params"],
+    )
+    source_height, source_width = view.depth.shape
+    pixels = np.asarray(model.img_from_cam(rays)) * [
+        source_width / model.width,
+        source_height / model.height,
+    ]
+    mapping = pixels.reshape(height, width, 2).astype(np.float32)
+    rgb = cv2.remap(view.rgb, mapping[..., 0], mapping[..., 1], cv2.INTER_LINEAR)
+    depth = cv2.remap(view.depth, mapping[..., 0], mapping[..., 1], cv2.INTER_NEAREST)
+    mask = (
+        cv2.remap(view.mask.astype(np.uint8), mapping[..., 0], mapping[..., 1], cv2.INTER_NEAREST)
+        > 0
+    )
+    return RGBDView(
+        view.frame_id,
+        view.stream,
+        target,
+        view.pose,
+        rgb,
+        np.where(mask, depth, 0),
+        rays.reshape(height, width, 3),
+        mask,
+    )

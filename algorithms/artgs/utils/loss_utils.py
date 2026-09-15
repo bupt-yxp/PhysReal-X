@@ -30,6 +30,15 @@ def l2_loss(network_output, gt):
     return ((network_output - gt) ** 2).mean()
 
 
+def masked_metric_depth_loss(depth, gt_depth, alpha_mask, min_valid_pixels=100):
+    """Return metric depth loss on measured foreground pixels, or ``None``."""
+    valid = (gt_depth >= 0.1) & (alpha_mask > 0.5)
+    count = valid.sum()
+    if count <= min_valid_pixels:
+        return None
+    return (torch.log1p(torch.abs(depth - gt_depth)) * valid).sum() / count
+
+
 def gaussian(window_size, sigma):
     gauss = torch.Tensor([exp(-(x - window_size // 2) ** 2 / float(2 * sigma ** 2)) for x in range(window_size)])
     return gauss / gauss.sum()

@@ -216,6 +216,10 @@ def test_capability_service_executes_and_publishes_immutable_evidence(tmp_path: 
     assert first == second
     assert first.spec.method.capability is MethodCapability.COLLISION_BUILD
     assert first.outputs[0].name == "collision_geometry"
+    assert first.output("collision_geometry") == first.outputs[0].artifact
+    assert first.output("collision_build_report") == first.outputs[1].artifact
+    with pytest.raises(KeyError, match="has no output 'absent'"):
+        first.output("absent")
     assert first.metrics == {"part_count": 3.0}
     operation_ref = platform.operations.list()[0]
     assert platform.operations.get(operation_ref) == first

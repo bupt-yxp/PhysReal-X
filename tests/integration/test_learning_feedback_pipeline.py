@@ -312,7 +312,7 @@ def test_dino_wm_official_causal_predictor_and_typed_lifecycle(episode_data, mon
             return {"x_norm_patchtokens": features.repeat(1, 1, 128) * self.anchor}
 
     monkeypatch.setattr(module, "encoder_network", FixtureEncoder)
-    px, _, _, _, _, snapshot_ref = episode_data
+    px, _, _, _, episodes, snapshot_ref = episode_data
     weights = px.artifacts.put_bytes(
         save(FixtureEncoder().state_dict()), media_type="application/vnd.safetensors"
     )
@@ -339,6 +339,21 @@ def test_dino_wm_official_causal_predictor_and_typed_lifecycle(episode_data, mon
     assert state.shape == (2, 2) and np.isfinite(state).all()
     assert (
         document["source"] == "world_model" and document["independent_physical_validation"] is False
+    )
+    reference = next(row for row in episodes if row.episode_id == summary.episode_id)
+    evaluation = module.WorldModelRolloutEvaluation.model_validate(
+        read(
+            px,
+            px.world_models.evaluate_rollout(output(rollout, "rollout"), reference, start_index=2),
+        )
+    )
+    assert evaluation.horizon == 2
+    assert evaluation.reference_episode_id == reference.episode_id
+    assert evaluation.reference_states.media_type == "application/x-npy"
+    assert set(evaluation.signals) == {"joint.position", "joint.velocity"}
+    assert all(
+        len(signal.rmse) == signal.column_stop - signal.column_start
+        for signal in evaluation.signals.values()
     )
     invalid = px.artifacts.put_json(
         module.WorldModelActions(values=((0.2,),), interval_seconds=0.1)

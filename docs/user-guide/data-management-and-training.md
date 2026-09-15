@@ -6,7 +6,7 @@
 
 `datasets.ingest(..., method="episode_dataset")` 合并相同观测/动作 Schema 的不可变数据集，核查实际 NPY 的 dtype/shape、时间戳、源标签和 Episode 摘要。`datasets.snapshot(..., method="episode_split")` 发布核心 `DatasetSnapshot`，包含精确数据、代码源树、环境及 `split.train/validation/test`。
 
-真实数据按 capture_id 分组；仿真按场景版本、任务版本与种子分组。所有帧与窗口留在各自 Episode 内。该划分验证新 episode/种子，不代表未见资产泛化；cabinet2 只有一个对象。
+真实数据按 capture_id 分组；仿真按场景版本、任务版本与种子分组。所有帧与窗口留在各自 Episode 内。该划分验证新 episode/种子，不代表未见资产泛化；oven4 只有一个对象。
 
 Episode 保留任务语言引用、观测、动作、下一状态、奖励、终止与成败信息，供模仿学习、RL、VLA 和世界模型读取。当前执行的是 ACT 与 DINO-WM；没有把 RL/VLA 数据接口写成已训练的 RL/VLA 模型。
 
@@ -22,7 +22,7 @@ Episode 保留任务语言引用、观测、动作、下一状态、奖励、终
 
 返回核心 `WorldModelBundle` 与 `TrainingReport`，与核心训练生命周期共用快照/代码/环境/权重身份。编码器权重首次从 Meta 官方固定地址下载、校验架构并转为 safetensors；此后复用当前工作区。
 
-`world_models.rollout(model, context, actions, method="dino_wm")` 仅读取起点及之前的上下文，核对历史动作、单位和频率，生成未来 RGB、状态与时间戳。模块五使用 history=1、16 步可微滚动训练；按独立 validation 组选择检查点，再在 test 组的多个起点进行 100 步评估。正常动作与零动作分别对照完整的五秒 MuJoCo 真值，并与保持初始状态、特征和图像的基线比较。测试窗口不参与选模。
+`world_models.rollout(model, context, actions, method="dino_wm")` 仅读取起点及之前的上下文，核对历史动作、单位和频率，生成未来 RGB、状态与时间戳。模块五使用 history=1、100 步可微滚动训练。状态头不依赖视觉分支，两者分别按独立 validation 组选择检查点；视觉分支同时校准有界残差增益，抑制长时递归漂移。最终组合的权重、选择步数、增益和曲线写入训练报告。test 组只用于多个起点的 100 步评估；正常动作与零动作分别对照完整的五秒 MuJoCo 真值，并与保持初始状态、特征和图像的基线比较。测试窗口不参与检查点或增益选择。
 
 超出记录轨迹的未来没有真值，不计入精度。潜在特征变化只是未校准诊断量，不能当作概率置信区间或物理安全保证。混合单位状态误差报告归一化量，位置误差另以米报告。
 

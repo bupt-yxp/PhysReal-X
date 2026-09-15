@@ -8,11 +8,11 @@ python -m pip install -e '.[physical]'
 
 阶段输入均为已经写入当前制品库的 `ArtifactRef`。所有数值必须明确单位、来源与不确定度，缺失物性不会自动补默认值。
 
-## cabinet2 的显式先验路径
+## oven4 的显式先验路径
 
-模块二使用 `reference_asset_assembly`：读取 USD 完整部件/关节，逐 link 构建 CoACD 碰撞体，明确给出密度、摩擦、恢复系数、阻尼、关节摩擦和作用力上限。质量从封闭视觉体积与指定密度计算，惯量为包围盒近似，全部保持 `source=default / confidence=0 / evidence_state=prior`。
+模块二使用 `reference_asset_assembly`：读取显式投影后的 USD 部件/关节，逐 link 构建 CoACD 碰撞体，明确给出密度、摩擦、恢复系数、阻尼、关节摩擦和作用力上限。质量先验从封闭凸碰撞代理体积之和与指定密度计算（重叠体积可能重复计入），惯量为包围盒近似，全部保持 `source=default / confidence=0 / evidence_state=prior`。
 
-相邻导轨接触由关节模型表示时，显式记录 `contact_exclusions`；MuJoCo 和 USD FilteredPairsAPI 使用同一排除关系，外部推杆碰撞保持开启。原始非流形 CAD 若需要 CoACD 修复，必须显式选择 `preprocessing="coacd"`，输出几何与体积误差仍受检查。没有把修复网格或模型先验当作独立测量。
+相邻部件接触由关节模型表示时，显式记录 `contact_exclusions`；MuJoCo 和 USD FilteredPairsAPI 使用同一排除关系，外部推杆碰撞保持开启。原始非流形 CAD 若需要 CoACD 修复，必须显式选择 `preprocessing="coacd"`，封闭源网格检查体积偏差；开放源表面不计算无定义的体积误差，改为检查源表面与碰撞代理外表面的双向 P95 距离。没有把修复网格或模型先验当作独立测量。
 
 下列独立辨识/组装路径仍可使用真实测量，不能由当前先验包自行提供其验收真值。
 
@@ -22,12 +22,12 @@ python -m pip install -e '.[physical]'
 collision = px.assets.build_collision(
     visual_mesh,
     method="coacd",
-    config={"source_unit": "m", "link": "drawer", "threshold_m": 0.005},
+    config={"source_unit": "m", "link": "e_door_197", "threshold_m": 0.005},
 )
 collision_report = next(o.artifact for o in collision.outputs if o.name == "collision_build_report")
 ```
 
-输入为自包含 GLB、PLY 或 OBJ。每个部件必须封闭、绕序一致且具有正体积；CoACD 在米制阈值下分解，已凸的部件直接保留。输出验证凸性、体积偏差、部件数量和 GLB 重读。几何须已转换到相应 link 的局部坐标；算法不从图像猜测尺度。
+输入为自包含 GLB、PLY 或 OBJ。严格模式要求部件封闭、绕序一致且具有正体积；显式 `preprocessing="coacd"` 允许开放源表面。已封闭且凸的部件直接保留，其他几何按米制阈值分解。输出验证凸性、适用的体积／表面误差、部件数量和 GLB 重读；外表面采样排除凸分解的内部切面。几何须已转换到相应 link 的局部坐标；算法不从图像猜测尺度。
 
 ## 2. 关节物性辨识
 
@@ -56,9 +56,9 @@ joint_physics = next(o.artifact for o in identified.outputs if o.name == "identi
 from physrealx.integrations.assembly import AssetAssemblyInput
 
 assembly_input = AssetAssemblyInput(
-    resource_id="cabinet.asset",
+    resource_id="oven4.asset",
     version="1.0.0",
-    display_name="Cabinet",
+    display_name="Oven",
     camera_rig=metric_camera,
     articulation=articulation_model,
     collision_reports=tuple(per_link_collision_reports),

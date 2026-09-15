@@ -10,10 +10,11 @@ import pytest
 
 from physrealx import ArtifactRef, PhysRealX
 from physrealx.errors import DomainValidationError, MethodExecutionError, ResourceConflictError
+from physrealx.integrations._artifacts import read_array
 from physrealx.integrations.capture_rgbd import (
+    _metric_object_depth_validity,
     capture_frames,
     capture_support_region,
-    support_object_mask,
 )
 from physrealx.integrations.depth import CalibratedRGBDBundle, DepthFrame
 from physrealx.integrations.rgbd import MetricRGBDInput
@@ -78,9 +79,9 @@ def capture(tmp_path):
     dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_6X6_50)
     for state in ("start", "end"):
         directory = root / f"real/can/{state}"
-        (directory / "img/001").mkdir(parents=True)
+        (directory / "img").mkdir(parents=True)
+        (directory / "mask").mkdir(parents=True)
         (directory / "depth").mkdir()
-        payloads = []
         for index in range(8):
             rgb = np.full((240, 320, 3), 230, np.uint8)
             for identifier, (x, y) in zip(
@@ -89,12 +90,19 @@ def capture(tmp_path):
                 marker = cv2.aruco.generateImageMarker(dictionary, identifier, 35)
                 rgb[y : y + 35, x : x + 35] = marker[..., None]
             depth = np.full((240, 320), 1000, np.uint16)
-            depth[65:175, 105:215] = 660
+            # One sensor unit is shared by both articulated states even though their
+            # observed heights differ.  The taller endpoint matches the USD envelope.
+            depth[65:175, 105:215] = 660 if state == "start" else 800
             depth[110:112, 150:152] = 0
+            # Positive sensor corruption inside the annotated object. It is not
+            # the uint16 invalid sentinel and must be rejected geometrically.
+            depth[85:87, 130:132] = 65000
             rgb[65:175, 105:215] = [75, 130, 180]
-            assert cv2.imwrite(str(directory / f"img/001/{index}.png"), rgb)
-            payloads.append(cv2.imencode(".png", depth)[1].tobytes())
-        np.save(directory / "depth/001_depth.npy", np.array(payloads))
+            assert cv2.imwrite(str(directory / f"img/{index}.png"), rgb)
+            mask = np.zeros(depth.shape, np.uint8)
+            mask[65:175, 105:215] = 255
+            assert cv2.imwrite(str(directory / f"mask/{index}.png"), mask)
+            np.save(directory / f"depth/{index}.npy", depth)
     px = PhysRealX.open(tmp_path / "workspace", discover_plugins=False)
     config = {
         "depth_unit": "native_u16_unscaled",
@@ -111,7 +119,7 @@ def capture(tmp_path):
     manifest = px.assets.get_observations(obs)
     streams = []
     for state in ("start", "end"):
-        name = f"can.{state}.001.rgb"
+        name = f"can.{state}.rgb"
         rgb = next(s for s in manifest.streams if s.name == name)
         images = [
             {
@@ -164,8 +172,8 @@ def capture(tmp_path):
             "streams": streams,
             "fiducial_alignments": [
                 {
-                    "source_stream_name": "can.start.001.rgb",
-                    "target_stream_name": "can.end.001.rgb",
+                    "source_stream_name": "can.start.rgb",
+                    "target_stream_name": "can.end.rgb",
                     "scale": 1.0,
                     "target_from_source": [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0]],
                 }
@@ -193,7 +201,8 @@ def scale_inputs(px, obs, camera):
     return reference, evidence
 
 
-def test_supplied_usd_and_real_array_contracts_execute_all_cpu_stages(capture):
+@pytest.mark.parametrize("frame_budget", [150, None])
+def test_supplied_usd_and_real_array_contracts_execute_all_cpu_stages(capture, frame_budget):
     px, root, obs, camera, config = capture
     reference, evidence = scale_inputs(px, obs, camera)
     model = read(px, reference)
@@ -208,6 +217,8 @@ def test_supplied_usd_and_real_array_contracts_execute_all_cpu_stages(capture):
         assert state["depth_scale_m"] == pytest.approx(0.001, rel=0.02)
         assert state["scale_m"] == pytest.approx(0.2, rel=0.02)
         assert set(state["fit_views"]).isdisjoint(state["holdout_views"])
+    assert len({state["native_height"] for state in report["streams"].values()}) == 2
+    assert len({state["depth_scale_m"] for state in report["streams"].values()}) == 1
     metric_camera = output(metric, "camera_rig_calibration")
     # A view without enough visible markers for height estimation remains a
     # registered reconstruction view. Do not clip it to a partial image hull.
@@ -215,13 +226,18 @@ def test_supplied_usd_and_real_array_contracts_execute_all_cpu_stages(capture):
     for calibration in metric_document["depth_calibrations"].values():
         calibration["support_views"] = calibration["support_views"][:1]
     metric_camera = px.artifacts.put_json(metric_document)
-    rgbd = px.assets.prepare_rgbd(obs, metric_camera, stride=1, max_frames_per_stream=6)
+    rgbd = px.assets.prepare_rgbd(obs, metric_camera, stride=1, max_frames_per_stream=frame_budget)
     prepared = read(px, rgbd)
-    assert len(prepared["frames"]) == 12
-    assert all(
-        frame["view"]["mask_source"] == "shared_metric_support_volume"
-        for frame in prepared["frames"]
+    assert len(prepared["frames"]) == 16
+    assert all(frame["view"]["mask_source"] == "dataset_annotation" for frame in prepared["frames"])
+    first = prepared["frames"][0]
+    prepared_depth = read_array(px.artifacts, ArtifactRef.model_validate(first["depth"]))
+    prepared_mask = read_array(
+        px.artifacts, ArtifactRef.model_validate(first["view"]["object_mask"])
     )
+    assert not prepared_depth[85:87, 130:132].any()
+    assert prepared_mask[85:87, 130:132].all()
+    assert first["view"]["depth_validity"]["rejected_foreground_pixels"] >= 4
     depth = px.assets.enhance_depth(rgbd, method="rgb_guided_fill")
     depth_report = read(px, output(depth, "enhancement_report"))
     assert depth_report["status"] == "SELF_SUPERVISED"
@@ -275,25 +291,35 @@ def test_supplied_usd_and_real_array_contracts_execute_all_cpu_stages(capture):
         )
 
 
-def test_support_volume_separates_table_object_and_background(capture):
+def test_capture_support_requires_observed_marker_geometry(capture):
     px, _, obs, camera, _ = capture
     _, evidence = scale_inputs(px, obs, camera)
     metric = px.assets.align_cameras_metric(camera, evidence, method="usd_depth_scale")
     document = read(px, output(metric, "camera_rig_calibration"))
-    region = capture_support_region(document)
-    # Fixture support is z=1, viewed from z=0; the valid object is in front.
-    points = np.empty((12, 12, 3))
-    points[:] = [0, 0, 1]
-    points[3:9, 3:9] = [0, 0, 0.66]
-    points[4:8, 9:] = [4, 0, 0.66]  # Above table but outside its footprint.
-    points[:3] = [0, 0, 0.3]  # Too tall to belong to this reference object.
-    mask = support_object_mask(points, np.ones((12, 12), bool), region)
-    assert mask[4:8, 4:8].all()
-    assert not mask[:2].any() and not mask[-2:].any() and not mask[:, -2:].any()
+    capture_support_region(document)
     document["streams"][0]["components"][0]["fiducial_tracks"] = []
     document["streams"][1]["components"][0]["fiducial_tracks"] = []
     with pytest.raises(DomainValidationError, match="four finite"):
         capture_support_region(document)
+
+
+def test_metric_depth_validity_uses_world_geometry_not_camera_distance():
+    depth = np.full((4, 5), 10.0)
+    rays = np.zeros((4, 5, 3))
+    rays[..., 2] = 1
+    pose = np.column_stack((np.eye(3), [0, 0, 9.9]))
+    support = {
+        "origin": np.zeros(3),
+        "normal": np.array([0, 0, 1]),
+        "height_m": 0.2,
+        "plane_rmse_m": 0.001,
+    }
+    valid = _metric_object_depth_validity(depth, rays, np.ones(depth.shape, bool), pose, support)
+    assert valid.all()
+    depth[0, 0] = 20
+    valid = _metric_object_depth_validity(depth, rays, np.ones(depth.shape, bool), pose, support)
+    assert not valid[0, 0]
+    assert valid[1:, 1:].all()
 
 
 def test_reference_loading_preserves_hinge_units_and_rejects_missing_units(capture, tmp_path):
@@ -362,9 +388,7 @@ def test_model_scale_rejects_camera_source_mismatch_and_insufficient_evidence(ca
     image["source_artifact_id"] = evidence.artifact_id
     with pytest.raises(DomainValidationError, match="different capture"):
         list(
-            capture_frames(
-                px.assets.get_observations(obs), px.artifacts, "can.start.001.rgb", [image]
-            )
+            capture_frames(px.assets.get_observations(obs), px.artifacts, "can.start.rgb", [image])
         )
 
 
@@ -377,3 +401,94 @@ def test_self_supervised_depth_cannot_claim_an_independent_reference(capture):
         CalibratedRGBDBundle(camera_rig=camera, frames=(frame,))
     with pytest.raises(ValueError, match="declared together"):
         frame.model_validate({**frame.model_dump(), "reference_capture_id": "other"})
+
+
+@pytest.mark.parametrize("count", [True, 2, 512.5, "150", 513])
+def test_rgbd_frame_budget_rejects_invalid_values(count):
+    from physrealx.integrations.capture_rgbd import prepare_rgbd_frames
+
+    with pytest.raises(DomainValidationError, match="integer stride"):
+        prepare_rgbd_frames(None, None, None, max_frames_per_stream=count)
+
+
+def test_all_rgbd_views_reject_oversized_stream_before_decoding(capture):
+    px, _, obs, camera, _ = capture
+    document = read(px, camera)
+    document["streams"][-1]["components"][0]["images"] *= 65
+    reference = px.artifacts.put_json(document)
+    with pytest.raises(DomainValidationError, match="safety limit"):
+        px.assets.prepare_rgbd(obs, reference, max_frames_per_stream=None)
+
+
+def test_explicit_motion_selection_preserves_world_hinge_and_static_geometry(capture, tmp_path):
+    px, _, obs, _, _ = capture
+    path = tmp_path / "projected.usda"
+    write_reference(path, hinge=True)
+    stage = Usd.Stage.Open(str(path))
+    joint = UsdPhysics.RevoluteJoint.Get(stage, "/model/joint")
+    joint.GetBody0Rel().ClearTargets(True)
+    joint.GetLocalPos0Attr().Set(Gf.Vec3f(1, 2, 3))
+    anchor = UsdPhysics.FixedJoint.Define(stage, "/model/anchor")
+    anchor.CreateBody1Rel().SetTargets([Sdf.Path("/model/body")])
+    extra = UsdGeom.Xform.Define(stage, "/model/Unused")
+    UsdPhysics.RigidBodyAPI.Apply(extra.GetPrim())
+    mesh = UsdGeom.Mesh.Define(stage, "/model/Unused/mesh")
+    box = trimesh.creation.box(extents=(1, 1, 1))
+    mesh.CreatePointsAttr(box.vertices.tolist())
+    mesh.CreateFaceVertexCountsAttr([3] * len(box.faces))
+    mesh.CreateFaceVertexIndicesAttr(box.faces.ravel().tolist())
+    stage.GetRootLayer().Save()
+    original = px.assets.get_observations(obs)
+    manifest = original.model_copy(
+        update={
+            "attachments": tuple(
+                item.model_copy(
+                    update={"artifact": px.artifacts.put_file(path, media_type="model/vnd.usd")}
+                )
+                if item.path == "sim/usd/model.usda"
+                else item
+                for item in original.attachments
+            )
+        }
+    )
+    reference = import_usd_reference(
+        manifest,
+        px.artifacts,
+        usd_path="sim/usd/model.usda",
+        root_link="body",
+        moving_links=("drawer",),
+    )
+    model = read(px, reference)
+    assert len(model["links"]) == 2 and len(model["joints"]) == 1
+    assert model["joints"][0]["origin_m"] == pytest.approx([0.01, 0.02, 0.03])
+    assert model["joints"][0]["parent"] == "body"
+    assert model["motion_selection"]["fixed_bodies"] == ["Unused"]
+    assert next(link for link in model["links"] if link["name"] == "body")["triangle_count"] == 24
+    with pytest.raises(DomainValidationError, match="unknown"):
+        import_usd_reference(
+            manifest,
+            px.artifacts,
+            usd_path="sim/usd/model.usda",
+            root_link="body",
+            moving_links=("typo",),
+        )
+
+
+def test_reference_import_bytes_are_stable_across_wall_clock_changes(capture, monkeypatch):
+    import io
+    import zipfile
+
+    px, _, observations, _, _ = capture
+    first = px.assets.import_reference(observations, usd_path="sim/usd/model.usda")
+    monkeypatch.setattr(zipfile.time, "localtime", lambda *args: (2031, 2, 3, 4, 5, 6, 0, 0, 0))
+    second = px.assets.import_reference(observations, usd_path="sim/usd/model.usda")
+    model, repeated = read(px, first), read(px, second)
+    assert px.artifacts.get_bytes(model["bundle"]["artifact_id"]) == px.artifacts.get_bytes(
+        repeated["bundle"]["artifact_id"]
+    )
+    for original_link, repeated_link in zip(model["links"], repeated["links"]):
+        assert px.artifacts.get_bytes(original_link["geometry"]["artifact_id"]) == (
+            px.artifacts.get_bytes(repeated_link["geometry"]["artifact_id"])
+        )
+    with zipfile.ZipFile(io.BytesIO(px.artifacts.get_bytes(model["bundle"]["artifact_id"]))) as z:
+        assert all(entry.date_time == (1980, 1, 1, 0, 0, 0) for entry in z.infolist())

@@ -38,8 +38,13 @@ class Trainer:
         self.gaussians = [GaussianModel(dataset.sh_degree, fea_dim=0), 
                           GaussianModel(dataset.sh_degree, fea_dim=0)]
 
-        self.scene = Scene(dataset, self.gaussians[0], self.gaussians[1], 
-                           load_iteration=None, init_with_random_pcd=True)
+        self.scene = Scene(
+            dataset,
+            self.gaussians[0],
+            self.gaussians[1],
+            load_iteration=None,
+            init_with_random_pcd=not args.init_from_pcd,
+        )
         
         if args.init_from_pcd:
             print('Init Gaussians with pcd from depth.')

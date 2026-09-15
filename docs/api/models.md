@@ -93,7 +93,7 @@ ScalarParameter(
 | --- | --- |
 | `resource_id` / `version` | 不可变观测集身份 |
 | `importer` / `importer_version` | 解析源包的插件及版本 |
-| `source_uri` | 源包位置，用于审计而非制品读取 |
+| `source_uri` | 源包位置，用于审计而非制品读取；项目内源包使用可迁移的 `project:///` 相对 URI，外部源包使用 `file://` URI |
 | `streams` | 模态、状态、角色、编码、帧数、单位、frame、视图对齐策略和制品 |
 | `attachments` | 标定、元数据、候选重建或候选仿真制品 |
 | `issues` | 预检中保留的结构化警告 |

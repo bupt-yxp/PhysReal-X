@@ -8,7 +8,7 @@ dynamic = ["version"]
 description = "A contract-first platform for reproducible embodied-AI simulation and data generation."
 readme = "README.md"
 requires-python = ">=3.8,<3.13"
-license = "MIT AND Apache-2.0 AND LicenseRef-ArtGS-Research-Only"
+license = "MIT AND Apache-2.0 AND LicenseRef-ArtGS-Research-Only AND LicenseRef-NVIDIA-Research"
 license-files = [
   "LICENSE",
   "THIRD_PARTY_NOTICES.md",
@@ -18,6 +18,8 @@ license-files = [
   "algorithms/act/LICENSE",
   "algorithms/dinov2/LICENSE",
   "algorithms/dino_wm/LICENSE",
+  "algorithms/dtart/LICENSE",
+  "algorithms/dtart/mycuda/torch_ngp_grid_encoder/LICENSE",
 ]
 authors = [
   { name = "PhysReal-X Contributors" },
@@ -48,7 +50,9 @@ physical = [
   "scipy==1.13.1; python_version >= '3.10'",
   "trimesh==4.5.1; python_version >= '3.10'",
   "coacd==1.0.9; python_version >= '3.10'",
+  "rtree==1.4.1; python_version >= '3.10'",
   "mujoco==3.3.7; python_version >= '3.10'",
+  "PyOpenGL==3.1.10; python_version >= '3.10'",
   "usd-core==24.11; python_version >= '3.10'",
 ]
 train = [
@@ -84,6 +88,28 @@ colmap = [
   "numpy==1.26.4; python_version >= '3.10' and python_version < '3.13'",
   "opencv-python==4.10.0.84; python_version >= '3.10' and python_version < '3.13'",
   "pycolmap==4.1.1; python_version >= '3.10' and python_version < '3.13'",
+]
+dtart = [
+  "numpy==1.26.4",
+  "scipy==1.13.1",
+  "trimesh==4.5.1",
+  "open3d==0.18.0",
+  "opencv-python==4.10.0.84",
+  "pycolmap==4.1.1",
+  "imageio==2.34.1",
+  "scikit-image==0.22.0",
+  "scikit-learn==1.5.0",
+  "joblib>=1.4,<2",
+  "PyYAML>=6,<7",
+  "ninja>=1.11,<2",
+  "torch==2.5.1",
+  "kaolin==0.18.0",
+  "kornia==0.7.3",
+  "ruamel.yaml==0.18.6",
+  "mesh-to-sdf==0.0.15",
+  "pyrender @ git+https://github.com/mmatl/pyrender.git@a59963ef890891656fd17c90e12d663233dcaa99",
+  "wandb==0.19.10",
+  "ipykernel==6.29.5",
 ]
 artgs = [
   "imageio==2.34.1; python_version >= '3.10' and python_version < '3.13'",
@@ -124,6 +150,7 @@ path = "src/physrealx/__init__.py"
 allow-direct-references = true
 
 [tool.hatch.build]
+dev-mode-dirs = ["src", "."]
 exclude = [
   "**/__pycache__/**",
   "**/*.egg-info/**",
@@ -133,6 +160,7 @@ exclude = [
   "**/build/**",
   "**/dist/**",
   "/algorithms/artgs/assets/**",
+  "/algorithms/dtart/weights/**",
   "/algorithms/artgs/vis_utils/**",
   "/algorithms/artgs/submodules/diff-gaussian-rasterization/third_party/glm/doc/**",
   "/algorithms/artgs/submodules/diff-gaussian-rasterization/third_party/glm/test/**",
@@ -154,13 +182,13 @@ include = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/physrealx"]
+only-include = ["src/physrealx", "algorithms"]
+
+[tool.hatch.build.targets.wheel.sources]
+"src" = ""
+"algorithms" = "physrealx/_embedded"
 
 [tool.hatch.build.targets.wheel.force-include]
-"algorithms/artgs" = "physrealx/_embedded/artgs"
-"algorithms/act" = "physrealx/_embedded/act"
-"algorithms/dinov2" = "physrealx/_embedded/dinov2"
-"algorithms/dino_wm" = "physrealx/_embedded/dino_wm"
 "THIRD_PARTY_NOTICES.md" = "physrealx/_embedded/THIRD_PARTY_NOTICES.md"
 
 [tool.pytest.ini_options]
@@ -213,6 +241,9 @@ known-first-party = ["physrealx"]
 quote-style = "double"
 indent-style = "space"
 line-ending = "lf"
+# Formatting an accepted Notebook would invalidate its byte-level execution receipt.
+# Notebook code remains linted; format it before an acceptance run when intentionally edited.
+exclude = ["examples/**/*.ipynb"]
 
 [tool.mypy]
 files = ["src/physrealx"]

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from physrealx.digital_twin import (
     ObservationSetManifest,
@@ -122,7 +122,9 @@ class ObservationImporter(Protocol):
 
     descriptor: MethodDescriptor
 
-    def inspect(self, source: Path) -> SourceInspection: ...
+    def inspect(
+        self, source: Path, *, config: Mapping[str, JSONValue] | None = None
+    ) -> SourceInspection: ...
 
     def ingest(
         self,
@@ -184,6 +186,14 @@ class ArtifactStore(ArtifactWriter, ArtifactReader, Protocol):
     def put_json(self, value: object, *, media_type: str = "application/json") -> ArtifactRef: ...
 
     def verify(self, reference: ArtifactRef | str) -> bool: ...
+
+    def export(
+        self,
+        destination: Path,
+        results: Mapping[str, Any],
+        *,
+        files: Mapping[str, ArtifactRef] | None = None,
+    ) -> ArtifactRef: ...
 
 
 @runtime_checkable

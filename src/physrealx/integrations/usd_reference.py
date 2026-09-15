@@ -19,6 +19,7 @@ from physrealx.digital_twin import ObservationSetManifest
 from physrealx.domain import ArtifactRef
 from physrealx.errors import DomainValidationError
 from physrealx.integrations.visuals import usd_visual_mesh
+from physrealx.reconstruction import joint_transform
 
 
 def import_usd_reference(
@@ -26,6 +27,8 @@ def import_usd_reference(
     artifacts: ArtifactStore,
     *,
     usd_path: str,
+    root_link: str | None = None,
+    moving_links: tuple[str, ...] | None = None,
 ) -> ArtifactRef:
     """Extract canonical metre/Z-up mesh and joint evidence from imported USD."""
     from importlib import import_module
@@ -102,13 +105,36 @@ def import_usd_reference(
             raise DomainValidationError("reference USD has no explicit rigid-body parts")
         if len({body.GetName() for body in bodies.values()}) != len(bodies):
             raise DomainValidationError("reference body names must be unique")
+        source_bodies = dict(bodies)
+        selected_root = None
+        if (root_link is None) != (moving_links is None):
+            raise DomainValidationError(
+                "reference motion selection requires root_link and moving_links"
+            )
+        if moving_links is not None:
+            body_paths_by_name = {body.GetName(): key for key, body in bodies.items()}
+            if (
+                not moving_links
+                or len(set(moving_links)) != len(moving_links)
+                or root_link in moving_links
+                or not {root_link, *moving_links} <= body_paths_by_name.keys()
+            ):
+                raise DomainValidationError(
+                    "reference motion selection contains unknown or duplicate bodies"
+                )
+            selected_root = body_paths_by_name[root_link]
+            selected = {selected_root, *(body_paths_by_name[name] for name in moving_links)}
+            bodies = {key: body for key, body in bodies.items() if key in selected}
+        link_names = {key: body.GetName().lower() for key, body in bodies.items()}
+        if len(set(link_names.values())) != len(link_names):
+            raise DomainValidationError("reference body names collide after normalization")
         meshes: dict[str, list[Any]] = {key: [] for key in bodies}
         material_conversions = []
         for prim in stage.Traverse():
             if not prim.IsA(UsdGeom.Mesh):
                 continue
             owner = prim.GetParent()
-            while owner and str(owner.GetPath()) not in bodies:
+            while owner and str(owner.GetPath()) not in source_bodies:
                 owner = owner.GetParent()
             if not owner:
                 raise DomainValidationError(
@@ -156,7 +182,10 @@ def import_usd_reference(
                 triangles = [(face[2], face[1], face[0]) for face in triangles]
                 corners = [(face[2], face[1], face[0]) for face in corners]
             visual, conversion = usd_visual_mesh(prim, vertices, np.asarray(triangles), corners)
-            meshes[str(owner.GetPath())].append(visual)
+            owner_key = str(owner.GetPath())
+            mesh_owner = owner_key if owner_key in bodies else selected_root
+            assert mesh_owner is not None
+            meshes[mesh_owner].append(visual)
             if conversion is not None:
                 material_conversions.append({"mesh": str(prim.GetPath()), **conversion})
         links = []
@@ -171,7 +200,7 @@ def import_usd_reference(
             all_vertices.append(np.concatenate([mesh.vertices for mesh in pieces]))
             links.append(
                 {
-                    "name": bodies[key].GetName(),
+                    "name": link_names[key],
                     "usd_path": key,
                     "geometry": ref.model_dump(mode="json"),
                     "vertex_count": sum(len(mesh.vertices) for mesh in pieces),
@@ -185,12 +214,24 @@ def import_usd_reference(
                 continue
             joint = UsdPhysics.Joint(prim)
             parents, targets = joint.GetBody0Rel().GetTargets(), joint.GetBody1Rel().GetTargets()
+            if selected_root is not None and len(targets) == 1 and str(targets[0]) not in bodies:
+                continue
             if prim.IsA(UsdPhysics.FixedJoint) and not parents:
                 continue
+            world_parent = not parents
+            if world_parent and selected_root is not None:
+                anchored = any(
+                    p.IsA(UsdPhysics.FixedJoint)
+                    and not UsdPhysics.Joint(p).GetBody0Rel().GetTargets()
+                    and UsdPhysics.Joint(p).GetBody1Rel().GetTargets() == [Sdf.Path(selected_root)]
+                    for p in stage.Traverse()
+                )
+                if anchored:
+                    parents = [Sdf.Path(selected_root)]
             if (
                 len(parents) != 1
                 or len(targets) != 1
-                or str(parents[0]) not in bodies
+                or str(parents[0]) not in source_bodies
                 or str(targets[0]) not in bodies
             ):
                 raise DomainValidationError("USD joint must connect exactly two imported bodies")
@@ -210,12 +251,16 @@ def import_usd_reference(
             )
             if not math.isfinite(lower + upper) or not lower < upper:
                 raise DomainValidationError("reference joint requires finite increasing limits")
-            parent_matrix = np.asarray(
-                UsdGeom.Xformable(bodies[parent]).ComputeLocalToWorldTransform(
-                    Usd.TimeCode.Default()
-                ),
-                dtype=float,
-            ).T
+            parent_matrix = (
+                np.eye(4)
+                if world_parent
+                else np.asarray(
+                    UsdGeom.Xformable(source_bodies[parent]).ComputeLocalToWorldTransform(
+                        Usd.TimeCode.Default()
+                    ),
+                    dtype=float,
+                ).T
+            )
             rotation = joint.GetLocalRot0Attr().Get()
             from pxr import Gf
 
@@ -229,11 +274,13 @@ def import_usd_reference(
             axis /= np.linalg.norm(axis)
             position = np.asarray(joint.GetLocalPos0Attr().Get(), dtype=float)
             origin = basis @ (parent_matrix[:3, :3] @ position + parent_matrix[:3, 3]) * scale
+            parent_key = parent if parent in bodies else selected_root
+            assert parent_key is not None
             joints.append(
                 {
-                    "name": bodies[child].GetName() + ".joint",
-                    "parent": bodies[parent].GetName(),
-                    "child": bodies[child].GetName(),
+                    "name": link_names[child] + ".joint",
+                    "parent": link_names[parent_key],
+                    "child": link_names[child],
                     "joint_type": kind,
                     "axis": axis.tolist(),
                     "origin_m": origin.tolist(),
@@ -247,10 +294,10 @@ def import_usd_reference(
         if len(roots) != 1 or len(joints) != len(bodies) - 1:
             raise DomainValidationError("reference articulation must have one connected root")
         # Check connectivity rather than relying on the edge count (cycles can coexist with a root).
-        reached = {bodies[next(iter(roots))].GetName()}
+        reached = {link_names[next(iter(roots))]}
         for _ in bodies:
             reached.update(j["child"] for j in joints if j["parent"] in reached)
-        if reached != {p.GetName() for p in bodies.values()}:
+        if reached != set(link_names.values()):
             raise DomainValidationError(
                 "reference articulation contains disconnected bodies or cycles"
             )
@@ -300,7 +347,9 @@ def import_usd_reference(
         with zipfile.ZipFile(archive_buffer, "w", zipfile.ZIP_DEFLATED) as archive:
             for name in sorted(attachments):
                 if name.startswith(str(path.parent) + "/"):
-                    archive.writestr(name, (root / name).read_bytes())
+                    entry = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+                    entry.compress_type = zipfile.ZIP_DEFLATED
+                    archive.writestr(entry, (root / name).read_bytes())
         bundle = artifacts.put_bytes(archive_buffer.getvalue(), media_type="application/zip")
     return artifacts.put_json(
         {
@@ -318,12 +367,22 @@ def import_usd_reference(
             "source_up_axis": up,
             "bounds_m": bounds.tolist(),
             "dimensions_m": dimensions.tolist(),
-            "root_link": bodies[next(iter(roots))].GetName(),
+            "root_link": link_names[next(iter(roots))],
             "links": links,
             "joints": joints,
             "metadata_conflicts": conflicts,
             "material_runtime_dependencies": sorted(set(shader_dependencies)),
             "material_conversions": material_conversions,
+            "motion_selection": None
+            if moving_links is None
+            else {
+                "root_link": root_link,
+                "moving_links": list(moving_links),
+                "fixed_bodies": [
+                    body.GetName() for key, body in source_bodies.items() if key not in bodies
+                ],
+                "evidence_scope": "explicit_fixed_structure_assumption",
+            },
         }
     )
 
@@ -332,14 +391,37 @@ def evaluate_reference_kinematics(
     reference: ArtifactRef, artifacts: ArtifactStore, positions: dict[str, float]
 ) -> ArtifactRef:
     """Evaluate authored joints in the canonical reference frame, without dynamics."""
-    import numpy as np
-    from scipy.spatial.transform import Rotation
-
     from physrealx.integrations._artifacts import read_json
 
     model = read_json(artifacts, reference, "physrealx.usd-reference/1")
+    transforms = reference_link_transforms(model, positions)
+    return artifacts.put_json(
+        {
+            "schema": "physrealx.reference-kinematics/1",
+            "status": "COMPLETED",
+            "evidence_scope": "authored_usd_kinematics",
+            "independent_motion_validation": False,
+            "source_reference": reference.model_dump(mode="json"),
+            "coordinate_frame": model["coordinate_frame"],
+            "positions": positions,
+            "link_transforms": {name: matrix.tolist() for name, matrix in transforms.items()},
+        }
+    )
+
+
+def reference_link_transforms(model: dict[str, Any], positions: dict[str, float]) -> dict[str, Any]:
+    """Compute rest-to-posed transforms shared by reference preview and evaluation."""
+    import numpy as np
+
     joints = model["joints"]
     names = {joint["name"] for joint in joints}
+    children = [joint["child"] for joint in joints]
+    if (
+        len(names) != len(joints)
+        or len(children) != len(set(children))
+        or model["root_link"] in children
+    ):
+        raise DomainValidationError("reference joint names and child links must be unique")
     if set(positions) != names:
         raise DomainValidationError(
             "reference joint positions must cover exactly the authored joints"
@@ -352,6 +434,8 @@ def evaluate_reference_kinematics(
             raise DomainValidationError("reference joint graph is disconnected or cyclic")
         for joint in ready:
             q = positions[joint["name"]]
+            if joint.get("limit_unit") != {"slide": "m", "hinge": "rad"}.get(joint["joint_type"]):
+                raise DomainValidationError("reference joint limit unit differs from joint type")
             if (
                 isinstance(q, bool)
                 or not isinstance(q, (int, float))
@@ -372,25 +456,7 @@ def evaluate_reference_kinematics(
                 raise DomainValidationError(
                     "reference joint requires a finite unit axis and origin"
                 )
-            motion = np.eye(4)
-            if joint["joint_type"] == "slide":
-                motion[:3, 3] = axis * q
-            elif joint["joint_type"] == "hinge":
-                motion[:3, :3] = Rotation.from_rotvec(axis * q).as_matrix()
-                motion[:3, 3] = origin - motion[:3, :3] @ origin
-            else:
-                raise DomainValidationError("reference kinematics supports slide or hinge joints")
+            motion = joint_transform(joint["joint_type"], axis, origin, q)
             transforms[joint["child"]] = transforms[joint["parent"]] @ motion
             remaining.remove(joint)
-    return artifacts.put_json(
-        {
-            "schema": "physrealx.reference-kinematics/1",
-            "status": "COMPLETED",
-            "evidence_scope": "authored_usd_kinematics",
-            "independent_motion_validation": False,
-            "source_reference": reference.model_dump(mode="json"),
-            "coordinate_frame": model["coordinate_frame"],
-            "positions": positions,
-            "link_transforms": {name: matrix.tolist() for name, matrix in transforms.items()},
-        }
-    )
+    return transforms

@@ -1,11 +1,25 @@
 # 01 · 真实资产与数字孪生
 
-使用 cabinet2 实拍 RGB-D 与配套 USD，展示六个功能章节：输入与环境、相机与尺度、深度准备与增强、几何与运动重建、位姿配准与关节校核、结果与导出。算法由代码中的 `method` 指定。
+“验证图/验证视角”指未参与重建训练、用于评估结果的实拍视图；它们来自同一次采集，不代表独立物理实测。
+
+使用 oven4 实拍 RGB-D、逐帧 Mask 与配套 USD，展示七个功能章节：输入与环境、相机与尺度、数据集 Mask 与深度增强、几何与运动重建、位姿配准与关节校核、重建质量评估、结果与导出。算法由代码中的 `method` 指定。
 
 在现有 PhysReal-X 环境中打开 [demo.ipynb](demo.ipynb)，核对完整解释器路径并全部运行。本模块是入口，没有上游模块；所选方法的实际依赖必须就绪。
 
-实拍只移动下层抽屉，两个运动组与 USD 三个结构部件分别记录。米制定尺和位姿配准分别解决单位与空间对齐。
+实拍展示烤箱门运动。USD 明确包含静态箱体和旋转门两个部件、一个旋转关节；米制定尺和位姿配准分别解决单位与空间对齐。
 
-页面仅展示关键指标、RGB-D 和连续外观；完整证据及执行副本保存在 `output/`。主输出为 `reconstruction.zip`、`reference-model.json`、`reference-registration.json` 和 `digital-twin-report.json`。
+页面展示关键指标、RGB-D、重建外观和关节运动对比；完整证据及执行副本保存在 `output/`。主输出还包括 `calibrated-rgbd.json`。
+
+当前 Notebook 选择 `method="artgs"`，配置两个运动组和一个 USD 参考关节，但不提供关节类型先验，完整执行粗建模、关节类型推断和联合重建三阶段。训练准备层以训练视图的 Mask/米制深度配准 USD 表面，将状态间参考运动仅作为关节初值；验证视图负责门禁，报告明确标记模型条件化。公共关节/CD 计算与重建方法无关。参数见 [ArtGS](../../docs/api/artgs.md)。
+
+质量评估直接调用 `assets.evaluate_reconstruction`：报告静态部件、每个可分离部件及整体按 DTArt 约定缩放的双向平方 CD，以及每个关节的 Axis Ang、Axis Pos、Part Motion。采用固定 DTArt 指标协议，与重建 `method` 无关：项目内部按 DTArt 过滤预测网格并固定每侧采样 10000 点，CD ×1000、Axis Pos ×10 后写入报告；Notebook 直接展示，不再次缩放。CD 单位为 10⁻³ m²，旋转轴位置单位为 10⁻¹ m。本 demo 评估烤箱门的旋转轴方向、位置和运动角，以及烤箱门、箱体和整体 CD。参考状态来自模型配准，末态采用方法输出的网格，未单独输出时由预测运动生成，观测行程不等于 USD 机械限位。完整定义见[资产 API](../../docs/api/assets.md#reconstruction-evaluation)。
 
 CPU 表面融合保留为[可选诊断](../../docs/user-guide/real-assets-and-digital-twin.md#可选表面诊断)，不再作为默认重建的前置步骤。必要阶段失败会停止执行；证据范围见[验收说明](../../docs/acceptance.md)。
+
+相机恢复使用所选状态的全部图片，RGB-D 准备使用全部已注册视图；Notebook 用 `max_frames_per_stream=None` 声明全量，由项目内部统计和选择，项目接口仍校验安全上限。训练阶段选取每状态 **100 张训练图＋50 张验证图**，两状态共 200 张训练图；数量不足会报错，不降为小样本训练。更新 SDK 后先重启内核，再从首格全部运行。
+
+前景直接来自数据集的 `mask/<frame>.png`。导入器要求每张 RGB、Depth 和 Mask 使用相同帧号，RGB-D 准备阶段校验尺寸、取值和非空性；Notebook 与 PhysReal-X 均不执行分割。
+
+评估后通过项目 API 生成 `output/reconstruction-comparison.gif`，Notebook 内嵌播放重建／GT USD 的同视角、同尺度运动对比；仅烤箱门运动。颜色表示运动组，播放进度是各自观测首尾状态的插值，不代表实拍时间或物性校准。
+
+输入选择 `can.start`（300 帧）与 `can.end`（292 帧）。首末状态不等于机械闭合／全开；USD 烤箱门限位为 0–90°，项目内部角度单位为弧度。

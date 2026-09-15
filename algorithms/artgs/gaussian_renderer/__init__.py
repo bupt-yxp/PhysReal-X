@@ -3,7 +3,7 @@
 # GRAPHDECO research group, https://team.inria.fr/graphdeco
 # All rights reserved.
 #
-# This software is free for non-commercial, research and evaluation use 
+# This software is free for non-commercial, research and evaluation use
 # under the terms of the LICENSE.md file.
 #
 # For inquiries contact  george.drettakis@inria.fr
@@ -21,8 +21,8 @@ import numpy as np
 
 def render(viewpoint_camera, pc: GaussianModel, pipe, bg_color: torch.Tensor, d_xyz= None, d_rot= None, scaling_modifier=1.0, random_bg_color=False, scale_const=None, mask=None, vis_mask=None):
     """
-    Render the scene. 
-    
+    Render the scene.
+
     Background tensor (bg_color) must be on GPU!
     """
 
@@ -46,10 +46,10 @@ def render(viewpoint_camera, pc: GaussianModel, pipe, bg_color: torch.Tensor, d_
         tanfovy=tanfovy,
         bg=bg,
         scale_modifier=scaling_modifier,
-        viewmatrix=viewpoint_camera.world_view_transform,
-        projmatrix=viewpoint_camera.full_proj_transform,
+        viewmatrix=viewpoint_camera.world_view_transform.to(pc.get_xyz.device),
+        projmatrix=viewpoint_camera.full_proj_transform.to(pc.get_xyz.device),
         sh_degree=pc.active_sh_degree,
-        campos=viewpoint_camera.camera_center,
+        campos=viewpoint_camera.camera_center.to(pc.get_xyz.device),
         prefiltered=False,
         debug=pipe.debug,
     )
@@ -63,7 +63,7 @@ def render(viewpoint_camera, pc: GaussianModel, pipe, bg_color: torch.Tensor, d_
     sh_features = pc.get_features
 
     means3D = xyz + d_xyz if d_xyz is not None else xyz
-    means2D = screenspace_points 
+    means2D = screenspace_points
     if scale_const is not None:
         opacity = torch.ones_like(pc.get_opacity)
 

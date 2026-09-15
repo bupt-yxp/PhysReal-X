@@ -60,6 +60,10 @@ from physrealx.execution_lifecycle import (
 from physrealx.integrations.artgs import (
     ArtGSRunConfig,
 )
+from physrealx.integrations.reconstruction_evaluation import (
+    ReconstructionEvaluationInput,
+    ReferenceEvaluationPose,
+)
 from physrealx.integrations.rgbd import MetricRGBDInput
 from physrealx.platform import PhysRealX
 from physrealx.readiness import (
@@ -87,6 +91,7 @@ from physrealx.recipe_executor import (
     RecipeOperationRecord,
     RecipeStep,
 )
+from physrealx.reconstruction import ReconstructedPart, ReconstructionPrediction
 from physrealx.robot_agent import (
     CommandDisposition,
     DeploymentLease,
@@ -218,6 +223,10 @@ __all__ = [
     "RecipeInputBinding",
     "RecipeOperationRecord",
     "RecipeStep",
+    "ReconstructedPart",
+    "ReconstructionEvaluationInput",
+    "ReconstructionPrediction",
+    "ReferenceEvaluationPose",
     "RenderStreamEvidence",
     "RenderedFrameEvidence",
     "RenderedModality",

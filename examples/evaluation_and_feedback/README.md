@@ -6,4 +6,4 @@
 
 这是仿真反馈闭环。现场机械臂部署仍需要机器人规格、设备接口和真实日志，不以协议测试替代。
 
-执行副本与回执写入本模块 `output/`；异常会抛出并停止下游。详细对照见 [功能验收](../../docs/acceptance.md)。
+Notebook 将业务资源引用导出到 `output/results.json`；执行脚本另存 `execution.json` 与运行副本，失败停止下游。详细对照见 [功能验收](../../docs/acceptance.md)。

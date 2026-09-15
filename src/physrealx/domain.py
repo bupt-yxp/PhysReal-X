@@ -623,6 +623,13 @@ class OperationManifest(DomainModel):
             artifact_id=artifact_id,
         )
 
+    def output(self, name: str) -> ArtifactRef:
+        """Return a contract-validated output by name; unknown names raise KeyError."""
+        for output in self.outputs:
+            if output.name == name:
+                return output.artifact
+        raise KeyError(f"operation {self.resource_id}@{self.version} has no output {name!r}")
+
 
 class GeometryRepresentation(StrEnum):
     MESH = "mesh"

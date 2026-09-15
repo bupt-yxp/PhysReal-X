@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-import ast
 import mimetypes
-import re
-import struct
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Final, cast
 
@@ -36,14 +33,12 @@ _STREAM_LAYOUT: Final = (
 )
 _CALIBRATION_MARKERS: Final = ("calib", "intrinsic", "extrinsic", "camera_pose")
 _ALLOWED_CONFIG: Final = {
+    "states",
     "coordinate_frame",
     "depth_unit",
     "include_candidates",
     "view_alignment",
 }
-_MAX_NPY_HEADER_BYTES: Final = 65_536
-_TAKE_ID: Final = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")
-_PACKED_DEPTH_DTYPE: Final = re.compile(r"^[|<>=]S([1-9]\d*)$")
 
 
 def _media_type(path: Path) -> str:
@@ -61,60 +56,15 @@ def _media_type(path: Path) -> str:
     )
 
 
-def _npy_sample_count(path: Path) -> int:
-    """Validate a packed byte-string NPY without loading its frame payloads."""
+def _validate_depth_frame(path: Path) -> None:
+    import numpy as np
 
     try:
-        with path.open("rb") as stream:
-            if stream.read(6) != b"\x93NUMPY":
-                raise ValueError("invalid NPY magic")
-            version = tuple(stream.read(2))
-            if not version:
-                raise ValueError("truncated NPY version")
-            if version[0] == 1:
-                header_size = struct.unpack("<H", stream.read(2))[0]
-                preamble_size = 10
-            elif version[0] in {2, 3}:
-                header_size = struct.unpack("<I", stream.read(4))[0]
-                preamble_size = 12
-            else:
-                raise ValueError(f"unsupported NPY version {version}")
-            if not 1 <= header_size <= _MAX_NPY_HEADER_BYTES:
-                raise ValueError("NPY header size is outside the accepted range")
-            encoded_header = stream.read(header_size)
-            if len(encoded_header) != header_size:
-                raise ValueError("truncated NPY header")
-            header = ast.literal_eval(encoded_header.decode("latin1"))
-    except (
-        IndexError,
-        OSError,
-        SyntaxError,
-        UnicodeDecodeError,
-        ValueError,
-        struct.error,
-    ) as error:
-        raise DomainValidationError(f"cannot read NPY header {path}: {error}") from error
-    if not isinstance(header, dict) or not isinstance(header.get("shape"), tuple):
-        raise DomainValidationError(f"NPY header has no valid shape: {path}")
-    shape = header["shape"]
-    if len(shape) != 1 or not isinstance(shape[0], int) or shape[0] <= 0:
-        raise DomainValidationError(f"packed depth NPY must have one positive dimension: {path}")
-    match = (
-        _PACKED_DEPTH_DTYPE.fullmatch(header.get("descr", ""))
-        if isinstance(header.get("descr"), str)
-        else None
-    )
-    if match is None or header.get("fortran_order") is not False:
-        raise DomainValidationError(
-            f"packed depth NPY must contain fixed-width byte strings: {path}"
-        )
-    sample_count = int(shape[0])
-    expected_size = preamble_size + header_size + sample_count * int(match.group(1))
-    if path.stat().st_size != expected_size:
-        raise DomainValidationError(
-            f"packed depth NPY payload size does not match its header: {path}"
-        )
-    return sample_count
+        depth = np.load(path, mmap_mode="r", allow_pickle=False)
+    except (OSError, ValueError) as error:
+        raise DomainValidationError(f"cannot read depth frame {path}: {error}") from error
+    if depth.dtype != np.uint16 or depth.ndim != 2 or 0 in depth.shape:
+        raise DomainValidationError(f"depth frame must be a nonempty uint16 image: {path}")
 
 
 def _view_alignment_specs(
@@ -160,57 +110,78 @@ def _source_snapshot(root: Path) -> dict[str, tuple[int, int, int, int]]:
     return snapshot
 
 
-def _numeric_pngs(directory: Path) -> tuple[list[Path], SourceIssue | None]:
-    pngs = [item for item in directory.glob("*.png") if item.is_file() and not item.is_symlink()]
-    numeric = [item for item in pngs if item.stem.isdigit()]
+def _numeric_frames(
+    directory: Path, *, suffix: str, modality: str
+) -> tuple[list[Path], SourceIssue | None]:
+    if not directory.is_dir() or directory.is_symlink():
+        return [], None
+    files = [item for item in directory.iterdir() if item.is_file() and not item.is_symlink()]
+    numeric = [item for item in files if item.suffix.lower() == suffix and item.stem.isdigit()]
     numeric.sort(key=lambda item: int(item.stem))
-    if len(numeric) != len(pngs):
+    if len(numeric) != len(files):
         return numeric, SourceIssue(
             severity=IssueSeverity.ERROR,
-            code="invalid_rgb_name",
-            message="RGB frame names must be zero-based integer PNG names",
-        )
-    if numeric and [int(item.stem) for item in numeric] != list(range(len(numeric))):
-        return numeric, SourceIssue(
-            severity=IssueSeverity.ERROR,
-            code="non_contiguous_rgb_frames",
-            message="RGB frame indices must be contiguous and start at zero",
+            code=f"invalid_{modality}_name",
+            message=(f"{modality.upper()} frames must use integer names and {suffix} files"),
         )
     return numeric, None
 
 
-def _state_sources(directory: Path) -> tuple[dict[str, Path], dict[str, Path]]:
-    image_root = directory / "img"
-    depth_root = directory / "depth"
-    image_directories: dict[str, Path] = {}
-    depth_files: dict[str, Path] = {}
-    if image_root.is_dir() and not image_root.is_symlink():
-        image_directories = {
-            item.name: item
-            for item in image_root.iterdir()
-            if item.is_dir() and not item.is_symlink()
-        }
-    if depth_root.is_dir() and not depth_root.is_symlink():
-        depth_files = {
-            item.name[: -len("_depth.npy")]: item
-            for item in depth_root.glob("*_depth.npy")
-            if item.is_file() and not item.is_symlink()
-        }
-    return image_directories, depth_files
+def _state_sources(directory: Path) -> tuple[Path, Path, Path]:
+    return directory / "img", directory / "depth", directory / "mask"
 
 
-def _stream_name(state: str, take_id: str, modality: ObservationModality) -> str:
-    return f"{state}.{take_id}.{modality.value}"
+def _stream_name(state: str, modality: ObservationModality) -> str:
+    return f"{state}.{modality.value}"
+
+
+def _state_layout(root: Path) -> Iterator[tuple[str, str, ObservationStateRole]]:
+    """Resolve nested sequence states without flattening their identities."""
+    for relative, state, role in _STREAM_LAYOUT:
+        directory = root / relative
+        nested = (
+            sorted(
+                p
+                for p in directory.iterdir()
+                if p.is_dir() and not p.is_symlink() and (p / "depth").is_dir()
+            )
+            if role is ObservationStateRole.SEQUENCE and directory.is_dir()
+            else []
+        )
+        if nested and not (directory / "depth").is_dir():
+            for child in nested:
+                yield child.relative_to(root).as_posix(), f"{state}.{child.name}", role
+        else:
+            yield relative, state, role
+
+
+def _selected_layout(
+    root: Path, config: Mapping[str, JSONValue] | None
+) -> list[tuple[str, str, ObservationStateRole]]:
+    layout = list(_state_layout(root))
+    selected = (config or {}).get("states")
+    if selected is None:
+        return layout
+    if (
+        not isinstance(selected, (list, tuple))
+        or not selected
+        or any(not isinstance(s, str) for s in selected)
+        or len(set(selected)) != len(selected)
+        or not set(selected) <= {row[1] for row in layout}
+    ):
+        raise SourcePackageError("states must name unique existing capture states")
+    return [row for row in layout if row[1] in selected]
 
 
 class ArtModelingImporter:
-    """Importer for the existing ArtModeling multi-state directory layout."""
+    """Importer for the canonical single-stream ArtModeling state layout."""
 
     descriptor = builtin_method(
         MethodCapability.OBSERVATION_IMPORT,
         "artmodeling",
-        input_contract="ArtModelingCaptureDirectory/1",
+        input_contract="ArtModelingCaptureDirectory/3",
         output_contract="ObservationSetManifest/1",
+        version="3.0.0",
     )
 
     @staticmethod
@@ -226,7 +197,9 @@ class ArtModelingImporter:
             raise SourcePackageError(f"source package is not a directory: {root}")
         return root
 
-    def inspect(self, source: Path) -> SourceInspection:
+    def inspect(
+        self, source: Path, *, config: Mapping[str, JSONValue] | None = None
+    ) -> SourceInspection:
         root = self._root(source)
         files = sorted(item for item in root.rglob("*") if item.is_file() or item.is_symlink())
         issues: list[SourceIssue] = []
@@ -243,7 +216,7 @@ class ArtModelingImporter:
                     )
                 )
 
-        for relative, state, role in _STREAM_LAYOUT:
+        for relative, state, role in _selected_layout(root, config):
             directory = root / relative
             required = state in {"can.start", "can.end"}
             if not directory.is_dir() or directory.is_symlink():
@@ -258,98 +231,65 @@ class ArtModelingImporter:
                     )
                 continue
 
-            image_directories, depth_files = _state_sources(directory)
-            take_ids = sorted(set(image_directories) | set(depth_files))
-            if not take_ids:
+            image_directory, depth_directory, mask_directory = _state_sources(directory)
+            rgb, rgb_issue = _numeric_frames(image_directory, suffix=".png", modality="rgb")
+            depth, depth_issue = _numeric_frames(depth_directory, suffix=".npy", modality="depth")
+            masks, mask_issue = _numeric_frames(mask_directory, suffix=".png", modality="mask")
+            if not rgb and not depth and not masks:
                 issues.append(
                     SourceIssue(
                         severity=IssueSeverity.ERROR,
                         code="missing_state_observations",
-                        message=f"state {state!r} has no paired image/depth take",
+                        message=f"state {state!r} has no RGB/depth/mask frames",
                         path=relative,
                     )
                 )
                 continue
-
-            for take_id in take_ids:
-                take_path = f"{relative}/img/{take_id}"
-                if _TAKE_ID.fullmatch(take_id) is None:
-                    issues.append(
-                        SourceIssue(
-                            severity=IssueSeverity.ERROR,
-                            code="invalid_take_id",
-                            message="take IDs must use lowercase letters, digits, '.', '_' or '-'",
-                            path=take_path,
-                        )
-                    )
-                    continue
-                image_directory = image_directories.get(take_id)
-                depth_file = depth_files.get(take_id)
-                if image_directory is None or depth_file is None:
-                    issues.append(
-                        SourceIssue(
-                            severity=IssueSeverity.ERROR,
-                            code="unpaired_rgb_depth_take",
-                            message=f"take {take_id!r} requires both img/ and depth/ inputs",
-                            path=relative,
-                        )
-                    )
-                    continue
-                rgb, rgb_issue = _numeric_pngs(image_directory)
-                if rgb_issue is not None:
-                    issues.append(rgb_issue.model_copy(update={"path": take_path}))
-                if not rgb:
-                    issues.append(
-                        SourceIssue(
-                            severity=IssueSeverity.ERROR,
-                            code="missing_rgb_frames",
-                            message=f"take {state!r}/{take_id!r} contains no RGB frames",
-                            path=take_path,
-                        )
-                    )
-                    continue
+            for issue in (rgb_issue, depth_issue, mask_issue):
+                if issue is not None:
+                    issues.append(issue.model_copy(update={"path": relative}))
+            for path in depth:
                 try:
-                    depth_count = _npy_sample_count(depth_file)
+                    _validate_depth_frame(path)
                 except DomainValidationError as error:
                     issues.append(
                         SourceIssue(
                             severity=IssueSeverity.ERROR,
-                            code="invalid_depth_container",
+                            code="invalid_depth_frame",
                             message=str(error),
-                            path=depth_file.relative_to(root).as_posix(),
+                            path=path.relative_to(root).as_posix(),
                         )
                     )
-                    continue
-                streams.extend(
-                    (
+                    break
+            for modality, frames in (
+                (ObservationModality.RGB, rgb),
+                (ObservationModality.DEPTH, depth),
+                (ObservationModality.MASK, masks),
+            ):
+                if frames:
+                    streams.append(
                         SourceStreamSummary(
-                            name=_stream_name(state, take_id, ObservationModality.RGB),
-                            modality=ObservationModality.RGB,
+                            name=_stream_name(state, modality),
+                            modality=modality,
                             state=state,
                             role=role,
-                            frame_count=len(rgb),
+                            frame_count=len(frames),
+                        )
+                    )
+            frame_ids = [path.stem for path in rgb]
+            if frame_ids != [path.stem for path in depth] or frame_ids != [
+                path.stem for path in masks
+            ]:
+                issues.append(
+                    SourceIssue(
+                        severity=IssueSeverity.ERROR,
+                        code="rgb_depth_mask_frame_mismatch",
+                        message=(
+                            f"state {state!r} requires matching RGB, depth and mask frame IDs"
                         ),
-                        SourceStreamSummary(
-                            name=_stream_name(state, take_id, ObservationModality.DEPTH),
-                            modality=ObservationModality.DEPTH,
-                            state=state,
-                            role=role,
-                            frame_count=depth_count,
-                        ),
+                        path=relative,
                     )
                 )
-                if len(rgb) != depth_count:
-                    issues.append(
-                        SourceIssue(
-                            severity=IssueSeverity.ERROR,
-                            code="rgb_depth_count_mismatch",
-                            message=(
-                                f"take {state!r}/{take_id!r} has {len(rgb)} RGB and "
-                                f"{depth_count} depth frames"
-                            ),
-                            path=relative,
-                        )
-                    )
 
         lower_names = tuple(item.name.lower() for item in files)
         if not any(marker in name for name in lower_names for marker in _CALIBRATION_MARKERS):
@@ -404,7 +344,7 @@ class ArtModelingImporter:
             raise SourcePackageError("include_candidates must be a boolean")
 
         root = self._root(source)
-        inspection = self.inspect(root)
+        inspection = self.inspect(root, config=config)
         if not inspection.ingestible:
             codes = sorted(
                 item.code for item in inspection.issues if item.severity is IssueSeverity.ERROR
@@ -418,63 +358,79 @@ class ArtModelingImporter:
 
         used: set[Path] = set()
         streams: list[ObservationStream] = []
-        for relative, state, role in _STREAM_LAYOUT:
+        for relative, state, role in _selected_layout(root, config):
             directory = root / relative
             if not directory.is_dir():
                 continue
-            image_directories, depth_files = _state_sources(directory)
-            for take_id, image_directory in sorted(image_directories.items()):
-                depth_file = depth_files[take_id]
-                rgb, _ = _numeric_pngs(image_directory)
-                used.update(rgb)
-                used.add(depth_file)
-                rgb_artifacts = tuple(
-                    artifacts.put_file(item, media_type=_media_type(item)) for item in rgb
-                )
-                depth_artifact = artifacts.put_file(
-                    depth_file,
-                    media_type=_media_type(depth_file),
-                )
-                depth_count = _npy_sample_count(depth_file)
-                rgb_stream_name = _stream_name(state, take_id, ObservationModality.RGB)
-                streams.extend(
-                    (
-                        ObservationStream(
-                            name=rgb_stream_name,
-                            modality=ObservationModality.RGB,
-                            state=state,
-                            role=role,
-                            encoding="png",
-                            frame_count=len(rgb),
-                            artifacts=rgb_artifacts,
-                            coordinate_frame=coordinate_frame,
-                            view_alignment=view_alignments.get(
-                                rgb_stream_name,
-                                ViewAlignmentSpec(),
-                            ),
-                            metadata={
-                                "take_id": take_id,
-                                "relative_directory": image_directory.relative_to(root).as_posix(),
-                            },
+            image_directory, depth_directory, mask_directory = _state_sources(directory)
+            rgb, _ = _numeric_frames(image_directory, suffix=".png", modality="rgb")
+            depth, _ = _numeric_frames(depth_directory, suffix=".npy", modality="depth")
+            masks, _ = _numeric_frames(mask_directory, suffix=".png", modality="mask")
+            used.update(rgb)
+            used.update(depth)
+            used.update(masks)
+            rgb_artifacts = tuple(
+                artifacts.put_file(item, media_type=_media_type(item)) for item in rgb
+            )
+            depth_artifacts = tuple(
+                artifacts.put_file(item, media_type="application/x-npy") for item in depth
+            )
+            mask_artifacts = tuple(
+                artifacts.put_file(item, media_type="image/png") for item in masks
+            )
+            rgb_stream_name = _stream_name(state, ObservationModality.RGB)
+            streams.extend(
+                (
+                    ObservationStream(
+                        name=rgb_stream_name,
+                        modality=ObservationModality.RGB,
+                        state=state,
+                        role=role,
+                        encoding="png",
+                        frame_count=len(rgb),
+                        artifacts=rgb_artifacts,
+                        coordinate_frame=coordinate_frame,
+                        view_alignment=view_alignments.get(
+                            rgb_stream_name,
+                            ViewAlignmentSpec(),
                         ),
-                        ObservationStream(
-                            name=_stream_name(state, take_id, ObservationModality.DEPTH),
-                            modality=ObservationModality.DEPTH,
-                            state=state,
-                            role=role,
-                            encoding="npy.packed_png16",
-                            frame_count=depth_count,
-                            artifacts=(depth_artifact,),
-                            unit=depth_unit,
-                            coordinate_frame=coordinate_frame,
-                            metadata={
-                                "take_id": take_id,
-                                "relative_path": depth_file.relative_to(root).as_posix(),
-                                "invalid_value_policy": "declared_by_recipe",
-                            },
-                        ),
-                    )
+                        metadata={
+                            "relative_directory": image_directory.relative_to(root).as_posix(),
+                            "frame_ids": [item.stem for item in rgb],
+                        },
+                    ),
+                    ObservationStream(
+                        name=_stream_name(state, ObservationModality.DEPTH),
+                        modality=ObservationModality.DEPTH,
+                        state=state,
+                        role=role,
+                        encoding="npy.depth.uint16",
+                        frame_count=len(depth),
+                        artifacts=depth_artifacts,
+                        unit=depth_unit,
+                        coordinate_frame=coordinate_frame,
+                        metadata={
+                            "relative_directory": depth_directory.relative_to(root).as_posix(),
+                            "frame_ids": [item.stem for item in depth],
+                            "invalid_value_policy": "declared_by_recipe",
+                        },
+                    ),
+                    ObservationStream(
+                        name=_stream_name(state, ObservationModality.MASK),
+                        modality=ObservationModality.MASK,
+                        state=state,
+                        role=role,
+                        encoding="png.mask.uint8",
+                        frame_count=len(masks),
+                        artifacts=mask_artifacts,
+                        coordinate_frame=coordinate_frame,
+                        metadata={
+                            "relative_directory": mask_directory.relative_to(root).as_posix(),
+                            "frame_ids": [item.stem for item in masks],
+                        },
+                    ),
                 )
+            )
 
         attachments: list[SourceAttachment] = []
         for item in sorted(path for path in root.rglob("*") if path.is_file()):

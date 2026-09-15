@@ -172,7 +172,7 @@ def export_joint_info_json(pred_joint_list, mesh_files, exp_dir):
                         "direction": joint_info['axis_direction'].tolist()
                     },
                     "observed_span": {
-                        "value": float(joint_info['theta']),
+                        "value": float(np.asarray(joint_info['theta']).item()),
                         "unit": "m" if joint_info['type'] == 'p' else "deg",
                         "scope": "recovered start-to-end motion, not mechanical limits"
                     }
@@ -266,7 +266,7 @@ def render_set(args, load2gpt_on_the_fly, name, iteration, views, gaussians, pip
         for idx, view in enumerate(tqdm(views)):
             if load2gpt_on_the_fly:
                 view.load2device()
-            gt_image = torch.clamp(view.original_image.to("cuda"), 0.0, 1.0)
+            gt_image = torch.clamp(view.original_image.detach().cpu(), 0.0, 1.0)
             if view.fid < 0.5:
                 gt_rgbs_start.append(gt_image)
                 d_values = d_values_list[0]
@@ -277,9 +277,9 @@ def render_set(args, load2gpt_on_the_fly, name, iteration, views, gaussians, pip
                 d_xyz, d_rotation = d_values['d_xyz'], d_values['d_rotation']
                 results = render(view, gaussians, pipeline, background, d_xyz, d_rotation, vis_mask=vis_mask)
                 views_start.append(view)
-                rgbs_start.append(torch.clamp(results["render"], 0.0, 1.0))
-                alphas_start.append(torch.clamp(results["alpha"], 0.0, 1.0))
-                depths_start.append(results['depth'])
+                rgbs_start.append(torch.clamp(results["render"], 0.0, 1.0).cpu())
+                alphas_start.append(torch.clamp(results["alpha"], 0.0, 1.0).cpu())
+                depths_start.append(results['depth'].cpu())
                 # depths_start.append(view.depth.cuda()[None])
             else:
                 gt_rgbs_end.append(gt_image)
@@ -291,10 +291,12 @@ def render_set(args, load2gpt_on_the_fly, name, iteration, views, gaussians, pip
                 d_xyz, d_rotation = d_values['d_xyz'], d_values['d_rotation']
                 results = render(view, gaussians, pipeline, background, d_xyz, d_rotation, vis_mask=vis_mask)
                 views_end.append(view)
-                rgbs_end.append(torch.clamp(results["render"], 0.0, 1.0))
-                alphas_end.append(torch.clamp(results["alpha"], 0.0, 1.0))
-                depths_end.append(results['depth'])
+                rgbs_end.append(torch.clamp(results["render"], 0.0, 1.0).cpu())
+                alphas_end.append(torch.clamp(results["alpha"], 0.0, 1.0).cpu())
+                depths_end.append(results['depth'].cpu())
                 # depths_end.append(view.depth.cuda()[None])
+            if load2gpt_on_the_fly:
+                view.load2device('cpu')
         if name == 'train':
             gsExtractor_start = GaussianExtractor(views_start, rgbs_start, depths_start, depth_trunc=5)
             mesh_start = gsExtractor_start.extract_mesh()
@@ -313,14 +315,14 @@ def render_set(args, load2gpt_on_the_fly, name, iteration, views, gaussians, pip
         if mask_id == -1 and eval_app:
             PSNR, SSIM, LPIPS = 0, 0, 0
             for rgb, gt_rgb in zip(rgbs, gt_rgbs):
-                PSNR += psnr(rgb[None], gt_rgb[None])
-                SSIM += ssim_func(rgb[None], gt_rgb[None])
-                LPIPS += lpips(rgb[None], gt_rgb[None])
+                rgb_gpu, gt_gpu = rgb[None].cuda(), gt_rgb[None].cuda()
+                PSNR += float(psnr(rgb_gpu, gt_gpu))
+                SSIM += float(ssim_func(rgb_gpu, gt_gpu))
+                LPIPS += float(lpips(rgb_gpu, gt_gpu))
             n = len(rgbs)
             PSNR, SSIM, LPIPS = PSNR / n, SSIM / n, LPIPS / n
-            PSNR, SSIM, LPIPS = PSNR.item(), SSIM.item(), LPIPS.item()
             foreground = torch.stack([
-                view.gt_alpha_mask.to('cuda') for view in views_start + views_end
+                view.gt_alpha_mask.cpu() for view in views_start + views_end
             ]) > 0.5
             if not foreground.any():
                 raise ValueError('appearance evaluation requires nonempty source masks')

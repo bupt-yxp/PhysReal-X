@@ -70,3 +70,27 @@ description = "以带轴向约束的最小二乘替代必然奇异的 I-R 求逆
 [[adaptations]]
 id = "portable-model-configuration"
 description = "模型配置统一读写 JSON，删除 eval/Namespace 文件兼容；几何包保存重载所需的网络和渲染配置，排除临时目录；形变权重按 weights_only 模式读取。"
+
+[[adaptations]]
+id = "bounded-evaluation-device-memory"
+description = "评估图像、深度和掩码在 CPU 累积，逐帧上 GPU 计算外观指标；即时加载的相机在渲染后释放到 CPU，避免显存随视图数量线性增长。"
+
+[[adaptations]]
+id = "cpu-training-images-device-safe-rasterization"
+description = "训练图片留在 CPU，逐帧传输；渲染器将相机矩阵显式传到高斯所在设备，避免原生 CUDA 算子误读 CPU 指针。"
+
+[[adaptations]]
+id = "state-specific-metric-initialization"
+description = "两个观测状态分别使用其训练视图的米制 RGB-D 点云初始化粗模型，避免共享混合状态几何污染运动分解。"
+
+[[adaptations]]
+id = "metric-depth-joint-prediction"
+description = "两部件类型预测与联合重建均由两状态粗运动点云初始化对称刚体变换，并统一使用粗点云及有效前景米制深度；发布实际分类旋转量。"
+
+[[adaptations]]
+id = "scalar-joint-export"
+description = "关节运动量以显式标量导出，避免依赖已弃用的 NumPy 单元素数组隐式转换。"
+
+[[adaptations]]
+id = "reference-depth-initialization"
+description = "可选地以训练视图的掩膜米制深度和已提供 USD 表面完成带验证视图门禁的坐标配准，并将观测状态间刚体运动转换为 ArtGS 对称半程初始化；报告明确标记模型条件化。"

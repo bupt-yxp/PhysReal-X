@@ -82,13 +82,18 @@ COLMAP_DESCRIPTOR = MethodDescriptor(
 )
 
 
+_MAX_FRAMES_PER_STREAM = 4096
+
+
 class ColmapRunConfig(DomainModel):
     """Validated public configuration for one sparse reconstruction."""
 
     execution_device: Literal["auto", "cpu", "cuda"] = "auto"
     allow_cpu_fallback: bool = True
     matching: Literal["sequential", "exhaustive"] = "sequential"
-    max_frames_per_stream: int = Field(default=32, ge=3, le=4096)
+    max_frames_per_stream: int | None = Field(
+        default=32, ge=3, le=_MAX_FRAMES_PER_STREAM, strict=True
+    )
     max_num_features: int = Field(default=8192, ge=512, le=65536)
     sequential_overlap: int = Field(default=10, ge=1, le=100)
     num_threads: int = Field(default=1, ge=1, le=256)
@@ -108,7 +113,11 @@ class ColmapRunConfig(DomainModel):
 
     @model_validator(mode="after")
     def validate_thresholds(self) -> ColmapRunConfig:
-        if self.min_registered_images > self.max_frames_per_stream:
+        if self.min_registered_images > (
+            self.max_frames_per_stream
+            if self.max_frames_per_stream is not None
+            else _MAX_FRAMES_PER_STREAM
+        ):
             raise ValueError("min_registered_images cannot exceed max_frames_per_stream")
         if len(self.stream_names) != len(set(self.stream_names)):
             raise ValueError("stream_names must be unique")
@@ -138,6 +147,28 @@ class _ComponentResult:
     mean_reprojection_error_px: float
     fiducial_tracks: tuple[dict[str, Any], ...]
     files: tuple[tuple[str, bytes], ...]
+
+
+def _maximal_components(components: tuple[_ComponentResult, ...]) -> tuple[_ComponentResult, ...]:
+    """Discard SfM seed models whose views are fully covered by a better model."""
+    ranked = sorted(
+        components,
+        key=lambda c: (
+            -len(c.images),
+            c.mean_reprojection_error_px,
+            -c.sparse_point_count,
+            c.component_id,
+        ),
+    )
+    retained: list[_ComponentResult] = []
+    covered: list[set[str]] = []
+    for component in ranked:
+        names = {str(image["name"]) for image in component.images}
+        if any(names <= previous for previous in covered):
+            continue
+        retained.append(component)
+        covered.append(names)
+    return tuple(sorted(retained, key=lambda c: c.component_id))
 
 
 @dataclass(frozen=True)
@@ -531,7 +562,7 @@ class _PycolmapRunner:
         return _StreamResult(
             stream_name=stream_name,
             selected_image_count=selected_image_count,
-            components=tuple(components),
+            components=_maximal_components(tuple(components)),
             execution_device=device_name,
             view_alignment=view_alignment,
             fiducial_frame_count=len(fiducials),
@@ -620,7 +651,9 @@ class _PycolmapRunner:
                 ):
                     raise MethodExecutionError(
                         f"fiducial alignment between {source_stream!r} and "
-                        f"{target_stream!r} failed quality gates"
+                        f"{target_stream!r} failed quality gates: "
+                        f"inliers={inlier_count}/{len(common)}, "
+                        f"normalized_rmse={normalized_error:.6g}"
                     )
                 alignments.append(
                     {
@@ -643,7 +676,14 @@ class _PycolmapRunner:
         return tuple(alignments)
 
 
-def _selected_indexes(frame_count: int, maximum: int) -> tuple[int, ...]:
+def _selected_indexes(frame_count: int, maximum: int | None) -> tuple[int, ...]:
+    if maximum is None:
+        if frame_count > _MAX_FRAMES_PER_STREAM:
+            raise DomainValidationError(
+                f"COLMAP all-view input has {frame_count} frames; "
+                f"safety limit is {_MAX_FRAMES_PER_STREAM} per stream"
+            )
+        return tuple(range(frame_count))
     if frame_count <= maximum:
         return tuple(range(frame_count))
     denominator = maximum - 1
@@ -792,12 +832,15 @@ class ColmapMethodAdapter:
             raise DomainValidationError("COLMAP observation manifest identity does not match input")
 
         streams = _rgb_streams(manifest, config)
+        selected_views = [
+            (stream, _selected_indexes(stream.frame_count, config.max_frames_per_stream))
+            for stream in streams
+        ]
         results: list[_StreamResult] = []
         source_bindings: dict[str, dict[str, tuple[int, ArtifactRef]]] = {}
         with tempfile.TemporaryDirectory(prefix="physrealx-colmap-") as temporary:
             root = Path(temporary)
-            for stream_index, stream in enumerate(streams):
-                indexes = _selected_indexes(stream.frame_count, config.max_frames_per_stream)
+            for stream_index, (stream, indexes) in enumerate(selected_views):
                 stream_root = root / f"stream-{stream_index:03d}"
                 image_root = stream_root / "images"
                 image_root.mkdir(parents=True)

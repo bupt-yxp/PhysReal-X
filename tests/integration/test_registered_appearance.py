@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import io
 import json
 import zipfile
 from pathlib import Path
@@ -118,22 +117,11 @@ def registration_input(tmp_path: Path, monkeypatch):
     depth_ref = px.artifacts.put_bytes(
         b"synthetic depth loader fixture", media_type="application/zip"
     )
-    payload = io.BytesIO()
-    with zipfile.ZipFile(payload, "w") as archive:
-        archive.writestr(
-            "model/joint_info.json",
-            json.dumps(
-                [
-                    {"id": 0, "joint": "heavy"},
-                    {
-                        "id": 1,
-                        "joint": "slider",
-                        "jointData": {"axis": {"direction": [1.0, 0.0, 0.0]}},
-                    },
-                ]
-            ),
-        )
-    bundle = px.artifacts.put_bytes(payload.getvalue(), media_type="application/zip")
+    # Registration consumes the public prediction, never a method-specific archive.
+    bundle = px.artifacts.put_bytes(b"opaque reconstruction bundle", media_type="application/zip")
+    mesh_ref = px.artifacts.put_bytes(b"mesh fixture", media_type="model/ply").model_dump(
+        mode="json"
+    )
     report = px.artifacts.put_json(
         {
             "schema": "physrealx.geometry-reconstruction-report/1",
@@ -143,6 +131,14 @@ def registration_input(tmp_path: Path, monkeypatch):
             "training_frame_ids": train,
             "validation_frame_ids": test,
             "bundle": bundle.model_dump(mode="json"),
+            "prediction": {
+                "parts": {
+                    "root": {},
+                    "drawer": {"parent": "root", "kind": "slide", "axis": [2, 0, 0], "span": 0.1},
+                },
+                "states": {"start": {"root": mesh_ref, "drawer": mesh_ref}, "end": {}},
+                "motion_pair": ["start", "end"],
+            },
         }
     )
     request = module.ReferenceRegistrationInput(
@@ -161,6 +157,12 @@ def test_articulated_registration_preserves_projection_and_rejects_bad_holdout(
     registration_input, tmp_path
 ):
     px, camera, request, views, known_rotation, known_translation = registration_input
+    # Wrong predicted type/axis must remain measurable, not steer the reference pose.
+    prediction = json.loads(px.artifacts.get_bytes(request.reconstruction_report))
+    prediction["prediction"]["parts"]["drawer"].update(kind="hinge", axis=[0, 0, 1])
+    request = request.model_copy(
+        update={"reconstruction_report": px.artifacts.put_json(prediction)}
+    )
     evidence = px.artifacts.put_json(request)
     operation = px.assets.align_cameras_metric(
         camera,
@@ -272,7 +274,7 @@ def test_registration_rejects_camera_and_split_mismatch(registration_input):
     report = json.loads(px.artifacts.get_bytes(request.reconstruction_report))
     report["validation_frame_ids"].append(report["training_frame_ids"][0])
     leaked = request.model_copy(update={"reconstruction_report": px.artifacts.put_json(report)})
-    with pytest.raises(DomainValidationError, match="split leaks"):
+    with pytest.raises(DomainValidationError, match="views overlap"):
         px.assets.align_cameras_metric(
             camera,
             px.artifacts.put_json(leaked),
@@ -281,11 +283,139 @@ def test_registration_rejects_camera_and_split_mismatch(registration_input):
         )
 
 
-def test_connected_foreground_is_bounded_and_excludes_detached_objects():
+def test_registration_reuses_training_time_reference_alignment(registration_input, monkeypatch):
+    px, camera, request, _, rotation, translation = registration_input
+    reconstruction = json.loads(px.artifacts.get_bytes(request.reconstruction_report))
+    training = tuple(sorted(reconstruction["training_frame_ids"]))
+    holdout = tuple(sorted(reconstruction["validation_frame_ids"]))
+    reconstruction["reference_depth_alignment"] = module.ReferenceDepthAlignment(
+        source_camera=request.rgbd.camera_rig,
+        source_depth=request.rgbd.enhanced_depth,
+        source_reference=request.rgbd.reference_model,
+        source_frame="capture_metric",
+        target_frame="reference_z_up",
+        observed_joint="slide",
+        joint_type="slide",
+        joint_axis=(1, 0, 0),
+        joint_origin_m=(0, 0, 0),
+        joint_limits=(0, 0.28),
+        state_order=("closed", "open"),
+        rotation=tuple(tuple(float(value) for value in row) for row in rotation),
+        translation_m=tuple(float(value) for value in translation),
+        evaluations={
+            "closed": module.AlignmentStateEvidence(
+                median_m=0.001, p90_m=0.002, points=100, joint_position=0.05
+            ),
+            "open": module.AlignmentStateEvidence(
+                median_m=0.001, p90_m=0.002, points=100, joint_position=0.21
+            ),
+        },
+        foreground_fractions={"closed/train": 1, "open/train": 1},
+        train_frame_ids=training,
+        holdout_frame_ids=holdout,
+        metrics={"max_holdout_median_m": 0.001, "max_holdout_p90_m": 0.002},
+    ).model_dump(mode="json", by_alias=True)
+    cached_request = request.model_copy(
+        update={"reconstruction_report": px.artifacts.put_json(reconstruction)}
+    )
+
+    def unexpected_fit(*args, **kwargs):
+        raise AssertionError("cached alignment must not be fitted again")
+
+    monkeypatch.setattr(module, "fit_reference_depth_alignment", unexpected_fit)
+    operation = px.assets.align_cameras_metric(
+        camera,
+        px.artifacts.put_json(cached_request),
+        method="articulated_surface_icp",
+        config={"joint": "slide"},
+    )
+    report = module.load_registration(px.artifacts, output(operation, "metric_alignment_report"))
+    assert report["fit_stage"] == "pre_reconstruction"
+    assert report["gates"]["reference_guided_training"] is True
+
+
+def test_registration_split_ignores_unselected_source_views(registration_input):
+    _, _, _, views, _, _ = registration_input
+    extra = RGBDView(
+        "closed.unselected",
+        "closed",
+        views[0].camera,
+        views[0].pose,
+        views[0].rgb,
+        views[0].depth,
+        views[0].rays,
+        views[0].mask,
+    )
+    selected, train_ids, test_ids = module._select_registration_views(
+        [*views, extra],
+        [view.frame_id for index, view in enumerate(views) if index % 6 != 0],
+        [views[0].frame_id, views[6].frame_id],
+    )
+    assert extra.frame_id not in {view.frame_id for view in selected}
+    assert {view.frame_id for view in selected} == train_ids | test_ids
+
+
+@pytest.mark.parametrize(
+    ("training", "holdout", "message"),
+    [
+        (["closed.1", "missing"], ["closed.0"], "unknown capture"),
+        (["closed.1", "closed.1"], ["closed.0"], "unique nonempty"),
+        (["closed.1"], [], "unique nonempty"),
+    ],
+)
+def test_registration_split_rejects_invalid_references(
+    registration_input, training, holdout, message
+):
+    _, _, _, views, _, _ = registration_input
+    with pytest.raises(DomainValidationError, match=message):
+        module._select_registration_views(views, training, holdout)
+
+
+def test_connected_foreground_uses_reference_extent_and_rejects_invalid_dimensions():
     rng = np.random.default_rng(3)
     body = rng.uniform([0, 0, 0.04], [0.1, 0.1, 0.14], (2000, 3))
     stray = rng.uniform([0.5, 0, 0.02], [0.52, 0.02, 0.04], (200, 3))
-    points = module.connected_foreground(np.concatenate([body, stray]), 0, 0.012)
+    points = module.connected_foreground(
+        np.concatenate([body, stray]), 0, 0.012, 0.012, [0.1, 0.1, 0.14]
+    )
     assert len(points) == len(body)
-    with pytest.raises(DomainValidationError, match="bounded spatial grid"):
-        module.connected_foreground(np.concatenate([body, body + 1e10]), 0, 1e-4)
+    with pytest.raises(DomainValidationError, match="reference dimensions"):
+        module.connected_foreground(body, 0, 0.012, 0.012, [0, 0.1, 0.14])
+
+
+def test_connected_foreground_keeps_low_profile_object_above_measured_plane_clearance():
+    rng = np.random.default_rng(4)
+    body = rng.uniform([0, 0, 0.0065], [0.1, 0.1, 0.02], (2000, 3))
+    points = module.connected_foreground(body, 0, 0.012, 0.006, [0.1, 0.1, 0.1])
+    assert len(points) == len(body)
+
+
+def test_hinge_surface_fit_preserves_descending_capture_positions():
+    import numpy as np
+
+    from physrealx.integrations.registration import fit_articulated_surfaces
+    from physrealx.reconstruction import joint_transform
+
+    rng = np.random.default_rng(7)
+    static = rng.uniform([-0.18, 0, 0.03], [0.18, 0.2, 0.22], (600, 3))
+    moving = rng.uniform([-0.16, -0.012, 0.03], [0.16, 0.012, 0.2], (600, 3))
+    origin = [0, 0, 0.03]
+    observed = []
+    for position in (1.1, 0.3):
+        motion = joint_transform("hinge", [1, 0, 0], origin, position)
+        observed.append(np.concatenate([static, moving @ motion[:3, :3].T + motion[:3, 3]]))
+    rotation, translation, positions, _ = fit_articulated_surfaces(
+        observed,
+        static,
+        moving,
+        np.zeros(3),
+        (0, np.pi / 2),
+        seed=7,
+        max_points=1000,
+        joint_type="hinge",
+        axis=[1, 0, 0],
+        origin=origin,
+    )
+    assert positions == pytest.approx([1.1, 0.3], abs=0.01)
+    assert rotation == pytest.approx(np.eye(3), abs=0.01)
+    assert translation == pytest.approx(np.zeros(3), abs=0.002)

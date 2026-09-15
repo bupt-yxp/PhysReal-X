@@ -1,0 +1,21 @@
+{
+  "LICENSE": "efcf2f4956efcc9a904bc3137a1ba8a1aac61a8fb611eacb74ef4943a6aa4f73",
+  "main.py": "433642616087a45ce0f37078bea51659101ccebfbb7b71b56be7c2fe4893abce",
+  "network.py": "b499a9480e22341790a6a5234fdc8259d7e695f07ef1801f4c4e228e4dc87777",
+  "model.py": "22e99c0804bafb500307fe9c0d2d49f2ba8b440ff83828f53477165070e6b610",
+  "eval/eval_mesh.py": "98dc8a2f4dc7aaac50455bfcdf92bfd3977145c94389ed54c6566285187620a5",
+  "utils/py_utils.py": "910b23ab8687365cc5b5ffb0f0a2b445e150da00e4907376f07a8486aa435c0a",
+  "utils/nerf_utils.py": "2e2b11e5bd8a90bb8fc390a4f77ef4dc7ae1b6e6a8ddc94f45d7a676621d475f",
+  "utils/geometry_utils.py": "c18011ac5a2d16cf8a4f8abc3c597280f5106fe66b159cf2f685101a005e5bfb",
+  "utils/articulation_utils.py": "c88364e15049300c0dcee3085344ef12819e3d3bc4c191c3cd99a6587ba097cb",
+  "mycuda/setup.py": "abb906b2078061751e31778267ee160a4e165796a8a0abac23235e92c8e98118",
+  "mycuda/bindings.cpp": "71576f2d7cf227b80bc658115954ecab300f59f3bcb051833fdd15248a1f36ee",
+  "mycuda/common.h": "8244e880a03431f9a77f68f7ea00eeb9e3a5497ba6b5f4e5ba22e49f3e6fe17c",
+  "mycuda/common.cu": "d73c3dddccbcc69ab66bfce1217aca349ad0f13f6b6384083136f5af088a8970",
+  "mycuda/torch_ngp_grid_encoder/LICENSE": "2767ebd056b9458a9b1d6952f08cc4008e8565e68a88c02c8b6a994ad435f6a9",
+  "mycuda/torch_ngp_grid_encoder/bindings.cpp": "799e7b1c65ed87ae11dc3ac2b0e4667b6aa563e42e380b81fca307f44e74cdf2",
+  "mycuda/torch_ngp_grid_encoder/gridencoder.h": "4668e78b479d03e4a8862edadbf7005b46c4da082adc39e2685d36b97c2de0ef",
+  "mycuda/torch_ngp_grid_encoder/gridencoder.cu": "0ce2e0385b88af902290b6805cf5782b56848bad6a6594d58989c8470525fdc9",
+  "mycuda/torch_ngp_grid_encoder/grid.py": "9712c3132f68d5dac78132f79a58b035f18af90f6060d9b1a8f10f753729b360",
+  "config/release/config.yml": "8b10fc29a685efdaf6a71d995eb9e405d7a0fbce4f2b029e3e40ad34cb33e45b"
+}

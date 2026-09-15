@@ -44,6 +44,7 @@ from physrealx.plugins import MethodInstallation
 from physrealx.readiness import ReadinessService
 
 if TYPE_CHECKING:
+    from physrealx.integrations.sensors import CameraSpec
     from physrealx.platform import PhysRealX
 
 
@@ -490,8 +491,9 @@ class AssetsService:
         source: str | Path,
         *,
         importer: str = "artmodeling",
+        config: Mapping[str, JSONValue] | None = None,
     ) -> SourceInspection:
-        return self._platform._inspect_asset_source(Path(source), importer)
+        return self._platform._inspect_asset_source(Path(source), importer, config)
 
     def ingest(
         self,
@@ -518,12 +520,23 @@ class AssetsService:
     def list_observations(self) -> builtins.list[VersionedRef]:
         return self._platform._list_resources(ResourceType.OBSERVATION_SET)
 
-    def import_reference(self, observations: VersionedRef, *, usd_path: str) -> ArtifactRef:
+    def import_reference(
+        self,
+        observations: VersionedRef,
+        *,
+        usd_path: str,
+        root_link: str | None = None,
+        moving_links: tuple[str, ...] | None = None,
+    ) -> ArtifactRef:
         """Import supplied USD geometry and kinematics with explicit model provenance."""
         from physrealx.integrations.usd_reference import import_usd_reference
 
         return import_usd_reference(
-            self.get_observations(observations), self._platform.artifacts, usd_path=usd_path
+            self.get_observations(observations),
+            self._platform.artifacts,
+            usd_path=usd_path,
+            root_link=root_link,
+            moving_links=moving_links,
         )
 
     def prepare_rgbd(
@@ -532,9 +545,9 @@ class AssetsService:
         camera_rig: ArtifactRef,
         *,
         stride: int = 4,
-        max_frames_per_stream: int = 8,
+        max_frames_per_stream: int | None = 8,
     ) -> ArtifactRef:
-        """Decode source RGB-D into arrays bound to the recovered metric views."""
+        """Decode registered RGB-D views; None selects all within the 512-view safety limit."""
         from physrealx.integrations.capture_rgbd import prepare_rgbd_frames
 
         return prepare_rgbd_frames(
@@ -612,6 +625,45 @@ class AssetsService:
             method,
             inputs={"source": source},
             config=config,
+        )
+
+    def evaluate_reconstruction(self, source: ArtifactRef, *, seed: int = 2026) -> ArtifactRef:
+        """Evaluate any normalized reconstruction with the fixed DTArt metric protocol."""
+        from physrealx.integrations._artifacts import read_json
+        from physrealx.integrations.reconstruction_evaluation import (
+            ReconstructionEvaluationConfig,
+            ReconstructionEvaluationInput,
+            evaluate_reconstruction,
+        )
+
+        request = ReconstructionEvaluationInput.model_validate(
+            read_json(
+                self._platform.artifacts, source, "physrealx.reconstruction-evaluation-input/1"
+            )
+        )
+        report = evaluate_reconstruction(
+            self._platform.artifacts, request, ReconstructionEvaluationConfig(seed=seed)
+        )
+        return self._platform.artifacts.put_json(report)
+
+    def preview_reconstruction(
+        self, evaluation: ArtifactRef, *, frames: int = 24, fps: int = 12
+    ) -> ArtifactRef:
+        """Animate reconstructed and reference geometry using the evaluation's shared pose."""
+        from physrealx.integrations.reconstruction_preview import preview_reconstruction
+
+        return preview_reconstruction(self._platform.artifacts, evaluation, frames=frames, fps=fps)
+
+    def preview_reconstruction_appearance(
+        self, reconstruction_report: ArtifactRef, *, fps: int = 2
+    ) -> ArtifactRef:
+        """Animate all appearance frames published by a reconstruction method."""
+        from physrealx.integrations.reconstruction_preview import (
+            preview_reconstruction_appearance,
+        )
+
+        return preview_reconstruction_appearance(
+            self._platform.artifacts, reconstruction_report, fps=fps
         )
 
     def validate(
@@ -878,6 +930,37 @@ class ScenesService:
     def list(self) -> list[VersionedRef]:
         return self._platform._list_resources(ResourceType.SCENE)
 
+    def place_linear_actuator(
+        self,
+        scene: SceneSpec,
+        *,
+        entity: str,
+        joint: str,
+        actuator: VersionedRef,
+        name: str,
+        initial_position: float,
+        clearance_m: float,
+        resource_id: str,
+    ) -> SceneSpec:
+        from physrealx.integrations.scenes import place_linear_actuator
+
+        target = next((item for item in scene.entities if item.name == entity), None)
+        if target is None:
+            raise DomainValidationError(f"scene entity not found: {entity}")
+        self._platform.assets.get(actuator)
+        return place_linear_actuator(
+            scene,
+            self._platform.assets.get(target.asset),
+            self._platform.artifacts,
+            entity=entity,
+            joint=joint,
+            actuator=actuator,
+            name=name,
+            initial_position=initial_position,
+            clearance_m=clearance_m,
+            resource_id=resource_id,
+        )
+
     def generate(
         self,
         request: Mapping[str, JSONValue],
@@ -919,6 +1002,29 @@ class TasksService:
 
     def list(self) -> list[VersionedRef]:
         return self._platform._list_resources(ResourceType.TASK)
+
+    def with_sensors(
+        self,
+        task: TaskSpec,
+        scene: VersionedRef,
+        cameras: Mapping[str, CameraSpec],
+        *,
+        resource_id: str,
+        frequency_hz: float,
+    ) -> TaskSpec:
+        from physrealx.integrations.sensors import with_sensor_signals
+
+        if task.scene != scene:
+            raise DomainValidationError("sensor task and scene references must match")
+        layout = self._platform.scenes.get(scene)
+        link_count = sum(len(self._platform.assets.get(e.asset).links) for e in layout.entities)
+        return with_sensor_signals(
+            task,
+            dict(cameras),
+            link_count=link_count,
+            resource_id=resource_id,
+            frequency_hz=frequency_hz,
+        )
 
     def compile(
         self,
@@ -1198,6 +1304,20 @@ class WorldModelsService:
     def __init__(self, platform: PhysRealX) -> None:
         self._platform = platform
 
+    def prepare_encoder(
+        self, *, cache: Path | None = None, weights_path: Path | None = None
+    ) -> ArtifactRef:
+        """Prepare DINOv2 from verified cache, local weights or the official source."""
+        from physrealx.integrations.world_model import prepare_dinov2_encoder
+
+        return prepare_dinov2_encoder(
+            self._platform.artifacts,
+            cache
+            if cache is not None
+            else self._platform.workspace / "pretrained/dinov2-encoder.json",
+            weights_path=weights_path,
+        )
+
     def train(
         self,
         dataset: ArtifactRef,
@@ -1227,6 +1347,23 @@ class WorldModelsService:
             method,
             inputs={"model": model, "context": context, "actions": actions},
             config=config,
+        )
+
+    def evaluate_rollout(
+        self,
+        rollout: ArtifactRef,
+        reference: Episode,
+        *,
+        start_index: int = 0,
+    ) -> ArtifactRef:
+        """Compare predicted states with a time-aligned episode and persistence."""
+        from physrealx.integrations.world_model import evaluate_world_model_rollout
+
+        return evaluate_world_model_rollout(
+            self._platform.artifacts,
+            rollout,
+            reference,
+            start_index=start_index,
         )
 
 

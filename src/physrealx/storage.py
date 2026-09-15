@@ -208,6 +208,39 @@ class LocalArtifactStore:
             )
         return content
 
+    def export(
+        self,
+        destination: Path,
+        results: Mapping[str, Any],
+        *,
+        files: Mapping[str, ArtifactRef] | None = None,
+    ) -> ArtifactRef:
+        """Stage verified files and publish results.json last as the completion marker."""
+        files = dict(files or {})
+        for name in files:
+            if name in {"", ".", "..", "results.json"} or Path(name).name != name:
+                raise DomainValidationError(
+                    "export filenames must be simple names other than results.json"
+                )
+        destination = Path(destination)
+        destination.mkdir(parents=True, exist_ok=True)
+        for name in (*files, "results.json"):
+            target = destination / name
+            if target.is_symlink() or (target.exists() and not target.is_file()):
+                raise DomainValidationError(f"export target must be a regular file: {target}")
+        reference = self.put_json(results)
+        with tempfile.TemporaryDirectory(prefix=".export-", dir=destination) as directory:
+            stage = Path(directory)
+            for name, artifact in files.items():
+                self.materialize(artifact, stage / name)
+            self.materialize(reference, stage / "results.json")
+            # Once replacement starts, a failed export must not retain a stale success marker.
+            (destination / "results.json").unlink(missing_ok=True)
+            for name in files:
+                (stage / name).replace(destination / name)
+            (stage / "results.json").replace(destination / "results.json")
+        return reference
+
     def materialize(self, reference: ArtifactRef | str, destination: Path) -> None:
         if not isinstance(destination, Path):
             raise TypeError("destination must be a pathlib.Path")

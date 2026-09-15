@@ -75,6 +75,7 @@ class ModelParams(ParamGroup):
         self.opacity_reg_weight = 0.01
         self.coarse_name = 'coarse_gs'
         self.coarse_model_path = ''
+        self.joint_initialization_path = ''
         self.shift_weight = 0.5
         self.num_slots = 2
         self.center_init = 'cgs' # 'cgs' (coarse gaussians) or 'pcd' (point cloud)
@@ -120,7 +121,7 @@ class OptimizationParams(ParamGroup):
         self.random_bg_color = False
 
         self.deform_lr_scale = 1.
-        self.cd_loss_weight = 100
+        self.cd_loss_weight = 100.0
         self.metric_depth_loss_weight = 1.0
         self.mono_depth_loss_weight = 0.0
 

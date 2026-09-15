@@ -42,6 +42,8 @@ scene = px.scenes.register(
 
 ## 任务
 
+`scenes.place_linear_actuator(scene, entity=..., joint=..., actuator=..., name=..., initial_position=..., clearance_m=..., resource_id=...)` 根据移动关节与碰撞几何生成执行器位姿，返回待注册的 `SceneSpec`。目标支持平移或具有水平开合位移的旋转关节；旋转位置使用 rad，平移位置使用 m。返回场景的 `metadata.actuator_placement.closing_travel_m` 提供推杆闭合行程，并校验执行器行程范围。接触起点与终点按推杆实际接触窗口裁剪碰撞表面计算，窗口外把手等凸起不影响行程。执行器沿自身局部 -X 方向推进；初始位置、正间隙、实体名称及引用由项目校验。该几何放置不替代后续动力学接触验证。
+
 ### `tasks.register`
 
 ```python
@@ -67,6 +69,8 @@ px.tasks.list() -> list[VersionedRef]
 - 最大步数与折扣。
 
 ## 生成、编译与轨迹
+
+`CameraSpec.look_at(position, target, ...)` 生成 OpenGL 相机位姿并拒绝退化视线；`CameraSpec.signals(name, frequency_hz=...)` 按真实分辨率生成同步信号契约。`px.tasks.with_sensors(task, scene_ref, cameras, resource_id=..., frequency_hz=...)` 进一步从场景资产计算部件数量、生成相机与刚体信号，保留任务动作和成功条件，返回待注册任务。重复信号和场景引用不一致会报错。
 
 | API | 已实现方法 | 输出 |
 | --- | --- | --- |

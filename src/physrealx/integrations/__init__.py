@@ -11,13 +11,17 @@ from physrealx.integrations.colmap import (
     ColmapRunConfig,
     create_colmap_adapter,
 )
+from physrealx.integrations.dtart import DTART_DESCRIPTOR, DTArtMethodAdapter, DTArtRunConfig
 
 __all__ = [
     "ARTGS_DESCRIPTOR",
     "COLMAP_DESCRIPTOR",
+    "DTART_DESCRIPTOR",
     "ArtGSMethodAdapter",
     "ArtGSRunConfig",
     "ColmapMethodAdapter",
     "ColmapRunConfig",
+    "DTArtMethodAdapter",
+    "DTArtRunConfig",
     "create_colmap_adapter",
 ]

@@ -18,6 +18,13 @@ PhysReal-X 自有代码使用 MIT 许可证。`algorithms/` 中的内嵌方法�
 由于 ArtGS 运行依赖上述受限及待审核组件，平台方法描述符使用
 `LicenseRef-ArtGS-Research-Only`，不使用 Apache-2.0 冒充整体有效许可。
 
+## DTArt
+
+- `algorithms/dtart/`：NVlabs/DigitalTwinArt，提交
+  `1a48b402e4bf4bb7731296e8e230f0db3d86fe4f`，保留 NVIDIA 非商业研究与评估许可。
+- 本地改动记于 `algorithms/dtart/PHYSREALX.md`，许可见同目录 `LICENSE`。
+- LoFTR 使用 Kornia 实现及 outdoor 预训练权重；权重不提交到源码仓库。
+
 ## COLMAP / PyCOLMAP
 
 - `pycolmap` 是 COLMAP 的官方 Python 绑定，使用 BSD-3-Clause 许可证；它通过
@@ -26,6 +33,9 @@ PhysReal-X 自有代码使用 MIT 许可证。`algorithms/` 中的内嵌方法�
   extra 时不会发布不可执行的方法。
 - `opencv-python` 使用 Apache-2.0 许可证，用于已声明 ArUco/AprilTag 家族的 ID 与
   亚像素角点检测；未声明字典时不自动猜测。
+
+## SAM 2
+
 
 ## Optional physical pipeline bindings
 

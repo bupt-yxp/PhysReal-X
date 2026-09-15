@@ -51,7 +51,7 @@ def to_cam_open3d(viewpoint_stack):
         ndc2pix = torch.tensor([
             [W / 2, 0, 0, (W-1) / 2],
             [0, H / 2, 0, (H-1) / 2],
-            [0, 0, 0, 1]]).float().cuda().T
+            [0, 0, 0, 1]]).to(viewpoint_cam.projection_matrix).T
         intrins =  (viewpoint_cam.projection_matrix @ ndc2pix)[:3,:3].T
         intrinsic=o3d.camera.PinholeCameraIntrinsic(
             width=viewpoint_cam.image_width,

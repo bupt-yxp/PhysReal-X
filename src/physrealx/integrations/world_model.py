@@ -10,6 +10,7 @@ from __future__ import annotations
 import importlib
 import io
 import json
+import math
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -49,6 +50,7 @@ WM_REVISION = "0a9492fa12044b852ae9e001cc74604b79c8bb0c"
 DINO_WEIGHTS_URL: Final = (
     "https://dl.fbaipublicfiles.com/dinov2/dinov2_vits14/dinov2_vits14_pretrain.pth"
 )
+VISUAL_RESIDUAL_GAINS: Final = tuple(index / 8 for index in range(9))
 
 
 class EncoderSpec(DomainModel):
@@ -87,12 +89,42 @@ def import_dinov2_weights(path: Path, artifacts: ArtifactStore) -> ArtifactRef:
     return artifacts.put_json(EncoderSpec(weights=weights).model_dump(mode="json", by_alias=True))
 
 
+def prepare_dinov2_encoder(
+    artifacts: ArtifactStore, cache: Path, *, weights_path: Path | None = None
+) -> ArtifactRef:
+    """Verify a cached encoder or import/download the official bounded checkpoint."""
+    import tempfile
+    import urllib.request
+
+    if weights_path is None and cache.is_file():
+        encoder = EncoderSpec.model_validate_json(cache.read_bytes())
+        if artifacts.verify(encoder.weights):
+            return artifacts.put_json(encoder)
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".encoder-", dir=cache.parent) as directory:
+        stage = Path(directory)
+        if weights_path is None:
+            weights_path = stage / "dinov2_vits14.pth"
+            response = urllib.request.urlopen(DINO_WEIGHTS_URL, timeout=60)
+            with response, weights_path.open("wb") as target:
+                size = 0
+                while chunk := response.read(1024 * 1024):
+                    size += len(chunk)
+                    if size > 128 * 1024**2:
+                        raise DomainValidationError("DINOv2 download exceeds checkpoint size bound")
+                    target.write(chunk)
+        reference = import_dinov2_weights(weights_path, artifacts)
+        artifacts.materialize(reference, stage / "encoder.json")
+        (stage / "encoder.json").replace(cache)
+    return reference
+
+
 class WorldModelConfig(DomainModel):
     image_signal: str = "camera.front.rgb"
     state_signals: tuple[str, ...] = ("joint.position", "joint.velocity")
     image_size: int = Field(default=56, ge=28, le=224)
     history: int = Field(default=3, ge=1, le=8)
-    training_horizon: int = Field(default=4, ge=1, le=32)
+    training_horizon: int = Field(default=4, ge=1, le=128)
     depth: int = Field(default=2, ge=1, le=12)
     steps: int = Field(default=400, ge=1, le=100000)
     batch_size: int = Field(default=16, ge=1, le=256)
@@ -344,11 +376,75 @@ def _evaluate(
     return errors
 
 
+def _validation_selection(rows: list[dict[str, Any]]) -> dict[str, float]:
+    """Balance modalities by their validation persistence errors, never test outcomes."""
+    if not rows:
+        raise DomainValidationError("world model selection requires validation windows")
+    ratios = {}
+    for metric, power in (("latent_mse", 1), ("normalized_state_rmse", 2), ("rgb_mse", 1)):
+        actual = sum(float(row[metric]) for row in rows) / len(rows)
+        baseline = sum(float(row["persistence_" + metric]) for row in rows) / len(rows)
+        if not all(math.isfinite(value) and value >= 0 for value in (actual, baseline)):
+            raise MethodExecutionError(
+                "world model validation errors must be finite and nonnegative"
+            )
+        ratios[metric + "_ratio"] = (actual / max(baseline, 1e-12)) ** power
+    return {"score": max(ratios.values()), **ratios}
+
+
+def _calibrate_visual_residual(
+    predictor: Any,
+    decoder: Any,
+    rows: list[dict[str, Any]],
+    config: WorldModelConfig,
+    scale: Any,
+) -> tuple[float, list[dict[str, Any]], list[dict[str, float]], dict[str, float]]:
+    """Bound recurrent visual drift using validation data only.
+
+    A zero gain is the temporal-persistence baseline. The fixed grid therefore
+    cannot hide a residual that fails to generalize, while intermediate gains
+    retain useful motion without compounding a one-step residual unchecked.
+    """
+    import torch
+
+    layer = predictor["visual_delta"]
+    weight = layer.weight.detach().clone()
+    bias = layer.bias.detach().clone()
+    best: tuple[float, float, list[dict[str, Any]], dict[str, float]] | None = None
+    curve = []
+    with torch.inference_mode():
+        for gain in VISUAL_RESIDUAL_GAINS:
+            layer.weight.copy_(weight * gain)
+            layer.bias.copy_(bias * gain)
+            errors = _evaluate(predictor, decoder, rows, config, scale)
+            selection = _validation_selection(errors)
+            visual_score = max(selection["latent_mse_ratio"], selection["rgb_mse_ratio"])
+            curve.append({"gain": gain, "visual_score": visual_score, **selection})
+            candidate = (visual_score, gain, errors, selection)
+            if best is None or candidate[:2] < best[:2]:
+                best = candidate
+        if best is None:  # pragma: no cover - fixed nonempty grid
+            raise MethodExecutionError("world model residual calibration has no candidate")
+        _, gain, errors, selection = best
+        layer.weight.copy_(weight)
+        layer.bias.copy_(bias)
+    return gain, errors, curve, selection
+
+
+def _apply_visual_residual_gain(predictor: Any, gain: float) -> None:
+    """Bake a validation-selected gain into a visual residual head."""
+    import torch
+
+    with torch.no_grad():
+        predictor["visual_delta"].weight.mul_(gain)
+        predictor["visual_delta"].bias.mul_(gain)
+
+
 class WorldModelTrainAdapter:
     descriptor = builtin_method(
         MethodCapability.WORLD_MODEL_TRAIN,
         "dino_wm",
-        version="4.0.0",
+        version="4.3.0",
         input_contract="DatasetSnapshot/1+PretrainedEncoder/1",
         output_contract="ModelBundle/1+TrainingReport/1",
         python=">=3.10,<3.13",
@@ -480,8 +576,12 @@ class WorldModelTrainAdapter:
                     raise DomainValidationError("training split contains no valid context windows")
                 losses = []
                 validation_curve = []
-                best_score, selected_step = float("inf"), 0
-                best_weights: dict[str, Any] = {}
+                best_visual_score = best_state_score = float("inf")
+                selected_visual_step = selected_state_step = 0
+                selected_visual_gain = 0.0
+                best_visual_weights: dict[str, Any] = {}
+                best_state_weights: dict[str, Any] = {}
+                best_residual_curve: list[dict[str, float]] = []
                 scale = statistics["state_scale"].to(config.device)
                 for iteration in range(config.steps):
                     chosen = [
@@ -540,29 +640,53 @@ class WorldModelTrainAdapter:
                     ) % config.validation_interval == 0 or iteration + 1 == config.steps:
                         predictor.eval()
                         decoder.eval()
-                        validation = _evaluate(
-                            predictor, decoder, rows["validation"], config, scale
+                        gain, _, residual_curve, selection = _calibrate_visual_residual(
+                            predictor,
+                            decoder,
+                            rows["validation"],
+                            config,
+                            scale,
                         )
-                        score = sum(
-                            row["latent_mse"]
-                            + config.state_loss_weight * row["normalized_state_rmse"] ** 2
-                            for row in validation
-                        ) / len(validation)
-                        validation_curve.append({"step": iteration + 1, "score": score})
-                        if score < best_score:
-                            best_score, selected_step = score, iteration + 1
-                            best_weights = {
+                        visual_score = max(
+                            selection["latent_mse_ratio"], selection["rgb_mse_ratio"]
+                        )
+                        state_score = selection["normalized_state_rmse_ratio"]
+                        validation_curve.append(
+                            {
+                                "step": iteration + 1,
+                                "visual_residual_gain": gain,
+                                "visual_score": visual_score,
+                                "state_score": state_score,
+                                **selection,
+                            }
+                        )
+                        if visual_score < best_visual_score:
+                            best_visual_score = visual_score
+                            selected_visual_step = iteration + 1
+                            selected_visual_gain = gain
+                            best_residual_curve = residual_curve
+                            best_visual_weights = {
                                 prefix + key: value.detach().cpu().clone()
                                 for prefix, model in (
                                     ("predictor.", predictor),
                                     ("decoder.", decoder),
                                 )
                                 for key, value in model.state_dict().items()
+                                if prefix == "decoder." or not key.startswith("state_delta.")
+                            }
+                        if state_score < best_state_score:
+                            best_state_score = state_score
+                            selected_state_step = iteration + 1
+                            best_state_weights = {
+                                "predictor." + key: value.detach().cpu().clone()
+                                for key, value in predictor.state_dict().items()
+                                if key.startswith("state_delta.")
                             }
                         predictor.train()
                         decoder.train()
-                if not best_weights:
-                    raise MethodExecutionError("DINO-WM has no finite validation checkpoint")
+                if not best_visual_weights or not best_state_weights:
+                    raise MethodExecutionError("DINO-WM has no finite validation checkpoints")
+                best_weights = {**best_visual_weights, **best_state_weights}
                 for prefix, model in (("predictor.", predictor), ("decoder.", decoder)):
                     model.load_state_dict(
                         {
@@ -573,11 +697,15 @@ class WorldModelTrainAdapter:
                     )
                 predictor.eval()
                 decoder.eval()
+                _apply_visual_residual_gain(predictor, selected_visual_gain)
                 metrics: dict[str, float] = {
                     "initial_loss": losses[0],
                     "final_loss": losses[-1],
-                    "selected_step": float(selected_step),
-                    "validation_selection_score": best_score,
+                    "selected_visual_step": float(selected_visual_step),
+                    "selected_state_step": float(selected_state_step),
+                    "selected_visual_residual_gain": selected_visual_gain,
+                    "validation_visual_selection_score": best_visual_score,
+                    "validation_state_selection_score": best_state_score,
                 }
                 evaluations = {}
                 for name in ("validation", "test"):
@@ -594,6 +722,9 @@ class WorldModelTrainAdapter:
                         metrics[name + "_" + metric] = sum(row[metric] for row in errors) / len(
                             errors
                         )
+                metrics["validation_selection_score"] = _validation_selection(
+                    evaluations["validation"]
+                )["score"]
                 tensors = {
                     prefix + key: value.detach().cpu().contiguous()
                     for prefix, model in (("predictor.", predictor), ("decoder.", decoder))
@@ -627,7 +758,8 @@ class WorldModelTrainAdapter:
                 "context-preserving residual RGB decoder trained with the inference rendering path",
                 "bounded demo resolution and network size",
                 "differentiable multi-step training using the inference rollout",
-                "checkpoint selection on disjoint validation episodes only",
+                "independent validation checkpoints for decoupled visual and state branches",
+                "validation-only visual residual calibration bounds long-horizon drift",
             ],
         }
         report = {
@@ -637,6 +769,7 @@ class WorldModelTrainAdapter:
             "held_out": evaluations,
             "loss_curve": losses,
             "validation_curve": validation_curve,
+            "visual_residual_calibration_curve": best_residual_curve,
             "state_quality_status": (
                 "BEATS_PERSISTENCE"
                 if metrics["test_normalized_state_rmse"]
@@ -725,6 +858,152 @@ class WorldModelActions(DomainModel):
         ):
             raise ValueError("world model actions must be finite nonempty equal-width vectors")
         return self
+
+
+class WorldModelSignalEvaluation(DomainModel):
+    unit: str
+    frame: str
+    column_start: int = Field(ge=0)
+    column_stop: int = Field(gt=0)
+    rmse: tuple[float, ...]
+    persistence_rmse: tuple[float, ...]
+    rmse_ratio: tuple[float | None, ...]
+    status: tuple[Literal["BEATS_PERSISTENCE", "MATCHES_PERSISTENCE", "BELOW_BASELINE"], ...]
+
+    @model_validator(mode="after")
+    def validate_dimensions(self) -> WorldModelSignalEvaluation:
+        width = self.column_stop - self.column_start
+        if width <= 0 or any(
+            len(values) != width
+            for values in (self.rmse, self.persistence_rmse, self.rmse_ratio, self.status)
+        ):
+            raise ValueError("world model signal evaluation dimensions do not match")
+        return self
+
+
+class WorldModelRolloutEvaluation(DomainModel):
+    schema_id: Literal["physrealx.world-model-rollout-evaluation/1"] = Field(
+        default="physrealx.world-model-rollout-evaluation/1", alias="schema"
+    )
+    rollout: ArtifactRef
+    reference_episode_id: str
+    reference_run_id: str
+    start_index: int = Field(ge=0)
+    horizon: int = Field(gt=0)
+    timestamp_seconds: tuple[float, ...]
+    reference_states: ArtifactRef
+    signals: dict[str, WorldModelSignalEvaluation]
+    evidence_scope: Literal["episode_state_comparison"] = "episode_state_comparison"
+
+    @model_validator(mode="after")
+    def validate_evaluation(self) -> WorldModelRolloutEvaluation:
+        if len(self.timestamp_seconds) != self.horizon or not self.signals:
+            raise ValueError("world model rollout evaluation is incomplete")
+        columns = sorted((row.column_start, row.column_stop) for row in self.signals.values())
+        if columns[0][0] != 0 or any(
+            left[1] != right[0] for left, right in zip(columns, columns[1:])
+        ):
+            raise ValueError("world model rollout evaluation columns are not contiguous")
+        return self
+
+
+def evaluate_world_model_rollout(
+    artifacts: ArtifactStore,
+    rollout_ref: ArtifactRef,
+    reference: Episode,
+    *,
+    start_index: int,
+) -> ArtifactRef:
+    """Compare a rollout with an episode and its identical persistence baseline."""
+    import numpy as np
+
+    document = read_json(artifacts, rollout_ref, "physrealx.world-model-rollout/1")
+    state_signals = tuple(document.get("state_signals", ()))
+    timestamps = tuple(float(value) for value in document.get("timestamp_seconds", ()))
+    predicted = read_array(artifacts, ArtifactRef.model_validate(document["states"]))
+    if predicted.ndim != 2 or not state_signals or len(timestamps) != len(predicted):
+        raise DomainValidationError("world model rollout state evidence is incomplete")
+    stop = start_index + 1 + len(predicted)
+    if start_index < 0 or stop > len(reference.steps):
+        raise DomainValidationError("reference episode cannot cover the rollout horizon")
+    truth_steps = reference.steps[start_index + 1 : stop]
+    if any(
+        abs(observed - expected.timestamp_seconds) > 1e-8
+        for observed, expected in zip(timestamps, truth_steps)
+    ):
+        raise DomainValidationError("rollout and reference episode timestamps differ")
+
+    truth_columns = []
+    initial_columns = []
+    signals = {}
+    column = 0
+    for name in state_signals:
+        initial = reference.steps[start_index].observations.get(name)
+        values = [step.observations.get(name) for step in truth_steps]
+        if (
+            initial is None
+            or initial.inline is None
+            or any(value is None or value.inline is None for value in values)
+        ):
+            raise DomainValidationError(f"reference episode lacks inline state {name}")
+        rows = [value.inline for value in values if value is not None]
+        truth = np.asarray(rows, dtype=np.float64)
+        initial_array = np.asarray(initial.inline, dtype=np.float64)
+        width = len(initial_array)
+        if truth.shape != (len(predicted), width):
+            raise DomainValidationError(f"reference state {name} changes dimensions")
+        truth_columns.append(truth)
+        initial_columns.append(initial_array)
+        column += width
+    reference_states = np.concatenate(truth_columns, axis=1)
+    initial_state = np.concatenate(initial_columns)
+    if predicted.shape != reference_states.shape or not np.isfinite(predicted).all():
+        raise DomainValidationError("predicted and reference state dimensions differ")
+
+    column = 0
+    for name, truth in zip(state_signals, truth_columns):
+        initial = reference.steps[start_index].observations[name]
+        width = truth.shape[1]
+        actual = np.sqrt(np.mean((predicted[:, column : column + width] - truth) ** 2, axis=0))
+        baseline = np.sqrt(np.mean((initial_state[column : column + width] - truth) ** 2, axis=0))
+        ratios: list[float | None] = []
+        statuses = []
+        for error, persistence in zip(actual, baseline):
+            if persistence <= 1e-12:
+                ratios.append(None)
+                statuses.append("MATCHES_PERSISTENCE" if error <= 1e-12 else "BELOW_BASELINE")
+            else:
+                ratios.append(float(error / persistence))
+                statuses.append(
+                    "BEATS_PERSISTENCE"
+                    if error < persistence
+                    else "MATCHES_PERSISTENCE"
+                    if error == persistence
+                    else "BELOW_BASELINE"
+                )
+        signals[name] = WorldModelSignalEvaluation(
+            unit=initial.unit,
+            frame=initial.frame,
+            column_start=column,
+            column_stop=column + width,
+            rmse=tuple(float(value) for value in actual),
+            persistence_rmse=tuple(float(value) for value in baseline),
+            rmse_ratio=tuple(ratios),
+            status=tuple(statuses),
+        )
+        column += width
+    return artifacts.put_json(
+        WorldModelRolloutEvaluation(
+            rollout=rollout_ref,
+            reference_episode_id=reference.episode_id,
+            reference_run_id=reference.run_id,
+            start_index=start_index,
+            horizon=len(predicted),
+            timestamp_seconds=timestamps,
+            reference_states=_array(artifacts, reference_states),
+            signals=signals,
+        ).model_dump(mode="json", by_alias=True)
+    )
 
 
 class WorldModelRolloutConfig(DomainModel):

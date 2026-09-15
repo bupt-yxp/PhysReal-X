@@ -33,6 +33,17 @@ def validate_operation_output(
             raise MethodExecutionError(
                 f"method output {output.name!r} has the wrong schema discriminator"
             )
+        if requirement.schema_discriminator == "physrealx.geometry-reconstruction-report/1":
+            from physrealx.reconstruction import ReconstructionPrediction
+
+            try:
+                ReconstructionPrediction.model_validate(document.get("prediction"))
+                if document.get("unit") != "m" or not document.get("coordinate_frame"):
+                    raise ValueError("reconstruction requires metre geometry and a capture frame")
+            except ValueError as error:
+                raise MethodExecutionError(
+                    f"method output {output.name!r} violates the reconstruction contract: {error}"
+                ) from error
     elif kind == "zip":
         with tempfile.TemporaryDirectory(prefix="physrealx-validate-") as directory:
             path = Path(directory) / "output.zip"

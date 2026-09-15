@@ -14,7 +14,7 @@ pytestmark = [
     pytest.mark.real_data,
     pytest.mark.skipif(
         os.environ.get("PHYSREALX_REAL_DATA_TESTS") != "1",
-        reason="requires local cabinet2 captures, CUDA, and the PhysReal-X Jupyter kernel",
+        reason="requires local oven4 captures, CUDA, and the PhysReal-X Jupyter kernel",
     ),
 ]
 
@@ -43,52 +43,113 @@ def test_all_six_notebooks_execute_and_publish_actual_evidence() -> None:
         assert all(cell.execution_count is not None for cell in code)
         assert not any(item.output_type == "error" for cell in code for item in cell.outputs)
     output = root / "examples/real_assets_and_digital_twin/output"
-    report = json.loads((output / "digital-twin-report.json").read_text())
-    assert report["execution_status"] == "COMPLETED"
-    assert tuple(sorted(report["stages"])) == (
-        "cameras",
-        "depth",
-        "environment",
-        "export",
-        "input",
-        "reconstruction",
-        "registration",
-    )
-    assert all(stage["status"] == "COMPLETED" for stage in report["stages"].values())
-    assert Path(report["environment"]["prefix"]).name == "PhysReal-X"
-    assert not report["independent_physical_validation"]
+    import hashlib
+
+    from physrealx import ArtifactRef, PhysRealX, VersionedRef
+
+    px = PhysRealX.open(root / ".physrealx")
+    for receipt in suite["notebooks"]:
+        source = root / "examples" / receipt["module"] / "demo.ipynb"
+        assert receipt["source_sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
+        assert all(row["status"] == "COMPLETED" for row in receipt["cells"])
+    results = json.loads((output / "results.json").read_text())
+    for filename, ref in results.items():
+        assert (output / filename).read_bytes() == px.artifacts.get_bytes(
+            ArtifactRef.model_validate(ref)
+        )
     assert len(json.loads((output / "reference-model.json").read_text())["joints"]) == 2
     reconstruction = json.loads((output / "reconstruction-report.json").read_text())
     assert reconstruction["evaluation_scope"] == "held_out_views"
     assert reconstruction["motion_group_count"] == 2
-    # Guard against empty/cropped silhouettes looking good on a black background.
-    assert reconstruction["metrics"]["validation_fg_psnr"] > 12
-    assert reconstruction["metrics"]["validation_alpha_iou"] > 0.75
+    from collections import Counter
+
+    assert Counter(x.rsplit(".", 1)[0] for x in reconstruction["training_frame_ids"]) == {
+        "can.start.rgb": 100,
+        "can.end.rgb": 100,
+    }
+    assert Counter(x.rsplit(".", 1)[0] for x in reconstruction["validation_frame_ids"]) == {
+        "can.start.rgb": 50,
+        "can.end.rgb": 50,
+    }
+    from physrealx.reconstruction import ReconstructionPrediction
+
+    prediction = ReconstructionPrediction.model_validate(reconstruction["prediction"])
+    assert len(prediction.parts) == 2 and prediction.segmented
+    evaluation = json.loads((output / "reconstruction-evaluation.json").read_text())
+    assert evaluation["status"] == "COMPLETED"
+    assert evaluation["protocol"]["name"] == "dtart"
+    assert evaluation["coverage"]["evaluated_joints"] == 1
+    import math
+
+    for state in ("start", "end"):
+        geometry = evaluation["geometry"][state]
+        scores = [geometry[k]["cd"] for k in ("whole", "static")]
+        scores.extend(row["cd"] for row in geometry["parts"].values())
+        assert scores and all(
+            value is not None and math.isfinite(value) and value >= 0 for value in scores
+        )
+    joint = evaluation["joints"]["gui_drawer_2.joint"]
+    assert joint["status"] == "measured" and joint["axis_pos"] is None
+    assert all(math.isfinite(joint[k]) and joint[k] >= 0 for k in ("axis_ang_deg", "part_motion"))
     learning = json.loads(
-        (root / "examples/data_management_and_training/output/report.json").read_text()
+        (root / "examples/data_management_and_training/output/results.json").read_text()
     )
-    assert learning["stages"]["long_rollout"]["prediction_duration_seconds"] == pytest.approx(5)
-    assert (
-        learning["stages"]["world_train"]["quality_gate"]
-        == "state_latent_rgb_beat_identical_context_persistence"
+    rollout = json.loads(
+        px.artifacts.get_bytes(ArtifactRef.model_validate(learning["long_prediction"]))
     )
+    assert len(rollout["timestamp_seconds"]) == 100
+    assert rollout["timestamp_seconds"][-1] == pytest.approx(5)
+    assert not rollout["independent_physical_validation"]
+    training = json.loads(
+        px.artifacts.get_bytes(ArtifactRef.model_validate(learning["world_model_training"]))
+    )
+    for metric in ("normalized_state_rmse", "latent_mse", "rgb_mse"):
+        assert (
+            training["metrics"]["test_" + metric]
+            < training["metrics"]["test_persistence_" + metric]
+        )
+    for key, signal in (
+        ("long_prediction_evaluation", "joint.position"),
+        (
+            "counterfactual_evaluation",
+            "joint.oven.e_door_197.joint.position",
+        ),
+    ):
+        rollout_evaluation = json.loads(
+            px.artifacts.get_bytes(ArtifactRef.model_validate(learning[key]))
+        )
+        assert rollout_evaluation["signals"][signal]["status"] == ["BEATS_PERSISTENCE"]
     simulation = json.loads(
-        (root / "examples/simulation_and_data_generation/output/report.json").read_text()
+        (root / "examples/simulation_and_data_generation/output/results.json").read_text()
     )
-    assert (
-        simulation["stages"]["appearance"]["operation"]["metrics"]["physical_motion_span_m"] > 0.1
+    streams = json.loads(
+        px.artifacts.get_bytes(ArtifactRef.model_validate(simulation["render_streams"]))
     )
+    assert max(streams["recorded_joint_positions"]) - min(streams["recorded_joint_positions"]) > 0.1
     feedback = json.loads(
-        (root / "examples/evaluation_and_feedback/output/report.json").read_text()
+        (root / "examples/evaluation_and_feedback/output/results.json").read_text()
     )
-    assert feedback["stages"]["verify"]["success_rates"]["updated"] == 1.0
-    assert feedback["stages"]["retrain"]["model"] != feedback["stages"]["input"]["model"]
+    updated = px.evaluations.get_report(
+        VersionedRef.model_validate(feedback["evaluations"]["updated"])
+    )
+    assert updated.success_rate == 1.0
+    assert feedback["model"] != feedback["initial_model"]
 
 
 def test_exported_artgs_bundle_reloads_without_training_directories(tmp_path) -> None:
     from physrealx.integrations.artgs import _SubprocessArtGSRunner
 
     root = Path(__file__).resolve().parents[2]
+    report = json.loads(
+        (
+            root / "examples/real_assets_and_digital_twin/output/reconstruction-report.json"
+        ).read_text()
+    )
+    if report["method"]["name"] != "artgs":
+        pytest.skip("latest exported reconstruction is not ArtGS")
+    # ArtGS rendering diagnostics belong to its own native acceptance check.
+    assert report["metrics"]["validation_fg_psnr"] > 12
+    assert report["metrics"]["validation_alpha_iou"] > 0.75
     bundle = root / "examples/real_assets_and_digital_twin/output/reconstruction.zip"
     script = """
 import json, sys, zipfile

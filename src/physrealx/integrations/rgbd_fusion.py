@@ -62,6 +62,7 @@ class RGBDFusionAdapter:
         input_contract="MetricMultiStateRGBDBundle/1",
         output_contract="VisualGeometryBundle/1+GeometryReconstructionReport/1",
         python=">=3.10,<3.13",
+        version="1.1.0",
     )
 
     def probe(self) -> MethodProbe:
@@ -148,11 +149,19 @@ class RGBDFusionAdapter:
                 v["heldout_visible_surface_median_m"] for v in evaluations.values()
             ),
         }
+        from physrealx.reconstruction import ReconstructedPart, ReconstructionPrediction
+
+        prediction = ReconstructionPrediction(
+            parts={"whole": ReconstructedPart()},
+            states={row["state"]: {"whole": row["artifact"]} for row in records},
+            segmented=False,
+        )
         report = {
             "schema": "physrealx.geometry-reconstruction-report/1",
             "status": "OBSERVED_SURFACE_RECONSTRUCTED",
             "evidence_scope": "model_scaled_rgbd_visible_surfaces",
             "unit": "m",
+            "prediction": prediction.model_dump(mode="json"),
             "coordinate_frame": camera["coordinate_frame"],
             "source_camera_artifact_id": source.camera_rig.artifact_id,
             "source_depth_artifact_id": source.enhanced_depth.artifact_id,

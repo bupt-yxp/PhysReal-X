@@ -38,6 +38,7 @@ from physrealx.integrations._artifacts import (
 from physrealx.integrations.collision import load_meshes, mesh_reference
 from physrealx.integrations.usd import _link_poses
 from physrealx.methods import builtin_method
+from physrealx.reconstruction import joint_transform
 
 
 class PlacementObject(DomainModel):
@@ -76,35 +77,200 @@ class SceneGenerationRequest(DomainModel):
         return self
 
 
-def asset_vertices(asset: AssetSpec, store: ArtifactStore, *, link: str | None = None) -> Any:
+def _asset_collision_meshes(asset: AssetSpec, store: ArtifactStore, link: str | None) -> list[Any]:
     import numpy as np
+    import trimesh
     from scipy.spatial.transform import Rotation
 
     poses = _link_poses(asset)
-    vertices = []
+    result = []
     for geometry in asset.geometries:
         if geometry.role.value != "collision" or (link is not None and geometry.link != link):
             continue
-        if geometry.primitive_dimensions_m is not None:
-            import itertools
-
-            points = (
-                np.array(list(itertools.product([-0.5, 0.5], repeat=3)))
-                * geometry.primitive_dimensions_m
-            )
-        else:
-            points = np.concatenate(
-                [mesh.vertices for mesh in load_meshes(store, mesh_reference(geometry.uri, store))]
-            )
-        points = points * geometry.scale
-        points = (
-            points @ Rotation.from_quat(geometry.local_pose.rotation_xyzw).as_matrix().T
-            + geometry.local_pose.translation_m
+        meshes = (
+            [trimesh.creation.box(extents=geometry.primitive_dimensions_m)]
+            if geometry.primitive_dimensions_m is not None
+            else load_meshes(store, mesh_reference(geometry.uri, store))
         )
-        vertices.append(points @ poses[geometry.link][:3, :3].T + poses[geometry.link][:3, 3])
-    if not vertices:
+        local = np.eye(4)
+        local[:3, :3] = Rotation.from_quat(geometry.local_pose.rotation_xyzw).as_matrix()
+        local[:3, 3] = geometry.local_pose.translation_m
+        for mesh in meshes:
+            mesh.apply_scale(geometry.scale)
+            mesh.apply_transform(poses[geometry.link] @ local)
+            result.append(mesh)
+    if not result:
         raise DomainValidationError("scene placement requires collision geometry")
-    return np.concatenate(vertices)
+    return result
+
+
+def asset_vertices(asset: AssetSpec, store: ArtifactStore, *, link: str | None = None) -> Any:
+    import numpy as np
+
+    return np.concatenate([mesh.vertices for mesh in _asset_collision_meshes(asset, store, link)])
+
+
+def _contact_support(meshes: list[Any], transform: Any, lower: Any, upper: Any) -> float:
+    """Find the outward surface within the actuator's actual Y/Z contact window."""
+    import numpy as np
+
+    support = -math.inf
+    for mesh in meshes:
+        points = mesh.vertices @ transform[:3, :3].T + transform[:3, 3]
+        triangles = points[mesh.faces]
+        relevant = np.all(triangles[:, :, 1:].min(axis=1) <= upper, axis=1) & np.all(
+            triangles[:, :, 1:].max(axis=1) >= lower, axis=1
+        )
+        for triangle in triangles[relevant]:
+            polygon = list(triangle)
+            for axis, bound, sign in (
+                (1, lower[0], 1),
+                (1, upper[0], -1),
+                (2, lower[1], 1),
+                (2, upper[1], -1),
+            ):
+                clipped = []
+                for previous, current in zip(polygon[-1:] + polygon[:-1], polygon):
+                    before = sign * (previous[axis] - bound) >= 0
+                    after = sign * (current[axis] - bound) >= 0
+                    if before != after:
+                        clipped.append(
+                            previous
+                            + (current - previous)
+                            * ((bound - previous[axis]) / (current[axis] - previous[axis]))
+                        )
+                    if after:
+                        clipped.append(current)
+                polygon = clipped
+                if not polygon:
+                    break
+            if polygon:
+                support = max(support, max(float(point[0]) for point in polygon))
+    if not math.isfinite(support):
+        raise DomainValidationError("actuator contact window misses target collision geometry")
+    return support
+
+
+def place_linear_actuator(
+    scene: SceneSpec,
+    asset: AssetSpec,
+    store: ArtifactStore,
+    *,
+    entity: str,
+    joint: str,
+    actuator: VersionedRef,
+    name: str,
+    initial_position: float,
+    clearance_m: float,
+    resource_id: str,
+) -> SceneSpec:
+    """Place a linear contact actuator outside a posed slide or hinged link."""
+    import numpy as np
+    from scipy.spatial.transform import Rotation
+
+    if any(e.name == name for e in scene.entities):
+        raise DomainValidationError(f"scene already contains entity {name!r}")
+    target = next((e for e in scene.entities if e.name == entity), None)
+    target_joint = next((j for j in asset.joints if j.name == joint), None)
+    if (
+        target is None
+        or (target.asset.resource_id, target.asset.version) != (asset.resource_id, asset.version)
+        or target_joint is None
+    ):
+        raise DomainValidationError("actuator placement requires a matching scene entity and joint")
+    if target_joint.joint_type not in (JointType.PRISMATIC, JointType.REVOLUTE):
+        raise DomainValidationError("linear actuator placement requires a movable target joint")
+    if (
+        not math.isfinite(initial_position)
+        or not target_joint.lower_limit <= initial_position <= target_joint.upper_limit
+        or not math.isfinite(clearance_m)
+        or clearance_m <= 0
+    ):
+        raise DomainValidationError(
+            "actuator placement requires valid joint position and positive clearance"
+        )
+    parent = _link_poses(asset)[target_joint.parent]
+    joint_rotation = Rotation.from_matrix(parent[:3, :3]) * Rotation.from_quat(
+        target_joint.parent_to_joint.rotation_xyzw
+    )
+    opening = joint_rotation.apply(target_joint.axis)
+    closed = asset_vertices(asset, store, link=target_joint.child)
+    origin = parent[:3, :3] @ np.asarray(target_joint.parent_to_joint.translation_m) + parent[:3, 3]
+    motion = joint_transform(
+        "slide" if target_joint.joint_type is JointType.PRISMATIC else "hinge",
+        opening,
+        origin,
+        initial_position,
+    )
+    posed = closed @ motion[:3, :3].T + motion[:3, 3]
+    if target_joint.joint_type is JointType.REVOLUTE:
+        opening = np.mean(posed - closed, axis=0)
+        opening[2] = 0
+        if np.linalg.norm(opening) < 1e-6:
+            raise DomainValidationError(
+                "hinged actuator placement needs a nonzero horizontal opening"
+            )
+        opening /= np.linalg.norm(opening)
+    rotation, _ = Rotation.align_vectors([opening], [[1, 0, 0]])
+    points = rotation.inv().apply(posed)
+    lo, hi = points.min(0), points.max(0)
+    actuator_model = load_resource(store, actuator, AssetSpec)
+    actuator_joints = [j for j in actuator_model.joints if j.joint_type is not JointType.FIXED]
+    if (
+        len(actuator_joints) != 1
+        or actuator_joints[0].joint_type is not JointType.PRISMATIC
+        or not np.allclose(actuator_joints[0].axis, [-1, 0, 0])
+    ):
+        raise DomainValidationError("contact actuator must have one local -X sliding joint")
+    actuator_vertices = asset_vertices(actuator_model, store, link=actuator_joints[0].child)
+    center = (lo[1:] + hi[1:]) / 2
+    window_lower = center + actuator_vertices[:, 1:].min(axis=0)
+    window_upper = center + actuator_vertices[:, 1:].max(axis=0)
+    meshes = _asset_collision_meshes(asset, store, target_joint.child)
+    projection = np.eye(4)
+    projection[:3, :3] = rotation.inv().as_matrix()
+    initial_support = _contact_support(meshes, projection @ motion, window_lower, window_upper)
+    closed_motion = joint_transform(
+        "slide" if target_joint.joint_type is JointType.PRISMATIC else "hinge",
+        joint_rotation.apply(target_joint.axis),
+        origin,
+        target_joint.lower_limit,
+    )
+    closed_support = _contact_support(
+        meshes, projection @ closed_motion, window_lower, window_upper
+    )
+    front_offset = float(actuator_vertices[:, 0].min())
+    relative = rotation.apply([initial_support + clearance_m - front_offset, *center])
+    scene_rotation = Rotation.from_quat(target.pose.rotation_xyzw)
+    placed = SceneEntitySpec(
+        name=name,
+        asset=actuator,
+        role=SceneEntityRole.ROBOT,
+        pose=PoseSpec(
+            translation_m=np.asarray(target.pose.translation_m) + scene_rotation.apply(relative),
+            rotation_xyzw=(scene_rotation * rotation).as_quat(),
+        ),
+    )
+    travel = float(initial_support + clearance_m - closed_support)
+    if not actuator_joints[0].lower_limit <= travel <= actuator_joints[0].upper_limit:
+        raise DomainValidationError("contact closing travel exceeds actuator limits")
+    return SceneSpec.model_validate(
+        {
+            **scene.model_dump(),
+            "resource_id": resource_id,
+            "entities": (*scene.entities, placed),
+            "metadata": {
+                **scene.metadata,
+                "actuator_placement": {
+                    "entity": entity,
+                    "joint": joint,
+                    "closing_travel_m": travel,
+                    "initial_joint_position": initial_position,
+                    "joint_unit": "m" if target_joint.joint_type is JointType.PRISMATIC else "rad",
+                },
+            },
+        }
+    )
 
 
 def scene_bounds(scene: SceneSpec, store: ArtifactStore) -> dict[str, Any]:
