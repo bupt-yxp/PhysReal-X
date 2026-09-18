@@ -34,11 +34,13 @@ EXPECTED_APIS = {
         "px.assets.build_collision(",
         "px.assets.assemble(",
         "px.assets.package(",
+        "px.assets.preview_physical_asset(",
         "px.assets.validate(",
     ),
     "scene_and_task_generation": (
         "px.scenes.generate(",
         "px.scenes.compose(",
+        "px.scenes.preview_task(",
         "px.tasks.compile(",
         "px.tasks.validate(",
         "px.trajectories.generate(",
@@ -46,20 +48,31 @@ EXPECTED_APIS = {
     "simulation_and_data_generation": (
         "px.runs.submit(",
         "px.datasets.get(",
+        "px.datasets.ingest(",
+        "px.datasets.preview_episode(",
         "px.runs.episodes(",
     ),
     "data_management_and_training": (
-        "px.datasets.ingest(",
         "px.datasets.snapshot(",
+        "px.datasets.preview_snapshot(",
         "px.training.submit(",
+        "px.training.prepare_interface(",
+        "px.training.preview_interfaces(",
+        "px.training.preview_policy(",
         "px.world_models.train(",
         "px.world_models.rollout(",
+        "px.world_models.preview_rollout(",
     ),
     "evaluation_and_feedback": (
         "px.evaluations.submit(",
         "px.telemetry.record(",
         "px.failures.analyze(",
         "px.feedback.build_dataset(",
+        "px.feedback.analyze_policy_intervention(",
+        "px.feedback.assess_policy_update(",
+        "px.feedback.plan_physics_calibration(",
+        "px.feedback.preview_report(",
+        "px.feedback.preview_cycle(",
     ),
 }
 
@@ -108,6 +121,8 @@ def test_notebook_teaches_and_directly_calls_each_public_api(module_name: str) -
         "stage[",
         "require_completed",
         "operation_receipt",
+        "oven4",
+        "e_door_197",
     ):
         assert obsolete not in source
     assert "results.json" in source and "px.artifacts.export(" in source
@@ -193,6 +208,71 @@ def test_reconstruction_cell_accepts_report_without_method_diagnostics() -> None
     exec(compile(source, "reconstruction-cell", "exec"), namespace)
     assert namespace["reconstruction_bundle"] == "visual_geometry_bundle"
     assert shown[-1] == {"运动组": 2}
+
+
+def test_real_asset_demo_exports_one_reconstruction_animation() -> None:
+    notebook = _load_notebook("real_assets_and_digital_twin")
+    source = "\n".join(
+        _cell_source(cell) for cell in notebook["cells"] if cell["cell_type"] == "code"
+    )
+
+    assert source.count("show_animation(") == 1
+    assert source.count("px.assets.preview_reconstruction(") == 1
+    assert "preview_reconstruction_appearance" not in source
+    assert "reconstruction-appearance.gif" not in source
+    assert '"reconstruction-comparison.gif": reconstruction_animation' in source
+
+
+def test_scene_task_demo_exports_one_execution_animation() -> None:
+    notebook = _load_notebook("scene_and_task_generation")
+    source = "\n".join(
+        _cell_source(cell) for cell in notebook["cells"] if cell["cell_type"] == "code"
+    )
+
+    assert source.count("show_animation(") == 1
+    assert source.count("px.scenes.preview_task(") == 1
+    assert "matplotlib" not in source
+    assert "trajectory.png" not in source
+    assert '"task-preview.gif": task_preview' in source
+    assert '"task_instance": task_instance.model_dump' in source
+
+
+def test_simulation_demo_exports_one_synchronized_animation() -> None:
+    notebook = _load_notebook("simulation_and_data_generation")
+    source = "\n".join(
+        _cell_source(cell) for cell in notebook["cells"] if cell["cell_type"] == "code"
+    )
+
+    assert source.count("show_animation(") == 1
+    assert source.count("px.datasets.preview_episode(") == 1
+    assert 'files={"simulation-preview.gif": preview}' in source
+    assert "pusher/extension" not in source
+    assert "registered_artgs" not in source
+    assert 'upstream["backend_config"]' not in source
+
+
+def test_training_demo_exports_dataset_policy_and_world_model_visuals() -> None:
+    notebook = _load_notebook("data_management_and_training")
+    source = "\n".join(
+        _cell_source(cell) for cell in notebook["cells"] if cell["cell_type"] == "code"
+    )
+
+    assert source.count("px.datasets.preview_snapshot(") == 1
+    assert source.count("px.training.preview_policy(") == 2
+    assert source.count("px.training.prepare_interface(") == 2
+    assert source.count("px.training.preview_interfaces(") == 1
+    assert source.count("px.world_models.preview_rollout(") == 1
+    assert "matplotlib" not in source
+    for filename in (
+        '"dataset-preview.png": dataset_preview',
+        '"policy-training.png": policy_preview',
+        '"iql-training.png": iql_preview',
+        '"training-interfaces.png": interface_preview',
+        '"openvla-oft-interface.json": official_interfaces["openvla_oft"]',
+        '"td-mpc2-interface.json": official_interfaces["td_mpc2"]',
+        '"world-model-preview.gif": world_model_preview',
+    ):
+        assert filename in source
 
 
 def test_artmodeling_input_is_excluded_by_gitignore() -> None:

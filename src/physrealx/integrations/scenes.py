@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from pydantic import Field, model_validator
 
@@ -12,6 +12,8 @@ from physrealx.domain import (
     ActionSpec,
     AssetSpec,
     DomainModel,
+    GeometryRole,
+    JointSpec,
     JointType,
     MethodCapability,
     OperationSpec,
@@ -38,13 +40,13 @@ from physrealx.integrations._artifacts import (
 from physrealx.integrations.collision import load_meshes, mesh_reference
 from physrealx.integrations.usd import _link_poses
 from physrealx.methods import builtin_method
-from physrealx.reconstruction import joint_transform
 
 
 class PlacementObject(DomainModel):
     name: str = Field(pattern=r"^[a-z][a-z0-9_.-]*$")
     asset: VersionedRef
     role: SceneEntityRole = SceneEntityRole.OBJECT
+    yaw_rad: float = Field(default=0.0, allow_inf_nan=False)
 
 
 class SceneGenerationRequest(DomainModel):
@@ -74,6 +76,82 @@ class SceneGenerationRequest(DomainModel):
             raise ValueError("placement names must be unique")
         if any(item.asset.resource_type is not ResourceType.ASSET for item in self.objects):
             raise ValueError("scene placement requires asset references")
+        return self
+
+
+class SemanticRelation(DomainModel):
+    subject: str = Field(pattern=r"^[a-z][a-z0-9_.-]*$")
+    relation: Literal["on", "left_of", "right_of", "front_of", "behind"]
+    object: str = Field(pattern=r"^[a-z][a-z0-9_.-]*$")
+    clearance_m: float = Field(default=0.05, ge=0, allow_inf_nan=False)
+
+
+class SemanticSceneGenerationRequest(DomainModel):
+    resource_id: str
+    version: str
+    display_name: str
+    domain: Literal["home", "tabletop", "shelf", "industrial"]
+    environment: VersionedRef | None = None
+    objects: tuple[PlacementObject, ...] = Field(min_length=2, max_length=32)
+    relations: tuple[SemanticRelation, ...] = Field(min_length=1, max_length=128)
+    xy_bounds_m: tuple[float, float, float, float]
+    floor_height_m: float = Field(default=0.0, allow_inf_nan=False)
+    interaction_target: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_.-]*$")
+    agent_radius_m: float = Field(default=0.30, gt=0, allow_inf_nan=False)
+    seed: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def validate_request(self) -> SemanticSceneGenerationRequest:
+        names = [item.name for item in self.objects]
+        x0, y0, x1, y1 = self.xy_bounds_m
+        if len(names) != len(set(names)):
+            raise ValueError("semantic layout object names must be unique")
+        if (
+            not all(math.isfinite(value) for value in (*self.xy_bounds_m, self.floor_height_m))
+            or x0 >= x1
+            or y0 >= y1
+        ):
+            raise ValueError("semantic layout bounds must be finite ordered intervals")
+        known = set(names)
+        if self.interaction_target is not None and self.interaction_target not in known:
+            raise ValueError("interaction target must reference a scene object")
+        if self.environment is not None and "room" in known:
+            raise ValueError("semantic layout reserves the room entity name for the environment")
+        if (
+            self.environment is not None
+            and self.environment.resource_type is not ResourceType.ASSET
+        ):
+            raise ValueError("semantic layout environment must reference an asset")
+        supports: dict[str, str] = {}
+        dependencies: dict[str, set[str]] = {name: set() for name in names}
+        for relation in self.relations:
+            if (
+                relation.subject not in known
+                or relation.object not in known
+                or relation.subject == relation.object
+            ):
+                raise ValueError("semantic relations must reference two distinct scene objects")
+            if relation.relation == "on":
+                if relation.subject in supports:
+                    raise ValueError("an object can have only one support relation")
+                supports[relation.subject] = relation.object
+            dependencies[relation.subject].add(relation.object)
+        for name in names:
+            visited = set()
+            current = name
+            while current in supports:
+                if current in visited:
+                    raise ValueError("support relations must form an acyclic graph")
+                visited.add(current)
+                current = supports[current]
+        remaining = {name: set(values) for name, values in dependencies.items()}
+        while remaining:
+            ready = {name for name, values in remaining.items() if not values}
+            if not ready:
+                raise ValueError("semantic relation dependencies must be acyclic")
+            remaining = {
+                name: values - ready for name, values in remaining.items() if name not in ready
+            }
         return self
 
 
@@ -110,150 +188,212 @@ def asset_vertices(asset: AssetSpec, store: ArtifactStore, *, link: str | None =
     return np.concatenate([mesh.vertices for mesh in _asset_collision_meshes(asset, store, link)])
 
 
-def _contact_support(meshes: list[Any], transform: Any, lower: Any, upper: Any) -> float:
-    """Find the outward surface within the actuator's actual Y/Z contact window."""
-    import numpy as np
-
-    support = -math.inf
-    for mesh in meshes:
-        points = mesh.vertices @ transform[:3, :3].T + transform[:3, 3]
-        triangles = points[mesh.faces]
-        relevant = np.all(triangles[:, :, 1:].min(axis=1) <= upper, axis=1) & np.all(
-            triangles[:, :, 1:].max(axis=1) >= lower, axis=1
-        )
-        for triangle in triangles[relevant]:
-            polygon = list(triangle)
-            for axis, bound, sign in (
-                (1, lower[0], 1),
-                (1, upper[0], -1),
-                (2, lower[1], 1),
-                (2, upper[1], -1),
-            ):
-                clipped = []
-                for previous, current in zip(polygon[-1:] + polygon[:-1], polygon):
-                    before = sign * (previous[axis] - bound) >= 0
-                    after = sign * (current[axis] - bound) >= 0
-                    if before != after:
-                        clipped.append(
-                            previous
-                            + (current - previous)
-                            * ((bound - previous[axis]) / (current[axis] - previous[axis]))
-                        )
-                    if after:
-                        clipped.append(current)
-                polygon = clipped
-                if not polygon:
-                    break
-            if polygon:
-                support = max(support, max(float(point[0]) for point in polygon))
-    if not math.isfinite(support):
-        raise DomainValidationError("actuator contact window misses target collision geometry")
-    return support
-
-
-def place_linear_actuator(
+def place_robot_for_joint_task(
     scene: SceneSpec,
-    asset: AssetSpec,
+    target_asset: AssetSpec,
+    robot_asset: AssetSpec,
     store: ArtifactStore,
     *,
     entity: str,
     joint: str,
-    actuator: VersionedRef,
+    robot: VersionedRef,
     name: str,
+    end_effector_link: str,
     initial_position: float,
+    target_position: float,
     clearance_m: float,
     resource_id: str,
 ) -> SceneSpec:
-    """Place a linear contact actuator outside a posed slide or hinged link."""
+    """Place an articulated robot and solve endpoint joint configurations for a target link."""
     import numpy as np
+    from scipy.optimize import least_squares
     from scipy.spatial.transform import Rotation
 
-    if any(e.name == name for e in scene.entities):
+    from physrealx.integrations._asset_preview import (
+        asset_geometry,
+        link_transforms,
+        pose_matrix,
+    )
+
+    if any(item.name == name for item in scene.entities):
         raise DomainValidationError(f"scene already contains entity {name!r}")
-    target = next((e for e in scene.entities if e.name == entity), None)
-    target_joint = next((j for j in asset.joints if j.name == joint), None)
+    target = next((item for item in scene.entities if item.name == entity), None)
+    target_joint = next((item for item in target_asset.joints if item.name == joint), None)
     if (
         target is None
-        or (target.asset.resource_id, target.asset.version) != (asset.resource_id, asset.version)
+        or (target.asset.resource_id, target.asset.version)
+        != (target_asset.resource_id, target_asset.version)
         or target_joint is None
+        or target_joint.joint_type is JointType.FIXED
     ):
-        raise DomainValidationError("actuator placement requires a matching scene entity and joint")
-    if target_joint.joint_type not in (JointType.PRISMATIC, JointType.REVOLUTE):
-        raise DomainValidationError("linear actuator placement requires a movable target joint")
+        raise DomainValidationError("robot placement requires a matching movable target joint")
     if (
-        not math.isfinite(initial_position)
-        or not target_joint.lower_limit <= initial_position <= target_joint.upper_limit
-        or not math.isfinite(clearance_m)
+        not all(math.isfinite(value) for value in (initial_position, target_position, clearance_m))
+        or initial_position == target_position
         or clearance_m <= 0
+        or not target_joint.lower_limit <= initial_position <= target_joint.upper_limit
+        or not target_joint.lower_limit <= target_position <= target_joint.upper_limit
     ):
         raise DomainValidationError(
-            "actuator placement requires valid joint position and positive clearance"
+            "robot placement requires bounded states and positive clearance"
         )
-    parent = _link_poses(asset)[target_joint.parent]
-    joint_rotation = Rotation.from_matrix(parent[:3, :3]) * Rotation.from_quat(
-        target_joint.parent_to_joint.rotation_xyzw
+    if end_effector_link not in robot_asset.links:
+        raise DomainValidationError("robot end-effector link is absent from the asset")
+    controlled = tuple(
+        item
+        for item in robot_asset.joints
+        if item.joint_type is JointType.REVOLUTE and item.effort_limit is not None
     )
-    opening = joint_rotation.apply(target_joint.axis)
-    closed = asset_vertices(asset, store, link=target_joint.child)
-    origin = parent[:3, :3] @ np.asarray(target_joint.parent_to_joint.translation_m) + parent[:3, 3]
-    motion = joint_transform(
-        "slide" if target_joint.joint_type is JointType.PRISMATIC else "hinge",
-        opening,
-        origin,
-        initial_position,
-    )
-    posed = closed @ motion[:3, :3].T + motion[:3, 3]
-    if target_joint.joint_type is JointType.REVOLUTE:
-        opening = np.mean(posed - closed, axis=0)
-        opening[2] = 0
-        if np.linalg.norm(opening) < 1e-6:
-            raise DomainValidationError(
-                "hinged actuator placement needs a nonzero horizontal opening"
-            )
-        opening /= np.linalg.norm(opening)
-    rotation, _ = Rotation.align_vectors([opening], [[1, 0, 0]])
-    points = rotation.inv().apply(posed)
-    lo, hi = points.min(0), points.max(0)
-    actuator_model = load_resource(store, actuator, AssetSpec)
-    actuator_joints = [j for j in actuator_model.joints if j.joint_type is not JointType.FIXED]
-    if (
-        len(actuator_joints) != 1
-        or actuator_joints[0].joint_type is not JointType.PRISMATIC
-        or not np.allclose(actuator_joints[0].axis, [-1, 0, 0])
+    if not controlled:
+        raise DomainValidationError("robot placement requires bounded revolute arm joints")
+    home = robot_asset.metadata.get("home_positions")
+    if not isinstance(home, dict) or any(
+        not isinstance(home.get(item.name), (int, float)) for item in controlled
     ):
-        raise DomainValidationError("contact actuator must have one local -X sliding joint")
-    actuator_vertices = asset_vertices(actuator_model, store, link=actuator_joints[0].child)
-    center = (lo[1:] + hi[1:]) / 2
-    window_lower = center + actuator_vertices[:, 1:].min(axis=0)
-    window_upper = center + actuator_vertices[:, 1:].max(axis=0)
-    meshes = _asset_collision_meshes(asset, store, target_joint.child)
-    projection = np.eye(4)
-    projection[:3, :3] = rotation.inv().as_matrix()
-    initial_support = _contact_support(meshes, projection @ motion, window_lower, window_upper)
-    closed_motion = joint_transform(
-        "slide" if target_joint.joint_type is JointType.PRISMATIC else "hinge",
-        joint_rotation.apply(target_joint.axis),
-        origin,
-        target_joint.lower_limit,
+        raise DomainValidationError("robot asset requires a named home configuration")
+    home_positions = np.asarray([float(home[item.name]) for item in controlled])  # type: ignore[arg-type]
+
+    geometry = asset_geometry(store, target_asset, roles=(GeometryRole.COLLISION,))[
+        GeometryRole.COLLISION
+    ]
+    moving_parts = [mesh.vertices for link, mesh in geometry if link == target_joint.child]
+    if not moving_parts:
+        raise DomainValidationError("target joint child requires collision geometry")
+    moving = np.concatenate(moving_parts)
+    initial_transform = link_transforms(target_asset, {target_joint.name: initial_position})[
+        target_joint.child
+    ]
+    target_transform = link_transforms(target_asset, {target_joint.name: target_position})[
+        target_joint.child
+    ]
+    initial_points = moving @ initial_transform[:3, :3].T + initial_transform[:3, 3]
+    target_points = moving @ target_transform[:3, :3].T + target_transform[:3, 3]
+    displacement = np.linalg.norm(target_points - initial_points, axis=1)
+    candidates = np.flatnonzero(displacement >= displacement.max() - 1e-6)
+    if not len(candidates):
+        raise DomainValidationError("target joint does not move its child collision geometry")
+    contact_index = int(
+        candidates[np.argmax(-initial_points[candidates, 1] + 0.1 * initial_points[candidates, 2])]
     )
-    closed_support = _contact_support(
-        meshes, projection @ closed_motion, window_lower, window_upper
+    target_pose = pose_matrix(target.pose)
+    contacts = []
+    for point in (initial_points[contact_index], target_points[contact_index]):
+        contacts.append(target_pose[:3, :3] @ point + target_pose[:3, 3])
+
+    home_map = {
+        str(name): float(value) for name, value in home.items() if isinstance(value, (int, float))
+    }
+    home_transforms = link_transforms(robot_asset, home_map)
+    home_effector_transform = home_transforms[end_effector_link]
+    home_effector = home_effector_transform[:3, 3]
+    yaw = math.pi / 2
+    base_rotation = Rotation.from_euler("z", yaw)
+    forward_world = base_rotation.apply(np.asarray([1.0, 0.0, 0.0]))
+    desired_world_orientation = base_rotation.as_matrix() @ home_effector_transform[:3, :3]
+    forward_in_effector = desired_world_orientation.T @ forward_world
+    descendants = {end_effector_link}
+    while True:
+        added = {
+            item.child
+            for item in robot_asset.joints
+            if item.parent in descendants and item.child not in descendants
+        }
+        if not added:
+            break
+        descendants.update(added)
+    tool_vertices = []
+    robot_geometry = asset_geometry(store, robot_asset, roles=(GeometryRole.COLLISION,))[
+        GeometryRole.COLLISION
+    ]
+    for link, mesh in robot_geometry:
+        if link not in descendants:
+            continue
+        transform = home_transforms[link]
+        root_points = mesh.vertices @ transform[:3, :3].T + transform[:3, 3]
+        tool_vertices.append(
+            (root_points - home_effector_transform[:3, 3]) @ home_effector_transform[:3, :3]
+        )
+    if not tool_vertices:
+        raise DomainValidationError("robot end effector requires collision geometry")
+    tool_projection = np.concatenate(tool_vertices) @ forward_in_effector
+    leading_tool = tool_projection[tool_projection > 0]
+    if not len(leading_tool):
+        raise DomainValidationError("robot end effector has no forward contact surface")
+    tool_reach = float(np.median(leading_tool))
+    hand_contacts = [point - forward_world * tool_reach for point in contacts]
+    base_translation = hand_contacts[0] - base_rotation.apply(
+        home_effector + np.asarray([clearance_m + 0.15, 0.0, 0.0])
     )
-    front_offset = float(actuator_vertices[:, 0].min())
-    relative = rotation.apply([initial_support + clearance_m - front_offset, *center])
-    scene_rotation = Rotation.from_quat(target.pose.rotation_xyzw)
+    base_translation[2] = 0.0
+    base_pose = PoseSpec(
+        translation_m=tuple(float(value) for value in base_translation),
+        rotation_xyzw=tuple(float(value) for value in base_rotation.as_quat()),
+    )
+
+    lower = np.asarray([item.lower_limit for item in controlled]) + 1e-5
+    upper = np.asarray([item.upper_limit for item in controlled]) - 1e-5
+
+    def solve(destination: Any, seed: Any) -> Any:
+        local = base_rotation.inv().apply(np.asarray(destination) - base_translation)
+
+        def residual(values: Any) -> Any:
+            positions = {item.name: float(value) for item, value in zip(controlled, values)}
+            transform = link_transforms(robot_asset, positions)[end_effector_link]
+            return np.r_[
+                transform[:3, 3] - local,
+                0.01 * (np.asarray(values) - home_positions),
+            ]
+
+        result = least_squares(
+            residual,
+            np.asarray(seed),
+            bounds=(lower, upper),
+            max_nfev=500,
+            ftol=1e-11,
+            xtol=1e-11,
+            gtol=1e-11,
+        )
+        if not result.success or np.linalg.norm(residual(result.x)[:3]) > 0.01:
+            raise DomainValidationError("robot cannot reach the target articulation")
+        return result.x
+
+    approach_direction = base_translation - hand_contacts[0]
+    approach_direction[2] = 0.0
+    approach_norm = float(np.linalg.norm(approach_direction))
+    if approach_norm <= 1e-6:
+        raise DomainValidationError("robot approach direction is degenerate")
+    approach_point = hand_contacts[0] + approach_direction / approach_norm * max(
+        0.18, 6 * clearance_m
+    )
+    world_path = [
+        approach_point + fraction * (hand_contacts[0] - approach_point)
+        for fraction in np.linspace(0.0, 1.0, 5)
+    ]
+    for fraction in np.linspace(0.0, 1.0, 9)[1:]:
+        position = initial_position + fraction * (target_position - initial_position)
+        transform = link_transforms(target_asset, {target_joint.name: position})[target_joint.child]
+        point = moving[contact_index] @ transform[:3, :3].T + transform[:3, 3]
+        object_contact = target_pose[:3, :3] @ point + target_pose[:3, 3]
+        world_path.append(object_contact - forward_world * tool_reach)
+    robot_path = []
+    seed = home_positions
+    for point in world_path:
+        seed = solve(point, seed)
+        robot_path.append(seed)
+    approach_robot = robot_path[0]
+    target_robot = robot_path[-1]
+    passive = {
+        item.name: float(home[item.name])  # type: ignore[arg-type]
+        for item in robot_asset.joints
+        if item.joint_type is not JointType.FIXED and item not in controlled and item.name in home
+    }
     placed = SceneEntitySpec(
         name=name,
-        asset=actuator,
+        asset=robot,
         role=SceneEntityRole.ROBOT,
-        pose=PoseSpec(
-            translation_m=np.asarray(target.pose.translation_m) + scene_rotation.apply(relative),
-            rotation_xyzw=(scene_rotation * rotation).as_quat(),
-        ),
+        pose=base_pose,
+        tags=("open_source_robot",),
     )
-    travel = float(initial_support + clearance_m - closed_support)
-    if not actuator_joints[0].lower_limit <= travel <= actuator_joints[0].upper_limit:
-        raise DomainValidationError("contact closing travel exceeds actuator limits")
     return SceneSpec.model_validate(
         {
             **scene.model_dump(),
@@ -261,12 +401,21 @@ def place_linear_actuator(
             "entities": (*scene.entities, placed),
             "metadata": {
                 **scene.metadata,
-                "actuator_placement": {
+                "robot_interaction": {
+                    "robot": name,
                     "entity": entity,
                     "joint": joint,
-                    "closing_travel_m": travel,
+                    "end_effector_link": end_effector_link,
+                    "controlled_joints": [item.name for item in controlled],
+                    "initial_positions": approach_robot.tolist(),
+                    "waypoints": [values.tolist() for values in robot_path[1:-1]],
+                    "target_positions": target_robot.tolist(),
+                    "passive_robot_positions": passive,
                     "initial_joint_position": initial_position,
-                    "joint_unit": "m" if target_joint.joint_type is JointType.PRISMATIC else "rad",
+                    "target_joint_position": target_position,
+                    "contact_points_m": [point.tolist() for point in contacts],
+                    "tool_reach_m": tool_reach,
+                    "approach_point_m": approach_point.tolist(),
                 },
             },
         }
@@ -380,6 +529,227 @@ class SceneGenerationAdapter:
         )
 
 
+class PhySceneGuidanceAdapter:
+    """Place explicit assets with PhyScene collision, room and interaction guidance."""
+
+    descriptor = builtin_method(
+        MethodCapability.SCENE_GENERATE,
+        "physcene_guidance",
+        input_contract="SceneGenerationRequest/1",
+        output_contract="SceneDraft/1",
+        python=">=3.10,<3.13",
+        version="1.0.0",
+    )
+
+    def probe(self) -> MethodProbe:
+        return SceneGenerationAdapter().probe()
+
+    def execute(self, spec: OperationSpec, artifacts: ArtifactStore) -> MethodExecutionOutput:
+        import numpy as np
+
+        if spec.method.config:
+            raise DomainValidationError("layout settings belong in the scene generation request")
+        request = SemanticSceneGenerationRequest.model_validate(spec.arguments)
+        objects = {item.name: item for item in request.objects}
+        assets = {
+            name: load_resource(artifacts, item.asset, AssetSpec) for name, item in objects.items()
+        }
+        local_bounds = {}
+        rotations = {}
+        for name, asset in assets.items():
+            vertices = asset_vertices(asset, artifacts)
+            yaw = objects[name].yaw_rad
+            cosine, sine = math.cos(yaw), math.sin(yaw)
+            rotation = np.asarray(((cosine, -sine, 0.0), (sine, cosine, 0.0), (0.0, 0.0, 1.0)))
+            rotated = vertices @ rotation.T
+            local_bounds[name] = np.array([rotated.min(0), rotated.max(0)])
+            rotations[name] = (0.0, 0.0, math.sin(yaw / 2), math.cos(yaw / 2))
+        incoming: dict[str, list[SemanticRelation]] = {name: [] for name in objects}
+        dependencies: dict[str, set[str]] = {name: set() for name in objects}
+        supports: dict[str, SemanticRelation] = {}
+        for relation in request.relations:
+            incoming[relation.subject].append(relation)
+            dependencies[relation.subject].add(relation.object)
+            if relation.relation == "on":
+                supports[relation.subject] = relation
+        order: list[str] = []
+        pending = {name: set(values) for name, values in dependencies.items()}
+        while pending:
+            ready = [
+                item.name
+                for item in request.objects
+                if item.name in pending and not pending[item.name]
+            ]
+            if not ready:
+                raise DomainValidationError("semantic relation graph cannot be ordered")
+            order.extend(ready)
+            pending = {
+                name: values - set(ready) for name, values in pending.items() if name not in ready
+            }
+
+        rng = np.random.default_rng(request.seed)
+        placed: dict[str, Any] = {}
+        entities: list[SceneEntitySpec] = []
+        room_lower = np.asarray(request.xy_bounds_m[:2], dtype=float)
+        room_upper = np.asarray(request.xy_bounds_m[2:], dtype=float)
+
+        def intersects(candidate: Any, other: Any) -> bool:
+            return bool(
+                np.all(candidate[0] < other[1] - 1e-6) and np.all(other[0] < candidate[1] - 1e-6)
+            )
+
+        for name in order:
+            bounds = local_bounds[name]
+            support = supports.get(name)
+            directional = [item for item in incoming[name] if item.relation != "on"]
+            if support is None:
+                z = request.floor_height_m - bounds[0, 2]
+                area_lower, area_upper = room_lower, room_upper
+            else:
+                parent = placed[support.object]
+                z = parent[1, 2] + support.clearance_m - bounds[0, 2]
+                area_lower, area_upper = parent[0, :2], parent[1, :2]
+            center_lower = area_lower - bounds[0, :2]
+            center_upper = area_upper - bounds[1, :2]
+            if np.any(center_lower > center_upper):
+                raise MethodExecutionError(f"{name} does not fit on its declared support area")
+            center = (center_lower + center_upper) / 2
+            axes: set[int] = set()
+            for relation in directional:
+                reference = placed[relation.object]
+                axis = 0 if relation.relation in ("left_of", "right_of") else 1
+                if axis in axes:
+                    raise DomainValidationError(f"{name} has multiple constraints on one axis")
+                axes.add(axis)
+                if relation.relation in ("left_of", "front_of"):
+                    center[axis] = reference[0, axis] - relation.clearance_m - bounds[1, axis]
+                else:
+                    center[axis] = reference[1, axis] + relation.clearance_m - bounds[0, axis]
+            candidate = bounds + np.r_[center, z]
+            if np.any(candidate[0, :2] < area_lower - 1e-8) or np.any(
+                candidate[1, :2] > area_upper + 1e-8
+            ):
+                raise MethodExecutionError(f"semantic constraints place {name} outside its support")
+            allowed_overlap = {support.object} if support is not None else set()
+            conflicts = [
+                other
+                for other, other_bounds in placed.items()
+                if other not in allowed_overlap and intersects(candidate, other_bounds)
+            ]
+            if conflicts and not directional:
+                for _ in range(200):
+                    sampled = rng.uniform(center_lower, center_upper)
+                    trial = bounds + np.r_[sampled, z]
+                    if not any(
+                        other not in allowed_overlap and intersects(trial, other_bounds)
+                        for other, other_bounds in placed.items()
+                    ):
+                        center, candidate, conflicts = sampled, trial, []
+                        break
+            if conflicts:
+                raise MethodExecutionError(
+                    f"semantic layout places {name} in collision with {sorted(conflicts)}"
+                )
+            placed[name] = candidate
+            entities.append(
+                SceneEntitySpec(
+                    name=name,
+                    asset=objects[name].asset,
+                    role=objects[name].role,
+                    pose=PoseSpec(
+                        translation_m=tuple(float(value) for value in (*center, z)),
+                        rotation_xyzw=rotations[name],
+                    ),
+                    tags=(str(assets[name].metadata.get("category", "asset")).lower(),),
+                )
+            )
+        reachability_clearance = None
+        if request.interaction_target is not None:
+            destination = request.interaction_target
+            while destination in supports:
+                destination = supports[destination].object
+            target_center_x = float(placed[request.interaction_target][:, 0].mean())
+            corridor = np.asarray(
+                (
+                    (target_center_x - request.agent_radius_m, room_lower[1]),
+                    (target_center_x + request.agent_radius_m, placed[destination][0, 1]),
+                )
+            )
+            blockers = []
+            clearances = []
+            for other, other_bounds in placed.items():
+                if other == destination or other in supports:
+                    continue
+                if intersects(corridor, other_bounds[:, :2]):
+                    blockers.append(other)
+                clearances.append(
+                    max(
+                        float(corridor[0, 0] - other_bounds[1, 0]),
+                        float(other_bounds[0, 0] - corridor[1, 0]),
+                        0.0,
+                    )
+                )
+            if blockers:
+                raise MethodExecutionError(
+                    f"interaction corridor to {request.interaction_target} is blocked by "
+                    f"{sorted(blockers)}"
+                )
+            reachability_clearance = min(clearances, default=request.agent_radius_m)
+        if request.environment is not None:
+            environment = load_resource(artifacts, request.environment, AssetSpec)
+            entities.insert(
+                0,
+                SceneEntitySpec(
+                    name="room",
+                    asset=request.environment,
+                    role=SceneEntityRole.ENVIRONMENT,
+                    tags=(str(environment.metadata.get("asset_kind", "environment")),),
+                ),
+            )
+        scene = SceneSpec(
+            resource_id=request.resource_id,
+            version=request.version,
+            display_name=request.display_name,
+            entities=tuple(entities),
+            metadata={
+                "domain": request.domain,
+                "seed": request.seed,
+                "layout_method": "physcene_guidance",
+                "method_scope": "collision_room_and_interaction_guidance_without_diffusion",
+                "method_basis": {
+                    "project": "PhyScene",
+                    "source": "https://github.com/PhyScene/PhyScene",
+                    "revision": "50a32af9b114448d89e002b2d06e86bccdcec202",
+                    "objectives": ["collision", "room_layout", "reachability"],
+                },
+                "relations": [item.model_dump(mode="json") for item in request.relations],
+                "interaction_corridor": None
+                if request.interaction_target is None
+                else {
+                    "target": request.interaction_target,
+                    "agent_radius_m": request.agent_radius_m,
+                    "minimum_clearance_m": reachability_clearance,
+                },
+                "coordinate_convention": "z_up; front_of=-y",
+            },
+        )
+        return publish(
+            spec,
+            artifacts,
+            {
+                "scene_draft": {
+                    "schema": "physrealx.scene-draft/1",
+                    "scene_spec": scene.model_dump(mode="json"),
+                }
+            },
+            metrics={
+                "entities": float(len(entities)),
+                "relations": float(len(request.relations)),
+                "reachability_clearance_m": float(reachability_clearance or 0.0),
+            },
+        )
+
+
 class SceneCompositionAdapter:
     descriptor = builtin_method(
         MethodCapability.SCENE_COMPOSE,
@@ -430,26 +800,18 @@ class SceneCompositionAdapter:
         )
 
 
-class JointActuation(DomainModel):
-    """Robot control is distinct from the object joint defining task success."""
-
-    entity: str
-    joint: str
-    initial_position: float = Field(allow_inf_nan=False)
-    target_position: float = Field(allow_inf_nan=False)
-
-
 class ArticulatedTaskConfig(DomainModel):
     resource_id: str
     version: str = "1.0.0"
     entity: str
     joint: str
     target_fraction: float = Field(default=0.85, gt=0, lt=1)
+    target_position: float | None = Field(default=None, allow_inf_nan=False)
     tolerance: float = Field(default=0.01, gt=0, allow_inf_nan=False)
     max_steps: int = Field(default=80, ge=2, le=10000)
     dt_seconds: float = Field(default=0.05, gt=0, allow_inf_nan=False)
     initial_fraction: float | None = Field(default=None, ge=0, le=1)
-    actuation: JointActuation | None = None
+    robot: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_.-]*$")
 
 
 class TaskTemplateAdapter:
@@ -489,57 +851,110 @@ class TaskTemplateAdapter:
         target = joint.lower_limit + (
             config.target_fraction if opened else 1 - config.target_fraction
         ) * (joint.upper_limit - joint.lower_limit)
+        if config.target_position is not None:
+            target = config.target_position
+        if not joint.lower_limit <= target <= joint.upper_limit:
+            raise DomainValidationError("task target position exceeds joint limits")
         initial = joint.lower_limit if opened else joint.upper_limit
         if config.initial_fraction is not None:
             initial = joint.lower_limit + config.initial_fraction * (
                 joint.upper_limit - joint.lower_limit
             )
-        controlled, control_entity = joint, entity
-        control_initial, control_target = initial, target
+        controlled: tuple[JointSpec, ...] = (joint,)
+        control_entity = entity
+        control_initial: tuple[float, ...] = (initial,)
+        control_target: tuple[float, ...] = (target,)
         goal_signal = "joint.position"
-        passive_positions = {}
-        if config.actuation is not None:
-            actuation = config.actuation
+        passive_positions: dict[str, float] = {}
+        control_waypoints: tuple[tuple[float, ...], ...] = ()
+        if config.robot is not None:
+            interaction = scene.metadata.get("robot_interaction")
+            if not isinstance(interaction, dict) or any(
+                interaction.get(key) != value
+                for key, value in (
+                    ("robot", config.robot),
+                    ("entity", config.entity),
+                    ("joint", config.joint),
+                )
+            ):
+                raise DomainValidationError(
+                    "robot task requires matching scene robot-interaction metadata"
+                )
             robot_entity = next(
-                (item for item in scene.entities if item.name == actuation.entity), None
+                (item for item in scene.entities if item.name == config.robot), None
             )
             if robot_entity is None or robot_entity.role is not SceneEntityRole.ROBOT:
-                raise DomainValidationError("external actuation requires a declared robot entity")
+                raise DomainValidationError("robot task requires a declared robot entity")
             control_entity = robot_entity
             robot = load_resource(artifacts, control_entity.asset, AssetSpec)
-            robot_joint = next(
-                (item for item in robot.joints if item.name == actuation.joint), None
-            )
-            if robot_joint is None or robot_joint.joint_type is JointType.FIXED:
-                raise DomainValidationError("actuation requires a movable robot joint")
-            controlled = robot_joint
-            control_initial, control_target = actuation.initial_position, actuation.target_position
+            names = interaction.get("controlled_joints")
+            initial_values = interaction.get("initial_positions")
+            waypoint_values = interaction.get("waypoints")
+            target_values = interaction.get("target_positions")
+            if (
+                not isinstance(names, list)
+                or not isinstance(initial_values, list)
+                or not isinstance(waypoint_values, list)
+                or not isinstance(target_values, list)
+                or not all(isinstance(name, str) for name in names)
+                or not all(isinstance(value, (int, float)) for value in initial_values)
+                or not all(
+                    isinstance(row, list) and all(isinstance(value, (int, float)) for value in row)
+                    for row in waypoint_values
+                )
+                or not all(isinstance(value, (int, float)) for value in target_values)
+            ):
+                raise DomainValidationError("robot interaction joint plan is incomplete")
+            by_name = {item.name: item for item in robot.joints}
+            try:
+                controlled = tuple(by_name[name] for name in names)  # type: ignore[index]
+                control_initial = tuple(float(value) for value in initial_values)  # type: ignore[arg-type]
+                waypoint_rows = cast(list[list[int | float]], waypoint_values)
+                control_waypoints = tuple(
+                    tuple(float(value) for value in row) for row in waypoint_rows
+                )
+                control_target = tuple(float(value) for value in target_values)  # type: ignore[arg-type]
+            except (KeyError, TypeError, ValueError) as error:
+                raise DomainValidationError("robot interaction joint plan is invalid") from error
+            if (
+                not controlled
+                or not (len(controlled) == len(control_initial) == len(control_target))
+                or any(len(row) != len(controlled) for row in control_waypoints)
+            ):
+                raise DomainValidationError("robot interaction vectors must align")
             goal_signal = f"joint.{config.entity}.{config.joint}.position"
             passive_positions[f"{config.entity}/{config.joint}"] = initial
-        if controlled.effort_limit is None or any(
-            not controlled.lower_limit <= value <= controlled.upper_limit
-            for value in (control_initial, control_target)
+        if any(item.effort_limit is None for item in controlled) or any(
+            not item.lower_limit <= value <= item.upper_limit
+            for item, values in zip(
+                controlled,
+                zip(control_initial, *control_waypoints, control_target),
+            )
+            for value in values
         ):
             raise DomainValidationError("control requires an effort limit and bounded positions")
-        unit = "m" if controlled.joint_type is JointType.PRISMATIC else "rad"
+        units = {"m" if item.joint_type is JointType.PRISMATIC else "rad" for item in controlled}
+        if len(units) != 1:
+            raise DomainValidationError("one robot action requires homogeneous joint units")
+        unit = units.pop()
         frequency = 1 / config.dt_seconds
         observations = tuple(
             SignalSpec(
                 name=name,
-                shape=(1,),
+                shape=shape,
                 dtype=SignalDType.FLOAT32,
                 unit=u,
                 frame="joint",
                 frequency_hz=frequency,
             )
-            for name, u in (
-                ("joint.position", unit),
-                ("joint.velocity", unit + "/s"),
-                ("joint.effort", "N" if unit == "m" else "N*m"),
-                ("contact.force", "N"),
+            for name, u, shape in (
+                ("joint.position", unit, (len(controlled),)),
+                ("joint.velocity", unit + "/s", (len(controlled),)),
+                ("joint.effort", "N" if unit == "m" else "N*m", (len(controlled),)),
+                ("contact.force", "N", (1,)),
             )
         )
-        if config.actuation is not None:
+        if config.robot is not None:
             goal_unit = "m" if joint.joint_type is JointType.PRISMATIC else "rad"
             observations += tuple(
                 SignalSpec(
@@ -583,28 +998,27 @@ class TaskTemplateAdapter:
                 kind="joint_position",
                 signal=SignalSpec(
                     name="joint.command",
-                    shape=(1,),
+                    shape=(len(controlled),),
                     dtype=SignalDType.FLOAT32,
                     unit=unit,
                     frame="joint",
                     frequency_hz=frequency,
                 ),
-                lower=(controlled.lower_limit,),
-                upper=(controlled.upper_limit,),
+                lower=tuple(item.lower_limit for item in controlled),
+                upper=tuple(item.upper_limit for item in controlled),
             ),
             observations=observations,
             max_steps=config.max_steps,
             metadata={
                 "task_template": "open_joint" if opened else "close_joint",
-                "controlled_joints": [f"{control_entity.name}/{controlled.name}"],
-                "initial_positions": [control_initial],
-                "target_positions": [control_target],
+                "controlled_joints": [f"{control_entity.name}/{item.name}" for item in controlled],
+                "initial_positions": list(control_initial),
+                "waypoints": [list(row) for row in control_waypoints],
+                "target_positions": list(control_target),
                 "passive_positions": passive_positions,
                 "dt_seconds": config.dt_seconds,
-                "effort_limits": [controlled.effort_limit],
-                "evidence_scope": "robot_contact"
-                if config.actuation
-                else "articulated_object_control",
+                "effort_limits": [item.effort_limit for item in controlled],
+                "evidence_scope": "robot_contact" if config.robot else "articulated_object_control",
             },
         )
         return publish(spec, artifacts, {"task_spec": task})

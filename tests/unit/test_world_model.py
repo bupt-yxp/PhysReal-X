@@ -8,6 +8,7 @@ from physrealx.integrations.world_model import (
     WorldModelConfig,
     _apply_visual_residual_gain,
     _calibrate_visual_residual,
+    _quality_status,
     _validation_selection,
 )
 
@@ -38,6 +39,13 @@ def test_training_can_cover_the_requested_five_second_rollout():
     assert config.training_horizon == config.evaluation_horizon
     with pytest.raises(ValueError):
         WorldModelConfig(training_horizon=129)
+
+
+def test_quality_status_distinguishes_improvement_tie_and_regression():
+    assert _quality_status(0.5, 1.0) == "BEATS_PERSISTENCE"
+    assert _quality_status(1.0, 1.0) == "MATCHES_PERSISTENCE"
+    assert _quality_status(1.0 - 1e-10, 1.0) == "MATCHES_PERSISTENCE"
+    assert _quality_status(1.1, 1.0) == "BELOW_BASELINE"
 
 
 def test_visual_residual_gain_is_selected_only_from_validation(monkeypatch):

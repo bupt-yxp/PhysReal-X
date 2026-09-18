@@ -90,6 +90,7 @@ def test_cli_runs_complete_local_workspace_workflow(
         "joint_target",
         "reference_asset_assembly",
         "bounded_layout",
+        "physcene_guidance",
         "collision_constraints",
         "articulated_templates",
         "joint_constraints",
@@ -103,7 +104,7 @@ def test_cli_runs_complete_local_workspace_workflow(
         "failure_episodes",
     }
     assert required_methods <= method_names
-    assert method_names <= required_methods | {"colmap", "act"}
+    assert method_names <= required_methods | {"colmap", "act", "iql"}
 
     status, output, error = _invoke(
         capsys,

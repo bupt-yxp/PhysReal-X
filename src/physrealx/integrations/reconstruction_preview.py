@@ -21,21 +21,16 @@ from physrealx.integrations.usd_reference import reference_link_transforms
 from physrealx.reconstruction import joint_transform
 
 
-def preview_reconstruction_appearance(
-    store: ArtifactStore, reconstruction_report: ArtifactRef, *, fps: int = 2
-) -> ArtifactRef:
-    """Animate every published appearance frame from a reconstruction bundle."""
-
+def _appearance_frames(
+    store: ArtifactStore, reconstruction: dict[str, Any]
+) -> tuple[list[Any], list[float], list[str]]:
+    """Load and tightly crop optional appearance frames published by a method."""
+    import numpy as np
     from PIL import Image
 
-    if type(fps) is not int or not 1 <= fps <= 50:
-        raise DomainValidationError("preview fps must be an integer between 1 and 50")
-    report = read_json(
-        store,
-        reconstruction_report,
-        "physrealx.geometry-reconstruction-report/1",
-    )
-    bundle = ArtifactRef.model_validate(report.get("bundle"))
+    if not reconstruction.get("bundle"):
+        return [], [], []
+    bundle = ArtifactRef.model_validate(reconstruction["bundle"])
     images: list[Any] = []
     with zipfile.ZipFile(io.BytesIO(store.get_bytes(bundle))) as archive:
         try:
@@ -54,7 +49,7 @@ def preview_reconstruction_appearance(
             and record.get("media_type") in {"image/png", "image/jpeg"}
         )
         if not paths:
-            raise DomainValidationError("reconstruction published no appearance preview frames")
+            return [], [], []
         if len(paths) > 120 or any(path not in archive.namelist() for path in paths):
             raise DomainValidationError("reconstruction appearance inventory is invalid")
         for path in paths:
@@ -65,32 +60,49 @@ def preview_reconstruction_appearance(
                 raise DomainValidationError(
                     f"reconstruction appearance frame is invalid: {path}"
                 ) from error
+        states = np.linspace(0, 1, len(images)).tolist()
+        if "appearance/states.json" in archive.namelist():
+            try:
+                declared = json.loads(archive.read("appearance/states.json"))["states"]
+                states = [float(value) for value in declared]
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+                raise DomainValidationError(
+                    "reconstruction appearance states are invalid"
+                ) from error
     if len({image.size for image in images}) != 1:
         for image in images:
             image.close()
         raise DomainValidationError("reconstruction appearance frames have inconsistent sizes")
-    output = io.BytesIO()
-    try:
-        images[0].save(
-            output,
-            format="GIF",
-            save_all=True,
-            append_images=images[1:],
-            duration=round(1000 / fps),
-            loop=0,
-            disposal=2,
-            comment=json.dumps(
-                {
-                    "reconstruction_report": reconstruction_report.model_dump(mode="json"),
-                    "appearance_frames": paths,
-                    "fps": fps,
-                }
-            ).encode(),
-        )
-        return store.put_bytes(output.getvalue(), media_type="image/gif")
-    finally:
+    if (
+        len(states) != len(images)
+        or not np.isfinite(states).all()
+        or any(not 0 <= value <= 1 for value in states)
+        or any(left >= right for left, right in zip(states, states[1:]))
+    ):
         for image in images:
             image.close()
+        raise DomainValidationError("reconstruction appearance states are invalid")
+
+    arrays = [np.asarray(image) for image in images]
+    foreground = np.zeros(arrays[0].shape[:2], dtype=bool)
+    for array in arrays:
+        border = np.concatenate((array[0], array[-1], array[:, 0], array[:, -1]))
+        background = np.median(border, axis=0)
+        foreground |= np.max(np.abs(array.astype(float) - background), axis=2) > 10
+    if foreground.any():
+        y, x = np.where(foreground)
+        padding = max(2, round(max(np.ptp(x), np.ptp(y)) * 0.06))
+        box = (
+            max(0, int(x.min()) - padding),
+            max(0, int(y.min()) - padding),
+            min(images[0].width, int(x.max()) + padding + 1),
+            min(images[0].height, int(y.max()) + padding + 1),
+        )
+        cropped = [image.crop(box) for image in images]
+        for image in images:
+            image.close()
+        images = cropped
+    return images, states, paths
 
 
 def preview_reconstruction(
@@ -119,6 +131,9 @@ def preview_reconstruction(
         store,
         ArtifactRef.model_validate(source["reconstruction_report"]),
         "physrealx.geometry-reconstruction-report/1",
+    )
+    appearance_images, appearance_states, appearance_paths = _appearance_frames(
+        store, reconstruction
     )
     reference = read_json(
         store, ArtifactRef.model_validate(source["reference_model"]), "physrealx.usd-reference/1"
@@ -187,7 +202,13 @@ def preview_reconstruction(
                 upper = np.maximum(upper, vertices.max(axis=0))
     if not np.isfinite([lower, upper]).all() or np.max(upper - lower) <= 0:
         raise DomainValidationError("preview requires finite nonempty geometry")
-    center, radius = (lower + upper) / 2, float(np.max(upper - lower)) * 0.58
+    center = (lower + upper) / 2
+    extent = upper - lower
+    longest = float(np.max(extent))
+    # Preserve one shared metric camera while avoiding the large empty volume
+    # introduced by forcing flat or elongated assets into a cube.
+    padded_extent = np.maximum(extent, longest * 0.06) * 1.08
+    box_aspect = tuple(float(value) for value in padded_extent)
     palette = [(0.65, 0.69, 0.74), (0.16, 0.55, 0.84), (0.96, 0.59, 0.22), (0.4, 0.72, 0.48)]
     colors = {name: palette[i % len(palette)] for i, name in enumerate(sorted(predicted))}
     gt_colors = {
@@ -197,29 +218,50 @@ def preview_reconstruction(
         )
         for name in gt_meshes
     }
-    figure = Figure(figsize=(10, 5), dpi=100, facecolor="white")
+    panel_count = 3 if appearance_images else 2
+    figure = Figure(figsize=(panel_count * 4, 3.6), dpi=100, facecolor="white")
     canvas: Any = FigureCanvasAgg(figure)
+    appearance_artist = None
+    if appearance_images:
+        appearance_axis = figure.add_subplot(1, panel_count, 1)
+        appearance_axis.set_title("Appearance", fontsize=11, color="white", pad=-14, y=0.98)
+        appearance_axis.set_axis_off()
+        appearance_axis.set_position((0.022, 0.09, 0.29, 0.82))
+        appearance_artist = appearance_axis.imshow(appearance_images[0], interpolation="bilinear")
     collections = []
+    panel_margin = 0.008 if appearance_images else 0
     for index, title in enumerate(("Reconstruction", "GT / supplied USD")):
-        axis = figure.add_subplot(1, 2, index + 1, projection="3d")
-        axis.set_title(title)
+        column = index + bool(appearance_images)
+        axis = figure.add_subplot(1, panel_count, column + 1, projection="3d")
+        axis.set_title(title, fontsize=11, pad=-2, y=0.99)
         axis.set(
-            xlim=(center[0] - radius, center[0] + radius),
-            ylim=(center[1] - radius, center[1] + radius),
-            zlim=(center[2] - radius, center[2] + radius),
+            xlim=(center[0] - padded_extent[0] / 2, center[0] + padded_extent[0] / 2),
+            ylim=(center[1] - padded_extent[1] / 2, center[1] + padded_extent[1] / 2),
+            zlim=(center[2] - padded_extent[2] / 2, center[2] + padded_extent[2] / 2),
         )
-        axis.set_box_aspect((1, 1, 1))
+        # Matplotlib normalizes mutable arrays in place; pass an immutable value
+        # so both panels keep exactly the same limits and metric scale.
+        axis.set_box_aspect(box_aspect, zoom=1.29)
         axis.view_init(elev=20, azim=-40)
         axis.set_axis_off()
+        axis.set_position(
+            (
+                column / panel_count + panel_margin,
+                0.045,
+                1 / panel_count - 2 * panel_margin,
+                0.91,
+            )
+        )
         # A single collection sorts triangles across parts, including open drawers.
         collection = Poly3DCollection([], edgecolors="none", linewidths=0)
         axis.add_collection3d(collection)
         collections.append(collection)
-    figure.subplots_adjust(left=0, right=1, bottom=0.06, top=0.9, wspace=0)
-    caption = figure.text(0.5, 0.025, "", ha="center", fontsize=10)
     images = []
     try:
         for fraction, state in zip(timeline, matrices):
+            if appearance_artist is not None:
+                appearance_index = int(np.argmin(np.abs(np.asarray(appearance_states) - fraction)))
+                appearance_artist.set_data(appearance_images[appearance_index])
             for meshes, color_map, items, transform_at_state in zip(
                 (predicted, gt_meshes), (colors, gt_colors), collections, state
             ):
@@ -234,9 +276,6 @@ def preview_reconstruction(
                     face_colors.append(brightness[:, None] * np.asarray(color_map[name]))
                 items.set_verts(np.concatenate(triangles))
                 items.set_facecolor(np.concatenate(face_colors))
-            caption.set_text(
-                f"Observed-state interpolation: {fraction:.0%} | shared view and scale"
-            )
             canvas.draw()
             images.append(Image.fromarray(np.asarray(canvas.buffer_rgba()).copy()).convert("RGB"))
         output = io.BytesIO()
@@ -252,7 +291,8 @@ def preview_reconstruction(
                 {
                     "evaluation": evaluation.model_dump(mode="json"),
                     "motion": "predicted joint interpolation versus reference state interpolation",
-                    "appearance": "group-colored full meshes",
+                    "appearance_frames": appearance_paths,
+                    "geometry": "group-colored full meshes with shared view and scale",
                     "fps": fps,
                 }
             ).encode(),
@@ -261,4 +301,6 @@ def preview_reconstruction(
     finally:
         figure.clear()
         for image in images:
+            image.close()
+        for image in appearance_images:
             image.close()

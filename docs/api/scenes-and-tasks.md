@@ -42,7 +42,7 @@ scene = px.scenes.register(
 
 ## 任务
 
-`scenes.place_linear_actuator(scene, entity=..., joint=..., actuator=..., name=..., initial_position=..., clearance_m=..., resource_id=...)` 根据移动关节与碰撞几何生成执行器位姿，返回待注册的 `SceneSpec`。目标支持平移或具有水平开合位移的旋转关节；旋转位置使用 rad，平移位置使用 m。返回场景的 `metadata.actuator_placement.closing_travel_m` 提供推杆闭合行程，并校验执行器行程范围。接触起点与终点按推杆实际接触窗口裁剪碰撞表面计算，窗口外把手等凸起不影响行程。执行器沿自身局部 -X 方向推进；初始位置、正间隙、实体名称及引用由项目校验。该几何放置不替代后续动力学接触验证。
+`assets.import_mujoco_model(...)` 将本地 MJCF 的视觉网格、碰撞体、关节树、惯性和力矩上限导入统一资产契约。`scenes.place_robot_for_joint_task(...)` 根据目标部件运动与机械臂末端可达性求解起止关节位姿，并将机器人和交互计划写入 `SceneSpec`；任务编译后仍须通过 MuJoCo 动力学执行验证。
 
 ### `tasks.register`
 

@@ -83,14 +83,15 @@ MuJoCo 对接触使用自己的求解模型和动态滑动摩擦；不能自动�
 
 ## 4. 接触与训练
 
-`controlled_joints` 只为选中的执行器安装电机；`passive_positions` 声明未驱动关节的初态。模块四使用显式直线推杆资产接触关闭被动下层抽屉，同时记录抽屉位移与非零接触力；任务主体和控制机器人是不同实体。
+`controlled_joints` 只为选中的机械臂关节安装电机；`passive_positions` 声明未驱动关节的初态。模块四沿用模块三的开源机械臂接触任务，同时记录目标关节状态与接触力；任务主体和控制机器人是不同实体。
+
+模块四读取模块三发布的场景、任务实例和已验收轨迹。任务实例是控制关节、初态、力矩限制和被动物体初态的唯一来源；Notebook 不重新推断或复制这些参数。专家批次使用 `joint_sequence` 回放 Panda 七关节轨迹，失败批次使用同维度的初态保持策略，所有 Episode 按任务最终谓词标注。
 
 产生的数据进入 ACT 与 DINO-WM 训练，见[训练指南](data-management-and-training.md)。核心离线执行证据协议保留为扩展入口；当前事件/点云/渲染直接消费同一 MuJoCo 状态，避免另跑一份轨迹造成错位。
 
 固定时长训练轨迹使用 `RunSpec.stop_on_success=False`，成功后继续记录，到时域末帧重新判断成败；
-后端故障和显式终止条件仍优先执行。模块四每条轨迹实际步进 160 次、持续 8 秒。
+后端故障和显式终止条件仍优先执行。当前 Demo 生成两条随机化专家 Episode 和两条无动作失败 Episode，每条 201 帧。扩大数据规模只需增加 `RunSpec.episode_count`，不改变数据契约。
 
-`renders.generate(..., method="registered_artgs")` 从已记录 episode 读取被动关节状态，
-通过资产绑定的实拍–USD 配准驱动原生高斯外观，输出带时间戳的 RGB、透明度和深度。
-该视图仅包含目标物体；全场景接触、推杆与多模态由 MuJoCo 提供。
-当前两状态采集只支持已观测的滑动组；相机、资产来源错绑或未观测静止组发生运动时明确拒绝。
+`datasets.preview_episode(...)` 不重复执行动力学，而是用 Episode 中逐帧记录的刚体位姿驱动同一个 Blender PBR 场景。overview 相机生成执行视图；front 相机在相同材质、光照和时刻生成 RGB Beauty、米制 Depth 与实例/Link Mask；XYZRGB 点云严格由该组 front RGB-D 反投影。关节、接触、动作和相机位姿直接读取同一 Episode。
+
+PartNet-Mobility 资产只生成域随机化仿真数据，不声明实拍外观对齐。仅当场景实体显式绑定模块一生成的 `registered_appearance`，并且配准来源、相机和关节状态通过校核时，才可另行调用 `registered_artgs`。

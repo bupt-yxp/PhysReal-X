@@ -39,7 +39,7 @@ from physrealx.domain import (
     VersionedRef,
     canonical_record_id,
 )
-from physrealx.errors import DomainValidationError
+from physrealx.errors import DomainValidationError, ResourceConflictError, ResourceNotFoundError
 from physrealx.plugins import MethodInstallation
 from physrealx.readiness import ReadinessService
 
@@ -450,24 +450,24 @@ _SERVICE_METHOD_CONTRACTS: dict[MethodCapability, _ServiceMethodContract] = {
         ),
     ),
     MethodCapability.TELEMETRY_RECORD: _ServiceMethodContract(
-        "DeploymentRun/1",
+        "DeploymentEvidence/1",
         ("run",),
         (
-            _output("telemetry", "TelemetryBundle/1"),
-            _output("telemetry_manifest", "TelemetryManifest/1"),
+            _output("telemetry", "TelemetryBundle/2"),
+            _output("telemetry_manifest", "TelemetryManifest/2"),
         ),
     ),
     MethodCapability.FAILURE_ANALYZE: _ServiceMethodContract(
-        "TelemetryBundle/1",
+        "TelemetryBundle/2",
         ("run",),
-        (_output("failure_report", "FailureReport/1"),),
+        (_output("failure_report", "FailureReport/2"),),
     ),
     MethodCapability.FEEDBACK_BUILD_DATASET: _ServiceMethodContract(
-        "FailureQuery/1",
+        "FailureQuery/2",
         ("query",),
         (
             _output("dataset", "DatasetBundle/1"),
-            _output("selection_report", "SelectionReport/1"),
+            _output("selection_report", "SelectionReport/2"),
         ),
     ),
 }
@@ -512,6 +512,141 @@ class AssetsService:
             version=version,
             display_name=display_name,
             config=config or {},
+        )
+
+    def import_partnet_mobility(
+        self,
+        catalog: str | Path,
+        *,
+        model_id: str,
+        resource_id: str,
+        version: str = "1.0.0",
+        display_name: str | None = None,
+        target_extent_m: float,
+    ) -> VersionedRef:
+        """Register one PartNet-Mobility URDF as a metric canonical asset."""
+        for reference in self.list():
+            if (reference.resource_id, reference.version) != (resource_id, version):
+                continue
+            asset = self.get(reference)
+            if (
+                asset.metadata.get("source") != "PartNet-Mobility"
+                or asset.metadata.get("model_id") != model_id
+                or asset.metadata.get("target_extent_m") != target_extent_m
+            ):
+                raise DomainValidationError(
+                    "registered PartNet-Mobility asset identity has different import settings"
+                )
+            return reference
+        from physrealx.integrations.partnet_mobility import import_partnet_mobility_asset
+
+        return self.register(
+            import_partnet_mobility_asset(
+                self._platform.artifacts,
+                catalog,
+                model_id=model_id,
+                resource_id=resource_id,
+                version=version,
+                display_name=display_name,
+                target_extent_m=target_extent_m,
+            )
+        )
+
+    def select_partnet_mobility(
+        self,
+        catalog: str | Path,
+        *,
+        scene_type: str,
+        seed: int = 0,
+        version: str = "1.0.0",
+    ) -> dict[str, VersionedRef]:
+        """Select and register the canonical assets required by a scene type."""
+        from typing import cast
+
+        from physrealx.integrations.partnet_mobility import (
+            PartNetSceneType,
+            select_partnet_scene_assets,
+        )
+
+        selections = select_partnet_scene_assets(
+            catalog,
+            scene_type=cast(PartNetSceneType, scene_type),
+            seed=seed,
+        )
+        return {
+            item.name: self.import_partnet_mobility(
+                catalog,
+                model_id=item.model_id,
+                resource_id=f"partnet.{item.name}.{item.model_id}",
+                version=version,
+                display_name=item.category,
+                target_extent_m=item.target_extent_m,
+            )
+            for item in selections
+        }
+
+    def import_mujoco_model(
+        self,
+        source: str | Path,
+        *,
+        resource_id: str,
+        version: str = "1.0.0",
+        display_name: str,
+        source_name: str,
+        source_revision: str,
+        license_name: str,
+    ) -> VersionedRef:
+        """Register a local open-source MJCF robot as a canonical asset."""
+        identity = {
+            "source": source_name,
+            "source_revision": source_revision,
+            "source_model": Path(source).name,
+            "license": license_name,
+        }
+        for reference in self.list():
+            if (reference.resource_id, reference.version) != (resource_id, version):
+                continue
+            asset = self.get(reference)
+            if any(asset.metadata.get(key) != value for key, value in identity.items()):
+                raise DomainValidationError(
+                    "registered MuJoCo asset identity has different source provenance"
+                )
+            return reference
+        from physrealx.integrations.mujoco_model import import_mujoco_model_asset
+
+        return self.register(
+            import_mujoco_model_asset(
+                self._platform.artifacts,
+                source,
+                resource_id=resource_id,
+                version=version,
+                display_name=display_name,
+                source_name=source_name,
+                source_revision=source_revision,
+                license_name=license_name,
+            )
+        )
+
+    def create_room_shell(
+        self,
+        *,
+        resource_id: str,
+        version: str = "1.0.0",
+        width_m: float,
+        depth_m: float,
+        height_m: float,
+    ) -> VersionedRef:
+        """Register a metric floor and two-wall room environment."""
+        from physrealx.integrations.scene_assets import room_shell_asset
+
+        return self.register(
+            room_shell_asset(
+                resource_id=resource_id,
+                version=version,
+                width_m=width_m,
+                depth_m=depth_m,
+                height_m=height_m,
+            )
         )
 
     def get_observations(self, reference: VersionedRef) -> ObservationSetManifest:
@@ -649,22 +784,18 @@ class AssetsService:
     def preview_reconstruction(
         self, evaluation: ArtifactRef, *, frames: int = 24, fps: int = 12
     ) -> ArtifactRef:
-        """Animate reconstructed and reference geometry using the evaluation's shared pose."""
+        """Animate appearance, reconstructed geometry and reference geometry together."""
         from physrealx.integrations.reconstruction_preview import preview_reconstruction
 
         return preview_reconstruction(self._platform.artifacts, evaluation, frames=frames, fps=fps)
 
-    def preview_reconstruction_appearance(
-        self, reconstruction_report: ArtifactRef, *, fps: int = 2
+    def preview_physical_asset(
+        self, assembly: ArtifactRef, *, frames: int = 24, fps: int = 12
     ) -> ArtifactRef:
-        """Animate all appearance frames published by a reconstruction method."""
-        from physrealx.integrations.reconstruction_preview import (
-            preview_reconstruction_appearance,
-        )
+        """Animate assembled visual and collision geometry through declared joint limits."""
+        from physrealx.integrations.physical_preview import preview_physical_asset
 
-        return preview_reconstruction_appearance(
-            self._platform.artifacts, reconstruction_report, fps=fps
-        )
+        return preview_physical_asset(self._platform.artifacts, assembly, frames=frames, fps=fps)
 
     def validate(
         self,
@@ -930,33 +1061,38 @@ class ScenesService:
     def list(self) -> list[VersionedRef]:
         return self._platform._list_resources(ResourceType.SCENE)
 
-    def place_linear_actuator(
+    def place_robot_for_joint_task(
         self,
         scene: SceneSpec,
         *,
         entity: str,
         joint: str,
-        actuator: VersionedRef,
+        robot: VersionedRef,
         name: str,
+        end_effector_link: str,
         initial_position: float,
+        target_position: float,
         clearance_m: float,
         resource_id: str,
     ) -> SceneSpec:
-        from physrealx.integrations.scenes import place_linear_actuator
+        """Place a canonical articulated robot and solve target-link endpoint poses."""
+        from physrealx.integrations.scenes import place_robot_for_joint_task
 
         target = next((item for item in scene.entities if item.name == entity), None)
         if target is None:
             raise DomainValidationError(f"scene entity not found: {entity}")
-        self._platform.assets.get(actuator)
-        return place_linear_actuator(
+        return place_robot_for_joint_task(
             scene,
             self._platform.assets.get(target.asset),
+            self._platform.assets.get(robot),
             self._platform.artifacts,
             entity=entity,
             joint=joint,
-            actuator=actuator,
+            robot=robot,
             name=name,
+            end_effector_link=end_effector_link,
             initial_position=initial_position,
+            target_position=target_position,
             clearance_m=clearance_m,
             resource_id=resource_id,
         )
@@ -987,6 +1123,27 @@ class ScenesService:
             method,
             inputs={"scene": scene},
             config=config,
+        )
+
+    def preview_task(
+        self,
+        scene: VersionedRef,
+        task: VersionedRef,
+        trajectory: ArtifactRef,
+        *,
+        frames: int = 16,
+        fps: int = 8,
+    ) -> ArtifactRef:
+        """Render one Blender scene-execution preview from recorded states."""
+        from physrealx.integrations.task_preview import preview_task_execution
+
+        return preview_task_execution(
+            self._platform.artifacts,
+            scene,
+            task,
+            trajectory,
+            frames=frames,
+            fps=fps,
         )
 
 
@@ -1216,6 +1373,38 @@ class DatasetsService:
             manifest, manifest.reference(), "application/vnd.physrealx.dataset+json"
         )
 
+    def preview_episode(
+        self,
+        dataset: VersionedRef,
+        *,
+        episode_index: int = 0,
+        camera: str | None = None,
+        frames: int = 12,
+        fps: int = 6,
+    ) -> ArtifactRef:
+        """Render one recorded episode with synchronized physics and sensor views."""
+        from physrealx.integrations.simulation_preview import preview_simulation_episode
+
+        return preview_simulation_episode(
+            self._platform.artifacts,
+            dataset,
+            episode_index=episode_index,
+            camera=camera,
+            frames=frames,
+            fps=fps,
+        )
+
+    def preview_snapshot(
+        self,
+        snapshot: ArtifactRef,
+        *,
+        camera: str = "front",
+    ) -> ArtifactRef:
+        """Render modalities, sequences, labels and split membership from a snapshot."""
+        from physrealx.integrations.learning_preview import preview_dataset_snapshot
+
+        return preview_dataset_snapshot(self._platform.artifacts, snapshot, camera=camera)
+
     def ingest(
         self,
         source: VersionedRef | ArtifactRef,
@@ -1252,9 +1441,30 @@ class DatasetsService:
         version: str = "1.0.0",
         augmentations: tuple[VersionedRef, ...] = (),
         required_tag: str | None = None,
+        selection: Literal["successful_demonstrations", "all_episodes"] = (
+            "successful_demonstrations"
+        ),
     ) -> VersionedRef:
         from physrealx.integrations.datasets import training_subset
 
+        try:
+            existing_ref = self._platform.repository.get_dataset(resource_id, version)
+        except ResourceNotFoundError:
+            existing_ref = None
+        if existing_ref is not None:
+            existing = self.get(existing_ref)
+            expected = {
+                "snapshot": snapshot.model_dump(mode="json"),
+                "split": "train",
+                "selection": selection,
+                "required_tag": required_tag,
+                "augmentations": [ref.model_dump(mode="json") for ref in augmentations],
+            }
+            if all(existing.metadata.get(key) == value for key, value in expected.items()):
+                return existing_ref
+            raise ResourceConflictError(
+                f"dataset/{resource_id}@{version} already uses a different training selection"
+            )
         return self.register(
             training_subset(
                 self._platform.artifacts,
@@ -1263,6 +1473,7 @@ class DatasetsService:
                 version=version,
                 augmentations=augmentations,
                 required_tag=required_tag,
+                selection=selection,
             )
         )
 
@@ -1279,6 +1490,44 @@ class TrainingService:
 
     def list_models(self) -> list[VersionedRef]:
         return self._platform._list_resources(ResourceType.MODEL)
+
+    def preview_policy(
+        self,
+        model: VersionedRef,
+        evaluation: VersionedRef,
+    ) -> ArtifactRef:
+        """Render policy optimization and closed-loop evaluation evidence."""
+        from physrealx.integrations.learning_preview import preview_policy_training
+
+        return preview_policy_training(
+            self._platform.artifacts,
+            model,
+            self.get_model(model),
+            self._platform.evaluations.get_report(evaluation),
+        )
+
+    def prepare_interface(
+        self,
+        snapshot: ArtifactRef,
+        *,
+        method: Literal["openvla_oft", "td_mpc2"],
+        config: Mapping[str, JSONValue] | None = None,
+    ) -> ArtifactRef:
+        """Validate a snapshot hand-off to one pinned official training runtime."""
+        from physrealx.integrations.training_interfaces import prepare_training_interface
+
+        return prepare_training_interface(
+            self._platform.artifacts,
+            snapshot,
+            method=method,
+            config=config,
+        )
+
+    def preview_interfaces(self, interfaces: tuple[ArtifactRef, ...]) -> ArtifactRef:
+        """Show validated external interfaces and their execution status."""
+        from physrealx.integrations.training_interfaces import preview_training_interfaces
+
+        return preview_training_interfaces(self._platform.artifacts, interfaces)
 
 
 class ModelsService:
@@ -1364,6 +1613,29 @@ class WorldModelsService:
             rollout,
             reference,
             start_index=start_index,
+        )
+
+    def preview_rollout(
+        self,
+        rollout: ArtifactRef,
+        evaluation: ArtifactRef,
+        reference: Episode,
+        *,
+        camera: str = "front",
+        frames: int = 8,
+        fps: int = 4,
+    ) -> ArtifactRef:
+        """Animate world-model RGB and state predictions against aligned truth."""
+        from physrealx.integrations.learning_preview import preview_world_model_rollout
+
+        return preview_world_model_rollout(
+            self._platform.artifacts,
+            rollout,
+            evaluation,
+            reference,
+            camera=camera,
+            frames=frames,
+            fps=fps,
         )
 
 
@@ -1486,6 +1758,107 @@ class FeedbackService:
             method,
             inputs={"query": query},
             config=config,
+        )
+
+    def plan_physics_calibration(
+        self,
+        telemetry: ArtifactRef,
+        failure_report: ArtifactRef,
+    ) -> ArtifactRef:
+        """Decide whether verified deployment evidence can support physics calibration."""
+        from physrealx.integrations.feedback import build_physics_calibration_plan
+
+        return build_physics_calibration_plan(
+            self._platform.artifacts,
+            telemetry,
+            failure_report,
+        )
+
+    def analyze_policy_intervention(self, evidence: ArtifactRef) -> ArtifactRef:
+        """Attribute failures using same-condition reruns that change only the policy."""
+        from physrealx.integrations.feedback import analyze_policy_intervention
+
+        return analyze_policy_intervention(self._platform.artifacts, evidence)
+
+    def assess_policy_update(
+        self,
+        initial: VersionedRef,
+        updated: VersionedRef,
+        *,
+        config: Mapping[str, JSONValue] | None = None,
+    ) -> ArtifactRef:
+        """Gate a candidate policy with paired closed-loop evaluation episodes."""
+        from physrealx.integrations.feedback import assess_policy_update
+
+        return assess_policy_update(
+            self._platform.artifacts,
+            self._platform.evaluations.get_report(initial),
+            self._platform.evaluations.get_report(updated),
+            config,
+        )
+
+    def prepare_physics_calibration(
+        self,
+        telemetry: ArtifactRef,
+        *,
+        joint_name: str,
+        joint_type: Literal["slide", "hinge"],
+        joint_index: int,
+        prior_parameters: tuple[float, float, float],
+    ) -> ArtifactRef:
+        """Prepare existing inverse-dynamics calibration from attested real episodes."""
+        from physrealx.integrations.feedback import prepare_joint_identification_evidence
+
+        return prepare_joint_identification_evidence(
+            self._platform.artifacts,
+            telemetry,
+            joint_name=joint_name,
+            joint_type=joint_type,
+            joint_index=joint_index,
+            prior_parameters=prior_parameters,
+        )
+
+    def preview_report(
+        self,
+        initial: VersionedRef,
+        updated: VersionedRef,
+        failure_report: ArtifactRef,
+        causal_report: ArtifactRef,
+        calibration_plan: ArtifactRef,
+        policy_update: ArtifactRef | None = None,
+    ) -> ArtifactRef:
+        """Render closed-loop metrics, attribution evidence, and calibration status."""
+        from physrealx.integrations.feedback_preview import preview_feedback_report
+
+        return preview_feedback_report(
+            self._platform.artifacts,
+            self._platform.evaluations.get_report(initial),
+            self._platform.evaluations.get_report(updated),
+            failure_report,
+            causal_report,
+            calibration_plan,
+            policy_update,
+        )
+
+    def preview_cycle(
+        self,
+        failed_episode: ArtifactRef,
+        recovery_episode: ArtifactRef,
+        updated_episode: ArtifactRef,
+        *,
+        frames: int = 8,
+        fps: int = 3,
+    ) -> ArtifactRef:
+        """Animate a same-condition failure, expert recovery, and updated policy replay."""
+        from physrealx.integrations.feedback_preview import preview_feedback_cycle
+
+        return preview_feedback_cycle(
+            self._platform.artifacts,
+            failed_episode,
+            recovery_episode,
+            updated_episode,
+            frames=frames,
+            fps=fps,
         )
 
 

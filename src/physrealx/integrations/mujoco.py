@@ -178,6 +178,14 @@ def compile_scene(
         visual = ET.SubElement(root, "visual")
         ET.SubElement(
             visual,
+            "headlight",
+            ambient="0.45 0.45 0.45",
+            diffuse="0.75 0.75 0.75",
+            specular="0.1 0.1 0.1",
+            active="1",
+        )
+        ET.SubElement(
+            visual,
             "global",
             offwidth=str(max(c.width for c in config.cameras.values())),
             offheight=str(max(c.height for c in config.cameras.values())),
@@ -386,6 +394,18 @@ class MujocoSession:
         import numpy as np
 
         self._config, self._task, self._store = config, task, store
+        declared_controlled = task.metadata.get("controlled_joints")
+        controlled_entities = (
+            {str(name).split("/", 1)[0] for name in declared_controlled}
+            if isinstance(declared_controlled, list)
+            else set()
+        )
+        self._contact_entity_pair = (
+            frozenset((*controlled_entities, task.subject_entity))
+            if task.metadata.get("evidence_scope") == "robot_contact"
+            and len(controlled_entities) == 1
+            else None
+        )
         self._sensors: MujocoSensors | None = None
         compiled = compile_scene(scene, assets, store, config)
         joints = compiled.joints
@@ -655,6 +675,15 @@ class MujocoSession:
             forces = np.zeros(6)
             magnitude = 0.0
             for index in range(self.data.ncon):
+                contact = self.data.contact[index]
+                entities = frozenset(
+                    (
+                        self.model.geom(int(contact.geom1)).name.split("/", 1)[0],
+                        self.model.geom(int(contact.geom2)).name.split("/", 1)[0],
+                    )
+                )
+                if self._contact_entity_pair is not None and entities != self._contact_entity_pair:
+                    continue
                 mujoco.mj_contactForce(self.model, self.data, index, forces)
                 magnitude += float(np.linalg.norm(forces[:3]))
             signals["contact.force"] = (np.array([magnitude]), "N")

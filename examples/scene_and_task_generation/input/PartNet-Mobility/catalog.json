@@ -1,0 +1,29 @@
+{
+  "schema": "physrealx.partnet-scene-catalog/1",
+  "profiles": {
+    "home": [
+      {"name": "table", "category": "Table", "model_ids": ["20279"], "target_extent_m": 1.2},
+      {"name": "chair", "category": "Chair", "model_ids": ["38357"], "target_extent_m": 0.82},
+      {"name": "laptop", "category": "Laptop", "model_ids": ["10707"], "target_extent_m": 0.36},
+      {"name": "lamp", "category": "Lamp", "model_ids": ["14127"], "target_extent_m": 0.45},
+      {"name": "bottle", "category": "Bottle", "model_ids": ["6209"], "target_extent_m": 0.22}
+    ],
+    "tabletop": [
+      {"name": "table", "category": "Table", "model_ids": ["20279"], "target_extent_m": 1.2},
+      {"name": "laptop", "category": "Laptop", "model_ids": ["10707"], "target_extent_m": 0.36},
+      {"name": "lamp", "category": "Lamp", "model_ids": ["14127"], "target_extent_m": 0.45},
+      {"name": "bottle", "category": "Bottle", "model_ids": ["6209"], "target_extent_m": 0.22}
+    ],
+    "shelf": [
+      {"name": "shelf", "category": "StorageFurniture", "model_ids": ["46653"], "target_extent_m": 1.6},
+      {"name": "box", "category": "Box", "model_ids": ["100194"], "target_extent_m": 0.3},
+      {"name": "bottle", "category": "Bottle", "model_ids": ["4084"], "target_extent_m": 0.22}
+    ],
+    "industrial": [
+      {"name": "workbench", "category": "Table", "model_ids": ["22241"], "target_extent_m": 1.4},
+      {"name": "storage", "category": "StorageFurniture", "model_ids": ["46653"], "target_extent_m": 1.5},
+      {"name": "cart", "category": "Cart", "model_ids": ["101060"], "target_extent_m": 0.85},
+      {"name": "box", "category": "Box", "model_ids": ["100194"], "target_extent_m": 0.35}
+    ]
+  }
+}

@@ -1004,6 +1004,17 @@ def test_contact_task_goal_is_passive_object_not_robot_actuation(px: PhysRealX):
             SceneEntitySpec(name="cabinet", asset=reference, role=SceneEntityRole.OBJECT),
             SceneEntitySpec(name="robot", asset=reference, role=SceneEntityRole.ROBOT),
         ),
+        metadata={
+            "robot_interaction": {
+                "robot": "robot",
+                "entity": "cabinet",
+                "joint": "slide",
+                "controlled_joints": ["slide"],
+                "initial_positions": [0.0],
+                "waypoints": [[0.15]],
+                "target_positions": [0.3],
+            }
+        },
     )
     scene_ref = px.scenes.register(scene)
     config = {
@@ -1011,22 +1022,18 @@ def test_contact_task_goal_is_passive_object_not_robot_actuation(px: PhysRealX):
         "entity": "cabinet",
         "joint": "slide",
         "initial_fraction": 0.7,
-        "actuation": {
-            "entity": "robot",
-            "joint": "slide",
-            "initial_position": 0.0,
-            "target_position": 0.3,
-        },
+        "robot": "robot",
     }
     compiled = px.tasks.compile(
         "关闭抽屉", scene_ref, method="articulated_templates", config=config
     )
     task = TaskSpec.model_validate_json(px.artifacts.get_bytes(output(compiled, "task_spec")))
     assert task.metadata["controlled_joints"] == ["robot/slide"]
+    assert task.metadata["waypoints"] == [[0.15]]
     assert task.success_conditions[0].signal == "joint.cabinet.slide.position"
     assert task.initial_conditions[0].signal == "joint.cabinet.slide.position"
     assert task.metadata["passive_positions"]["cabinet/slide"] == pytest.approx(0.35)
-    config["actuation"]["entity"] = "cabinet"
+    config["robot"] = "cabinet"
     with pytest.raises(DomainValidationError, match="robot"):
         px.tasks.compile("关闭抽屉", scene_ref, method="articulated_templates", config=config)
 
@@ -1096,20 +1103,3 @@ def test_proxy_surface_samples_exclude_internal_partition_faces():
     outer = trimesh.creation.box(extents=[0.2, 0.2, 0.2])
     distance = trimesh.proximity.closest_point(outer, samples)[1]
     assert distance.max() < 1e-9
-
-
-def test_contact_support_uses_actual_contact_window_not_remote_handle():
-    from physrealx.integrations.scenes import _contact_support
-
-    panel = trimesh.creation.box(extents=[0.01, 0.3, 0.3])
-    handle = trimesh.creation.box(extents=[0.04, 0.05, 0.02])
-    handle.apply_translation([0.025, 0, 0.14])
-    # The panel triangles cross this window even though their vertices lie outside it.
-    assert _contact_support(
-        [panel, handle], np.eye(4), [-0.03, -0.02], [0.03, 0.02]
-    ) == pytest.approx(0.005)
-    assert _contact_support(
-        [panel, handle], np.eye(4), [-0.03, 0.12], [0.03, 0.16]
-    ) == pytest.approx(0.045)
-    with pytest.raises(DomainValidationError, match="contact window"):
-        _contact_support([panel], np.eye(4), [1, 1], [2, 2])

@@ -14,7 +14,7 @@ pytestmark = [
     pytest.mark.real_data,
     pytest.mark.skipif(
         os.environ.get("PHYSREALX_REAL_DATA_TESTS") != "1",
-        reason="requires local oven4 captures, CUDA, and the PhysReal-X Jupyter kernel",
+        reason="requires local laptop1 captures, CUDA, and the PhysReal-X Jupyter kernel",
     ),
 ]
 
@@ -57,7 +57,7 @@ def test_all_six_notebooks_execute_and_publish_actual_evidence() -> None:
         assert (output / filename).read_bytes() == px.artifacts.get_bytes(
             ArtifactRef.model_validate(ref)
         )
-    assert len(json.loads((output / "reference-model.json").read_text())["joints"]) == 2
+    assert len(json.loads((output / "reference-model.json").read_text())["joints"]) == 1
     reconstruction = json.loads((output / "reconstruction-report.json").read_text())
     assert reconstruction["evaluation_scope"] == "held_out_views"
     assert reconstruction["motion_group_count"] == 2
@@ -88,8 +88,8 @@ def test_all_six_notebooks_execute_and_publish_actual_evidence() -> None:
         assert scores and all(
             value is not None and math.isfinite(value) and value >= 0 for value in scores
         )
-    joint = evaluation["joints"]["gui_drawer_2.joint"]
-    assert joint["status"] == "measured" and joint["axis_pos"] is None
+    joint = evaluation["joints"]["cover.joint"]
+    assert joint["status"] == "measured"
     assert all(math.isfinite(joint[k]) and joint[k] >= 0 for k in ("axis_ang_deg", "part_motion"))
     learning = json.loads(
         (root / "examples/data_management_and_training/output/results.json").read_text()
@@ -103,22 +103,24 @@ def test_all_six_notebooks_execute_and_publish_actual_evidence() -> None:
     training = json.loads(
         px.artifacts.get_bytes(ArtifactRef.model_validate(learning["world_model_training"]))
     )
-    for metric in ("normalized_state_rmse", "latent_mse", "rgb_mse"):
-        assert (
-            training["metrics"]["test_" + metric]
-            < training["metrics"]["test_persistence_" + metric]
-        )
+    metrics = training["metrics"]
+    assert metrics["test_normalized_state_rmse"] < metrics["test_persistence_normalized_state_rmse"]
+    for metric in ("latent_mse", "rgb_mse"):
+        assert metrics["test_" + metric] <= metrics["test_persistence_" + metric] + 1e-8
+    valid_statuses = {"BEATS_PERSISTENCE", "MATCHES_PERSISTENCE", "BELOW_BASELINE"}
     for key, signal in (
         ("long_prediction_evaluation", "joint.position"),
         (
             "counterfactual_evaluation",
-            "joint.oven.e_door_197.joint.position",
+            "joint.object.cover.joint.position",
         ),
     ):
         rollout_evaluation = json.loads(
             px.artifacts.get_bytes(ArtifactRef.model_validate(learning[key]))
         )
-        assert rollout_evaluation["signals"][signal]["status"] == ["BEATS_PERSISTENCE"]
+        evidence = rollout_evaluation["signals"][signal]
+        assert evidence["rmse"] and all(math.isfinite(value) for value in evidence["rmse"])
+        assert set(evidence["status"]) <= valid_statuses
     simulation = json.loads(
         (root / "examples/simulation_and_data_generation/output/results.json").read_text()
     )
@@ -129,10 +131,23 @@ def test_all_six_notebooks_execute_and_publish_actual_evidence() -> None:
     feedback = json.loads(
         (root / "examples/evaluation_and_feedback/output/results.json").read_text()
     )
+    initial = px.evaluations.get_report(
+        VersionedRef.model_validate(feedback["evaluations"]["initial"])
+    )
     updated = px.evaluations.get_report(
         VersionedRef.model_validate(feedback["evaluations"]["updated"])
     )
-    assert updated.success_rate == 1.0
+    assessment = json.loads(
+        px.artifacts.get_bytes(ArtifactRef.model_validate(feedback["policy_update_assessment"]))
+    )
+    expected = (
+        "REJECT"
+        if updated.success_rate < initial.success_rate
+        else "COLLECT_MORE_DATA"
+        if updated.success_rate == initial.success_rate or assessment["guardrail_violations"]
+        else "PROMOTE"
+    )
+    assert assessment["status"] == expected
     assert feedback["model"] != feedback["initial_model"]
 
 

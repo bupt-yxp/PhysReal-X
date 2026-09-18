@@ -471,14 +471,45 @@ def test_animation_uses_predicted_motion_and_reference_states_independently(
     evaluation_case, monkeypatch
 ):
     import io
+    import zipfile
 
+    from matplotlib.figure import Figure
     from PIL import Image
 
     import physrealx.integrations.reconstruction_preview as preview
 
     px, request = evaluation_case
+    axes = []
+    add_subplot = Figure.add_subplot
+
+    def record_axis(self, *args, **kwargs):
+        axis = add_subplot(self, *args, **kwargs)
+        axes.append(axis)
+        return axis
+
+    monkeypatch.setattr(Figure, "add_subplot", record_axis)
     document = json.loads(px.artifacts.get_bytes(request.reconstruction_report))
     document["prediction"]["parts"]["2"]["span"] = 0.1
+    appearance = []
+    for offset in (5, 25, 45):
+        frame = np.zeros((60, 80, 3), dtype=np.uint8)
+        frame[15:45, offset : offset + 20] = (32, 160, 224)
+        payload = io.BytesIO()
+        Image.fromarray(frame).save(payload, format="PNG")
+        appearance.append(payload.getvalue())
+    bundle = io.BytesIO()
+    inventory = [
+        {"path": f"appearance/{index:02d}.png", "media_type": "image/png"}
+        for index in range(len(appearance))
+    ]
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr("bundle-manifest.json", json.dumps({"files": inventory}))
+        archive.writestr("appearance/states.json", json.dumps({"states": [0.0, 0.5, 1.0]}))
+        for record, payload in zip(inventory, appearance):
+            archive.writestr(record["path"], payload)
+    document["bundle"] = px.artifacts.put_bytes(
+        bundle.getvalue(), media_type="application/zip"
+    ).model_dump(mode="json")
     request = request.model_copy(update={"reconstruction_report": px.artifacts.put_json(document)})
     evaluation = px.assets.evaluate_reconstruction(px.artifacts.put_json(request))
     spans, states = [], []
@@ -499,61 +530,34 @@ def test_animation_uses_predicted_motion_and_reference_states_independently(
     assert ("slide", 0.1) in spans
     assert ("slide", 0.2) not in spans  # GT displacement must not drive reconstruction.
     assert [state["joint_2"] for state in states] == pytest.approx([0, 0.1, 0.2])
+    geometry_axes = [axis for axis in axes if hasattr(axis, "get_zlim3d")]
+    assert geometry_axes[0].get_xlim3d() == pytest.approx(geometry_axes[1].get_xlim3d())
+    assert geometry_axes[0].get_ylim3d() == pytest.approx(geometry_axes[1].get_ylim3d())
+    assert geometry_axes[0].get_zlim3d() == pytest.approx(geometry_axes[1].get_zlim3d())
     with Image.open(io.BytesIO(px.artifacts.get_bytes(animation))) as gif:
         assert gif.n_frames == 3
-        assert gif.size == (1000, 500)
+        assert gif.size == (1200, 360)
         assert gif.info["duration"] == 100
-        assert (
-            json.loads(gif.info["comment"])["evaluation"]["artifact_id"] == evaluation.artifact_id
-        )
-        first = np.asarray(gif.convert("RGB"))
-        gif.seek(2)
-        last = np.asarray(gif.convert("RGB"))
-        assert np.any(first[:450, :500] != last[:450, :500])
-        assert np.any(first[:450, 500:] != last[:450, 500:])
-    with pytest.raises(DomainValidationError, match="frames"):
-        px.assets.preview_reconstruction(evaluation, frames=True)
-    with pytest.raises(DomainValidationError, match="fps"):
-        px.assets.preview_reconstruction(evaluation, fps=0)
-
-
-def test_appearance_preview_uses_every_published_frame(evaluation_case):
-    import io
-    import zipfile
-
-    from PIL import Image
-
-    px, request = evaluation_case
-    frames = []
-    for value in (32, 224, 96):
-        output = io.BytesIO()
-        Image.fromarray(np.full((18, 24, 3), value, np.uint8)).save(output, format="PNG")
-        frames.append(output.getvalue())
-    bundle = io.BytesIO()
-    inventory = [
-        {"path": f"appearance/{index:02d}.png", "media_type": "image/png"}
-        for index in range(len(frames))
-    ]
-    with zipfile.ZipFile(bundle, "w") as archive:
-        archive.writestr("bundle-manifest.json", json.dumps({"files": inventory}))
-        for record, payload in zip(inventory, frames):
-            archive.writestr(record["path"], payload)
-    report = json.loads(px.artifacts.get_bytes(request.reconstruction_report))
-    report["bundle"] = px.artifacts.put_bytes(
-        bundle.getvalue(), media_type="application/zip"
-    ).model_dump(mode="json")
-    report_ref = px.artifacts.put_json(report)
-
-    animation = px.assets.preview_reconstruction_appearance(report_ref, fps=4)
-
-    with Image.open(io.BytesIO(px.artifacts.get_bytes(animation))) as gif:
-        assert gif.n_frames == 3
-        assert gif.size == (24, 18)
-        assert gif.info["duration"] == 250
-        assert json.loads(gif.info["comment"])["appearance_frames"] == [
+        metadata = json.loads(gif.info["comment"])
+        assert metadata["evaluation"]["artifact_id"] == evaluation.artifact_id
+        assert metadata["appearance_frames"] == [
             "appearance/00.png",
             "appearance/01.png",
             "appearance/02.png",
         ]
+        first = np.asarray(gif.convert("RGB"))
+        gif.seek(2)
+        last = np.asarray(gif.convert("RGB"))
+        assert np.any(first[:325, :400] != last[:325, :400])
+        assert np.any(first[:325, 400:800] != last[:325, 400:800])
+        assert np.any(first[:325, 800:] != last[:325, 800:])
+        for panel in (first[:325, 400:800], first[:325, 800:]):
+            chroma = panel.max(axis=2) - panel.min(axis=2)
+            foreground = (chroma > 18) & (panel.min(axis=2) < 235)
+            y, x = np.where(foreground)
+            assert np.ptp(x) + 1 > panel.shape[1] * 0.4
+            assert np.ptp(y) + 1 > panel.shape[0] * 0.25
+    with pytest.raises(DomainValidationError, match="frames"):
+        px.assets.preview_reconstruction(evaluation, frames=True)
     with pytest.raises(DomainValidationError, match="fps"):
-        px.assets.preview_reconstruction_appearance(report_ref, fps=True)
+        px.assets.preview_reconstruction(evaluation, fps=0)

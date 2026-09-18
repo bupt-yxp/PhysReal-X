@@ -29,6 +29,7 @@ class TaskInstance(DomainModel):
     )
     task: VersionedRef
     backend_config: MujocoConfig
+    waypoints: tuple[tuple[float, ...], ...] = ()
     target_positions: tuple[float, ...] = Field(min_length=1)
 
 
@@ -88,11 +89,30 @@ class JointTrajectoryAdapter:
         if count < 2 or count > task.max_steps:
             raise DomainValidationError("trajectory duration exceeds the task execution horizon")
         times = (np.arange(count) + 1) * dt
-        phase = np.clip(times / config.duration_seconds, 0, 1)
-        blend = 10 * phase**3 - 15 * phase**4 + 6 * phase**5
         initial = np.asarray(instance.backend_config.initial_positions)
-        commands = initial + blend[:, None] * (target - initial)
+        waypoints = np.asarray(instance.waypoints, dtype=float)
+        if waypoints.size == 0:
+            waypoints = np.empty((0, len(target)))
+        if (
+            waypoints.ndim != 2
+            or waypoints.shape[1:] != target.shape
+            or not np.isfinite(waypoints).all()
+            or np.any(waypoints < np.asarray(task.action.lower))
+            or np.any(waypoints > np.asarray(task.action.upper))
+        ):
+            raise DomainValidationError("trajectory waypoints must respect action bounds")
+        path = np.vstack((initial, waypoints, target))
+        segment_count = len(path) - 1
+        phase = np.clip(times / config.duration_seconds, 0, 1)
+        time_scaling = 10 * phase**3 - 15 * phase**4 + 6 * phase**5
+        progress = time_scaling * segment_count
+        segments = np.minimum(progress.astype(int), segment_count - 1)
+        local_phase = progress - segments
+        commands = path[segments] + local_phase[:, None] * (path[segments + 1] - path[segments])
         positions, contacts = [], []
+        passive_positions: dict[str, list[float]] = {
+            name: [] for name in instance.backend_config.passive_positions
+        }
         session = MujocoSession(scene, assets, task, instance.backend_config, artifacts)
         try:
             initial_frame = session.reset(config.seed)
@@ -114,6 +134,11 @@ class JointTrajectoryAdapter:
                     )
                 ).frame
                 positions.append(frame.observations["joint.position"].inline)
+                for name, values in passive_positions.items():
+                    entity, joint = name.split("/", 1)
+                    observation = frame.observations[f"joint.{entity}.{joint}.position"]
+                    assert observation.inline is not None
+                    values.append(float(observation.inline[0]))
                 contact = frame.observations["contact.force"]
                 assert contact.inline is not None
                 contacts.append(float(contact.inline[0]))
@@ -145,6 +170,8 @@ class JointTrajectoryAdapter:
                     "dt_seconds": dt,
                     "commands": commands.tolist(),
                     "observed_positions": positions,
+                    "observed_passive_positions": passive_positions,
+                    "waypoints": waypoints.tolist(),
                     "target_positions": target.tolist(),
                     "seed": config.seed,
                 },

@@ -50,6 +50,7 @@ python -m pip install --no-build-isolation -e '.[artgs]'
 | `trajectory.generate` | `mujoco_joint_trajectory` | 实际执行检查初态、跟踪、接触和终态 |
 | `policy.inference` | `joint_sequence` | 显式位置轨迹执行 |
 | `policy.train` / `policy.inference` | `act` | 官方 LeRobot CVAE/Transformer，完整动作块执行，重载权重 |
+| `policy.train` / `policy.inference` | `iql` | 官方 IQL 算法的 PyTorch 连续动作适配；混合回报离线训练、safetensors 重载与闭环评测 |
 | `dataset.ingest` / `dataset.snapshot` | `episode_dataset` / `episode_split` | 真实数组校验、核心快照、按来源分组 |
 | `world_model.train` / `world_model.rollout` | `dino_wm` | 官方 DINOv2/因果 ViT，记录残差/解码器适配，未来状态/图像与反事实 |
 | `telemetry.record` / `failure.analyze` | `episode_telemetry` / `trajectory_diagnostics` | 不可变轨迹指标与症状诊断 |
@@ -82,9 +83,13 @@ print(operation.metrics)
 
 来源 revision、依赖版本、资源版本和平台 `artifact_id` 各自承担不同职责；业务接口不以文件哈希替代资源身份。每个项目实例拥有自己的注册表和存储。
 
+## 外部训练接口
+
+`training.prepare_interface` 为固定提交的 OpenVLA-OFT 和 TD-MPC2 发布不可变交接清单，验证快照、任务语言、RGB/状态/动作/奖励/终止映射，并记录官方运行所需资源与命令。`PREPARED` 只表示接口就绪，不表示外部模型已经训练。
+
 ## 尚未接入的扩展
 
-Isaac Sim、Genesis、学习式场景生成、全场景高斯合成、VLA 训练及 ROS 2 硬件适配器仍需独立实现和验收。现有协议允许接入这些能力，候选名称不会被注册为成功方法。真实部署还需要节点 Agent、硬件驱动和现场证据。
+Isaac Sim、Genesis、学习式场景生成、全场景高斯合成及 ROS 2 硬件适配器仍需独立实现和验收。OpenVLA-OFT/TD-MPC2 已有数据与启动交接接口，外部官方运行器和检查点仍需单独部署。真实部署还需要节点 Agent、硬件驱动和现场证据。
 
 `assets.import_reference` 直接从已导入 USD 提取参考网格与关节；`assets.prepare_rgbd` 将源序列解码为绑定视角的阶段制品，复用现有制品库和方法服务。
 

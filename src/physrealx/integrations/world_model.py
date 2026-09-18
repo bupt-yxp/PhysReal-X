@@ -53,6 +53,15 @@ DINO_WEIGHTS_URL: Final = (
 VISUAL_RESIDUAL_GAINS: Final = tuple(index / 8 for index in range(9))
 
 
+def _quality_status(value: float, persistence: float, *, tolerance: float = 1e-8) -> str:
+    """Classify a metric without turning floating-point ties into regressions."""
+    if value < persistence - tolerance:
+        return "BEATS_PERSISTENCE"
+    if value <= persistence + tolerance:
+        return "MATCHES_PERSISTENCE"
+    return "BELOW_BASELINE"
+
+
 class EncoderSpec(DomainModel):
     schema_id: Literal["physrealx.pretrained-encoder/1"] = Field(
         default="physrealx.pretrained-encoder/1", alias="schema"
@@ -770,22 +779,16 @@ class WorldModelTrainAdapter:
             "loss_curve": losses,
             "validation_curve": validation_curve,
             "visual_residual_calibration_curve": best_residual_curve,
-            "state_quality_status": (
-                "BEATS_PERSISTENCE"
-                if metrics["test_normalized_state_rmse"]
-                < metrics["test_persistence_normalized_state_rmse"]
-                else "BELOW_BASELINE"
+            "state_quality_status": _quality_status(
+                metrics["test_normalized_state_rmse"],
+                metrics["test_persistence_normalized_state_rmse"],
             ),
-            "latent_quality_status": (
-                "BEATS_PERSISTENCE"
-                if sum(row["latent_mse"] for row in evaluations["test"])
-                < sum(row["persistence_latent_mse"] for row in evaluations["test"])
-                else "BELOW_BASELINE"
+            "latent_quality_status": _quality_status(
+                sum(row["latent_mse"] for row in evaluations["test"]),
+                sum(row["persistence_latent_mse"] for row in evaluations["test"]),
             ),
-            "rgb_quality_status": (
-                "BEATS_PERSISTENCE"
-                if metrics["test_rgb_mse"] < metrics["test_persistence_rgb_mse"]
-                else "BELOW_BASELINE"
+            "rgb_quality_status": _quality_status(
+                metrics["test_rgb_mse"], metrics["test_persistence_rgb_mse"]
             ),
             "train_episode_ids": snapshot.split.train,
             "independent_physical_validation": False,

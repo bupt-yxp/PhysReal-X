@@ -24,6 +24,7 @@ import numpy as np
 matplotlib.use('module://matplotlib_inline.backend_inline')
 from matplotlib import pyplot as plt
 from examples._display import show_rgbd, show_image_strip
+from PIL import Image
 figure, axis = plt.subplots()
 axis.plot([0, 1], [0, 1])
 image = io.BytesIO()
@@ -40,6 +41,10 @@ with TemporaryDirectory() as directory:
     show_image_strip({'closed': rgb, 'open': rgb}, destination / 'motion.png')
     assert plt.get_fignums() == before
     assert all((destination / name).stat().st_size > 1000 for name in ('depth.png', 'motion.png'))
+    rendered = np.asarray(Image.open(destination / 'depth.png').convert('RGB'))
+    foreground = rendered[:, rendered.shape[1] * 2 // 3:].astype(int)
+    assert np.mean((foreground[..., 1] > foreground[..., 0] + 35) &
+                   (foreground[..., 2] > foreground[..., 0] + 25)) > 0.05
 plt.close(figure)
 """,
         ],

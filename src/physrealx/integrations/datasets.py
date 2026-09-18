@@ -210,20 +210,27 @@ def training_subset(
     version: str,
     augmentations: tuple[VersionedRef, ...] = (),
     required_tag: str | None = None,
+    selection: Literal["successful_demonstrations", "all_episodes"] = ("successful_demonstrations"),
 ) -> DatasetManifest:
-    """Select successful demonstrations without moving held-out groups into training."""
+    """Select a purpose-specific train split without leaking held-out groups."""
     _, dataset, partitions = load_snapshot(store, snapshot_ref)
+    if selection not in {"successful_demonstrations", "all_episodes"}:
+        raise DomainValidationError("unsupported training episode selection")
+    if selection == "all_episodes" and required_tag is not None:
+        raise DomainValidationError("all-episode training cannot require a demonstration tag")
     protected = {
         episode_group(episode) for name in ("validation", "test") for episode in partitions[name]
     }
 
-    def demonstration(episode: Episode) -> bool:
+    def selected_episode(episode: Episode) -> bool:
+        if selection == "all_episodes":
+            return True
         tags = episode.metadata.get("tags", [])
         if not isinstance(tags, list) or any(not isinstance(tag, str) for tag in tags):
             raise DomainValidationError("demonstration tags must be a list of strings")
         return episode.success and (required_tag is None or required_tag in tags)
 
-    selected = {episode.episode_id for episode in partitions["train"] if demonstration(episode)}
+    selected = {episode.episode_id for episode in partitions["train"] if selected_episode(episode)}
     summaries = [row for row in dataset.episodes if row.episode_id in selected]
     for reference in augmentations:
         extra = load_resource(store, reference, DatasetManifest)
@@ -241,7 +248,7 @@ def training_subset(
                 raise DomainValidationError(
                     "training augmentation overlaps a held-out capture or scenario"
                 )
-            if not demonstration(episode):
+            if not selected_episode(episode):
                 raise DomainValidationError(
                     "imitation augmentation requires successful demonstrations "
                     "with the required tag"
@@ -251,7 +258,7 @@ def training_subset(
             summaries.append(summary)
             selected.add(episode.episode_id)
     if not summaries:
-        raise DomainValidationError("training selection contains no successful demonstrations")
+        raise DomainValidationError("training selection contains no episodes")
     return DatasetManifest(
         resource_id=resource_id,
         version=version,
@@ -263,7 +270,7 @@ def training_subset(
         metadata={
             "snapshot": snapshot_ref.model_dump(mode="json"),
             "split": "train",
-            "selection": "successful_demonstrations",
+            "selection": selection,
             "required_tag": required_tag,
             "augmentations": [ref.model_dump(mode="json") for ref in augmentations],
             "protected_groups": len(protected),
@@ -275,6 +282,62 @@ class SplitConfig(DomainModel):
     seed: int = Field(default=2026, ge=0)
     validation_fraction: float = Field(default=0.2, gt=0, lt=0.5)
     test_fraction: float = Field(default=0.2, gt=0, lt=0.5)
+    stratify_success: bool = False
+
+
+def _interleave_strata(
+    strata: dict[tuple[bool, ...], list[tuple[str, ...]]],
+    rng: Any,
+) -> list[tuple[str, ...]]:
+    """Shuffle within outcome strata and interleave them deterministically."""
+    queues = {label: sorted(values) for label, values in strata.items()}
+    labels = sorted(queues)
+    rng.shuffle(labels)
+    for values in queues.values():
+        rng.shuffle(values)
+    result: list[tuple[str, ...]] = []
+    while any(queues.values()):
+        for label in labels:
+            if queues[label]:
+                result.append(queues[label].pop())
+    return result
+
+
+def _stratified_partitions(
+    groups: dict[tuple[str, ...], list[str]],
+    episodes: dict[str, Episode],
+    *,
+    seed: int,
+    test_count: int,
+    validation_count: int,
+) -> dict[str, list[tuple[str, ...]]]:
+    """Keep every observed outcome stratum in training when cardinality permits."""
+    import random
+
+    train_count = len(groups) - test_count - validation_count
+    strata: dict[tuple[bool, ...], list[tuple[str, ...]]] = defaultdict(list)
+    for key, identifiers in groups.items():
+        label = tuple(sorted({episodes[identifier].success for identifier in identifiers}))
+        strata[label].append(key)
+    if len(strata) > train_count:
+        raise DomainValidationError(
+            "success-stratified split has too few training groups for all outcome strata"
+        )
+    rng = random.Random(seed)
+    training = []
+    remainder: dict[tuple[bool, ...], list[tuple[str, ...]]] = {}
+    for label, values in strata.items():
+        shuffled = sorted(values)
+        rng.shuffle(shuffled)
+        training.append(shuffled.pop())
+        remainder[label] = shuffled
+    ordered = _interleave_strata(remainder, rng)
+    testing = ordered[:test_count]
+    validation = ordered[test_count : test_count + validation_count]
+    training.extend(ordered[test_count + validation_count :])
+    if not all((testing, validation, training)):
+        raise DomainValidationError("stratified split produced an empty partition")
+    return {"test": testing, "validation": validation, "train": training}
 
 
 class DatasetSnapshotAdapter:
@@ -297,8 +360,10 @@ class DatasetSnapshotAdapter:
         dataset = dataset_bundle(artifacts, source)
         validate_dataset(artifacts, dataset)
         groups: dict[tuple[str, ...], list[str]] = defaultdict(list)
+        episodes: dict[str, Episode] = {}
         for summary in dataset.episodes:
             episode = load_episode(artifacts, summary)
+            episodes[episode.episode_id] = episode
             key = episode_group(episode)
             groups[key].append(episode.episode_id)
         keys = sorted(groups)
@@ -306,16 +371,25 @@ class DatasetSnapshotAdapter:
             raise DomainValidationError(
                 "train/validation/test require at least three independent episode groups"
             )
-        random.Random(config.seed).shuffle(keys)
         test_count = max(1, int(len(keys) * config.test_fraction))
         validation_count = max(1, int(len(keys) * config.validation_fraction))
         if test_count + validation_count >= len(keys):
             raise DomainValidationError("split leaves no training groups")
-        partitions = {
-            "test": keys[:test_count],
-            "validation": keys[test_count : test_count + validation_count],
-            "train": keys[test_count + validation_count :],
-        }
+        if config.stratify_success:
+            partitions = _stratified_partitions(
+                groups,
+                episodes,
+                seed=config.seed,
+                test_count=test_count,
+                validation_count=validation_count,
+            )
+        else:
+            random.Random(config.seed).shuffle(keys)
+            partitions = {
+                "test": keys[:test_count],
+                "validation": keys[test_count : test_count + validation_count],
+                "train": keys[test_count + validation_count :],
+            }
         membership = {
             name: [identifier for key in values for identifier in groups[key]]
             for name, values in partitions.items()
@@ -345,6 +419,11 @@ class DatasetSnapshotAdapter:
             "split_sizes": {name: len(ids) for name, ids in membership.items()},
             "independent_groups": len(keys),
             "grouping": "capture_or_scene_task_seed",
+            "stratified_by": "success" if config.stratify_success else None,
+            "success_counts": {
+                name: sum(episodes[identifier].success for identifier in identifiers)
+                for name, identifiers in membership.items()
+            },
             "episode_leakage": False,
             "group_leakage": False,
         }

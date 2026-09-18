@@ -59,6 +59,58 @@ def show_metrics(values: Mapping[str, Any]) -> None:
     display(HTML("<table>" + "".join(rows) + "</table>"))
 
 
+def show_pipeline(stages: Mapping[str, str]) -> None:
+    """Display a compact ordered workflow without embedding business logic."""
+    from html import escape
+
+    from IPython.display import HTML, display
+
+    if not 2 <= len(stages) <= 8:
+        raise ValueError("流程可视化需要 2 至 8 个阶段。")
+    cards = []
+    for index, (title, detail) in enumerate(stages.items(), start=1):
+        cards.append(
+            "<div style='display:flex;align-items:center;gap:.55rem'>"
+            f"<div style='border:1px solid #3b82f6;border-radius:8px;padding:.7rem;"
+            "min-width:8.5rem;background:#eff6ff'>"
+            f"<b style='color:#1d4ed8'>{index}. {escape(str(title))}</b><br>"
+            f"<span style='font-size:.88rem'>{escape(str(detail))}</span></div>"
+            + (
+                "<span style='color:#64748b;font-size:1.3rem'>→</span>"
+                if index < len(stages)
+                else ""
+            )
+            + "</div>"
+        )
+    display(
+        HTML(
+            "<div style='display:flex;gap:.55rem;align-items:center;flex-wrap:wrap'>"
+            + "".join(cards)
+            + "</div>"
+        )
+    )
+
+
+def show_libraries(libraries: Mapping[str, tuple[int, str]]) -> None:
+    """Display materialized output-library counts and their current contents."""
+    from html import escape
+
+    from IPython.display import HTML, display
+
+    if not libraries or any(type(count) is not int or count < 0 for count, _ in libraries.values()):
+        raise ValueError("资源库计数必须是非负整数。")
+    cards = []
+    for title, (count, detail) in libraries.items():
+        cards.append(
+            "<div style='border-left:4px solid #2563eb;background:#f8fafc;"
+            "padding:.7rem 1rem;min-width:12rem'>"
+            f"<b>{escape(str(title))}</b>　"
+            f"<span style='font-size:1.15rem;color:#1d4ed8'>{count}</span><br>"
+            f"<span style='font-size:.86rem;color:#475569'>{escape(str(detail))}</span></div>"
+        )
+    display(HTML("<div style='display:flex;gap:.8rem;flex-wrap:wrap'>" + "".join(cards) + "</div>"))
+
+
 def show_rgbd(rgb: Any, depth: Any, destination: Path, *, mask: Any | None = None) -> None:
     """Present captured RGB, metric depth and an optional published foreground mask."""
     import matplotlib.pyplot as plt
@@ -83,7 +135,17 @@ def show_rgbd(rgb: Any, depth: Any, destination: Path, *, mask: Any | None = Non
         if mask is not None:
             foreground = np.asarray(mask, dtype=bool)
             axes[2].imshow(rgb)
-            axes[2].imshow(np.ma.masked_where(~foreground, foreground), cmap="Greens", alpha=0.45)
+            overlay = np.zeros((*foreground.shape, 4), dtype=float)
+            overlay[foreground] = (0.0, 0.86, 0.78, 0.58)
+            interior = foreground.copy()
+            interior[1:-1, 1:-1] &= (
+                foreground[:-2, 1:-1]
+                & foreground[2:, 1:-1]
+                & foreground[1:-1, :-2]
+                & foreground[1:-1, 2:]
+            )
+            overlay[foreground & ~interior] = (0.0, 0.48, 0.46, 0.95)
+            axes[2].imshow(overlay)
             axes[2].set_title("Foreground mask")
         for axis in axes:
             axis.axis("off")
@@ -190,6 +252,13 @@ def show_animation(payload: bytes) -> None:
     from IPython.display import Image, display
 
     display(Image(data=payload, format="gif"))
+
+
+def show_image(payload: bytes) -> None:
+    """Embed one published PNG without coupling the Notebook to its renderer."""
+    from IPython.display import Image, display
+
+    display(Image(data=payload, format="png"))
 
 
 def show_image_strip(images: Mapping[str, Any], destination: Path) -> None:

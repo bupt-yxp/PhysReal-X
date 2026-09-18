@@ -96,12 +96,19 @@ class ACTTrainingConfig(DomainModel):
     steps: int = Field(default=300, ge=1, le=1000000)
     batch_size: int = Field(default=16, ge=1, le=512)
     chunk_size: int = Field(default=8, ge=1, le=128)
+    n_action_steps: int | None = Field(default=None, ge=1, le=128)
     learning_rate: float = Field(default=0.0003, gt=0, le=1)
     kl_weight: float = Field(default=0.01, ge=0, allow_inf_nan=False)
     seed: int = Field(default=2026, ge=0)
     device: Literal["cpu", "cuda"] = "cpu"
     threads: int = Field(default=4, ge=1, le=64)
     max_transitions: int = Field(default=10000, ge=1, le=1000000)
+
+    @model_validator(mode="after")
+    def validate_execution_horizon(self) -> ACTTrainingConfig:
+        if self.n_action_steps is not None and self.n_action_steps > self.chunk_size:
+            raise ValueError("ACT execution horizon cannot exceed its prediction chunk")
+        return self
 
 
 def _observation(
@@ -165,7 +172,7 @@ class ACTTrainer:
     ) -> ModelManifest:
         import numpy as np
         import torch
-        from safetensors.torch import save
+        from safetensors.torch import load, save
 
         config = ACTTrainingConfig.model_validate(spec.trainer.config)
         started_at = datetime.now(timezone.utc)
@@ -219,6 +226,21 @@ class ACTTrainer:
             ):
                 torch.manual_seed(config.seed)
                 model = network(architecture).to(config.device)
+                parent_checkpoint = spec.trainer.checkpoint
+                if parent_checkpoint is not None:
+                    if parent_checkpoint.media_type != "application/vnd.safetensors":
+                        raise DomainValidationError(
+                            "ACT fine-tuning requires a safetensors weight checkpoint"
+                        )
+                    try:
+                        model.load_state_dict(
+                            load(self.store.get_bytes(parent_checkpoint)), strict=True
+                        )
+                    except (RuntimeError, ValueError) as error:
+                        raise DomainValidationError(
+                            "ACT fine-tuning checkpoint is incompatible with the requested "
+                            "network architecture"
+                        ) from error
                 model.train()
                 x = torch.from_numpy((state_array - mean) / scale).to(config.device)
                 y = torch.from_numpy((action_array - action_mean) / action_scale).to(config.device)
@@ -300,7 +322,8 @@ class ACTTrainer:
             version=spec.version,
             trainer=spec.trainer,
             policy=ACTPolicy.descriptor.bind(
-                checkpoint=weights, config={"n_action_steps": architecture.chunk_size}
+                checkpoint=weights,
+                config={"n_action_steps": config.n_action_steps or architecture.chunk_size},
             ),
             dataset=spec.dataset,
             weights=weights,
@@ -315,7 +338,16 @@ class ACTTrainer:
                 "action_scale": action_scale.tolist(),
                 "source_revision": SOURCE_REVISION,
                 "loss_curve": losses,
-                "training_scope": "from_scratch_on_selected_episode_split",
+                "training_scope": (
+                    "fine_tune_on_selected_episode_split"
+                    if spec.trainer.checkpoint is not None
+                    else "from_scratch_on_selected_episode_split"
+                ),
+                "parent_checkpoint": (
+                    spec.trainer.checkpoint.model_dump(mode="json")
+                    if spec.trainer.checkpoint is not None
+                    else None
+                ),
                 "code": source.model_dump(mode="json"),
                 "environment": environment.model_dump(mode="json"),
                 "started_at": started_at.isoformat(),

@@ -51,6 +51,7 @@ from physrealx.integrations.act import ACTPolicy, ACTTrainer
 from physrealx.integrations.artgs import ArtGSMethodAdapter
 from physrealx.integrations.colmap import create_colmap_adapter
 from physrealx.integrations.dtart import DTArtMethodAdapter
+from physrealx.integrations.iql import IQLPolicy, IQLTrainer
 from physrealx.integrations.physical import register_physical_methods
 from physrealx.operation_validation import validate_operation_output
 from physrealx.plugins import PluginRegistry
@@ -157,6 +158,11 @@ class PhysRealX:
             plugins.register_policy(
                 TorchBehaviorCloningPolicy.descriptor,
                 lambda config: TorchBehaviorCloningPolicy(config, artifacts),
+            )
+            plugins.register_trainer(IQLTrainer(artifacts))
+            plugins.register_policy(
+                IQLPolicy.descriptor,
+                lambda config: IQLPolicy(config, artifacts),
             )
             if find_spec("torchvision") is not None and find_spec("einops") is not None:
                 plugins.register_trainer(ACTTrainer(artifacts))
@@ -339,6 +345,17 @@ class PhysRealX:
         registered = self.repository.get_dataset(spec.dataset.resource_id, spec.dataset.version)
         if registered.artifact_id != spec.dataset.artifact_id:
             raise ResourceConflictError("training dataset does not match the registry")
+        try:
+            existing = self.repository.get_model(spec.resource_id, spec.version)
+        except ResourceNotFoundError:
+            existing = None
+        if existing is not None:
+            manifest = self.training.get_model(existing)
+            if manifest.dataset == registered and manifest.trainer == spec.trainer:
+                return existing
+            raise ResourceConflictError(
+                f"model/{spec.resource_id}@{spec.version} already uses a different training spec"
+            )
         dataset = self.datasets.get(registered)
         episodes = (self._executor.load_episode(summary) for summary in dataset.episodes)
         trainer = self.plugins.trainer(spec.trainer.name)

@@ -12,7 +12,7 @@ python -m pip install -e '.[physical]'
 
 模块二使用 `reference_asset_assembly`：读取显式投影后的 USD 部件/关节，逐 link 构建 CoACD 碰撞体，明确给出密度、摩擦、恢复系数、阻尼、关节摩擦和作用力上限。质量先验从封闭凸碰撞代理体积之和与指定密度计算（重叠体积可能重复计入），惯量为包围盒近似，全部保持 `source=default / confidence=0 / evidence_state=prior`。
 
-相邻部件接触由关节模型表示时，显式记录 `contact_exclusions`；MuJoCo 和 USD FilteredPairsAPI 使用同一排除关系，外部推杆碰撞保持开启。原始非流形 CAD 若需要 CoACD 修复，必须显式选择 `preprocessing="coacd"`，封闭源网格检查体积偏差；开放源表面不计算无定义的体积误差，改为检查源表面与碰撞代理外表面的双向 P95 距离。没有把修复网格或模型先验当作独立测量。
+相邻部件接触由关节模型表示时，显式记录 `contact_exclusions`；MuJoCo 和 USD FilteredPairsAPI 使用同一排除关系，外部机器人接触保持开启。原始非流形 CAD 若需要 CoACD 修复，必须显式选择 `preprocessing="coacd"`，封闭源网格检查体积偏差；开放源表面不计算无定义的体积误差，改为检查源表面与碰撞代理外表面的双向 P95 距离。没有把修复网格或模型先验当作独立测量。
 
 下列独立辨识/组装路径仍可使用真实测量，不能由当前先验包自行提供其验收真值。
 

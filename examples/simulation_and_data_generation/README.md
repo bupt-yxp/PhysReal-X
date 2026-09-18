@@ -1,9 +1,7 @@
-# 04 · 多模态物理仿真
+# 04 · 物理仿真与多模态数据
 
-读取模块三任务/轨迹，生成双相机八种输出、刚体位姿与外力/力矩、随机化的成功/失败集，并执行推杆接触被动烤箱门。
+读取模块三发布的场景、任务实例和 Panda 轨迹，在 MuJoCo 中执行名义与失败批次，同步记录位姿、动作、关节、接触和传感观测。
 
-在现有 PhysReal-X 环境中打开 [demo.ipynb](demo.ipynb)，选择 PhysReal-X 内核并全部运行。先完成上游模块；`python -m examples.run_all` 会自动按顺序执行六个模块。
+同步动画以逐帧刚体状态驱动统一 Blender PBR 场景：overview 相机展示执行过程，front 相机同步输出 RGB、米制深度和实例/Link Mask，并由同一 RGB-D 生成 XYZRGB 点云。Notebook 同时输出成功/失败数据集、合并数据集和质量报告。
 
-推杆来自模块三。20 条专家接触轨迹与 6 条不接近物体的失败轨迹均记录固定 8 秒，保留到达目标后的动力学；数据来源为 simulator。另以实际被动关节位置驱动同一资产中已配准的 ArtGS 外观，单独显示该物体。事件仍为帧间亮度阈值模型。
-
-Notebook 将业务资源引用导出到 `output/results.json`；执行脚本另存 `execution.json` 与运行副本，失败停止下游。详细对照见 [功能验收](../../docs/acceptance.md)。
+在 PhysReal-X Conda 环境中运行 [demo.ipynb](demo.ipynb)。输出由 `output/results.json` 索引。
