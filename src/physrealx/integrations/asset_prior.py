@@ -55,9 +55,18 @@ class ReferenceAssemblyInput(DomainModel):
     version: str
     display_name: str
     reference_model: ArtifactRef
+    reconstructed_geometry: ArtifactRef | None = None
     collision_reports: tuple[ArtifactRef, ...] = Field(min_length=1)
-    physics_prior: PhysicsPrior
+    physics_prior: PhysicsPrior | None = None
+    predicted_physics: ArtifactRef | None = None
+    geometry_refinement: ArtifactRef | None = None
     registration: ArtifactRef | None = None
+
+    @model_validator(mode="after")
+    def one_prior(self) -> ReferenceAssemblyInput:
+        if (self.physics_prior is None) == (self.predicted_physics is None):
+            raise ValueError("assembly requires exactly one explicit or predicted prior")
+        return self
 
 
 def reference_prior_asset(source: ArtifactRef, artifacts: ArtifactStore) -> AssetSpec:
@@ -68,6 +77,90 @@ def reference_prior_asset(source: ArtifactRef, artifacts: ArtifactStore) -> Asse
         read_json(artifacts, source, "physrealx.reference-assembly-input/1")
     )
     reference = read_json(artifacts, request.reference_model, "physrealx.usd-reference/1")
+    geometry_evidence: tuple[ArtifactRef, ...] = ()
+    if request.reconstructed_geometry is not None:
+        reconstructed = read_json(
+            artifacts,
+            request.reconstructed_geometry,
+            "physrealx.registered-reconstruction-geometry/1",
+        )
+        if (
+            request.registration is None
+            or reconstructed.get("source_reference")
+            != request.reference_model.model_dump(mode="json")
+            or reconstructed.get("source_registration")
+            != request.registration.model_dump(mode="json")
+            or reconstructed.get("coordinate_frame") != "reference_link_rest"
+            or set(reconstructed.get("geometries", {}))
+            != {link["name"] for link in reference["links"]}
+        ):
+            raise DomainValidationError("reconstructed geometry is bound to another source")
+        for link in reference["links"]:
+            link["geometry"] = reconstructed["geometries"][link["name"]]
+        geometry_evidence = (request.reconstructed_geometry,)
+    prediction = None
+    predicted_document: dict[str, Any] = {}
+    prediction_evidence: tuple[ArtifactRef, ...] = ()
+    if request.predicted_physics is not None:
+        from physrealx.integrations.physical_estimation import PhysicsPrediction, locked_motion
+
+        predicted_document = read_json(
+            artifacts, request.predicted_physics, "physrealx.visual-physics-prior/1"
+        )
+        if (
+            predicted_document["source_reference"]
+            != request.reference_model.model_dump(mode="json")
+            or predicted_document.get("source_geometry")
+            != (
+                request.reconstructed_geometry.model_dump(mode="json")
+                if request.reconstructed_geometry is not None
+                else None
+            )
+            or request.registration is None
+            or predicted_document["registration"] != request.registration.model_dump(mode="json")
+            or predicted_document.get("evidence_state") != "prior"
+        ):
+            raise DomainValidationError("predicted physics is bound to another source")
+        registration = read_json(
+            artifacts, request.registration, "physrealx.metric-alignment-report/1"
+        )
+        motion = locked_motion(reference, registration)
+        if predicted_document["motion"] != motion:
+            raise DomainValidationError("predicted physics changed the observed endpoints")
+        prediction = PhysicsPrediction.model_validate(predicted_document["prediction"])
+        if set(prediction.bodies) != {v["name"] for v in reference["links"]} or set(
+            prediction.joints
+        ) != {v["name"] for v in reference["joints"]}:
+            raise DomainValidationError("predicted physics must cover every link and joint")
+        prediction_evidence = (request.predicted_physics,)
+    refinement_evidence: tuple[ArtifactRef, ...] = ()
+    if request.geometry_refinement is not None:
+        from physrealx.integrations.physical_estimation import locked_motion
+
+        refined = read_json(
+            artifacts, request.geometry_refinement, "physrealx.video-geometry-refinement/1"
+        )
+        if request.registration is None:
+            raise DomainValidationError("geometry refinement requires registered endpoints")
+        registration = read_json(
+            artifacts, request.registration, "physrealx.metric-alignment-report/1"
+        )
+        if (
+            refined["source_reference"] != request.reference_model.model_dump(mode="json")
+            or refined.get("source_geometry")
+            != (
+                request.reconstructed_geometry.model_dump(mode="json")
+                if request.reconstructed_geometry is not None
+                else None
+            )
+            or refined["registration"] != request.registration.model_dump(mode="json")
+            or refined["motion"] != locked_motion(reference, registration)
+            or set(refined["geometries"]) != {link["name"] for link in reference["links"]}
+        ):
+            raise DomainValidationError("geometry refinement must preserve reference and motion")
+        for link in reference["links"]:
+            link["geometry"] = refined["geometries"][link["name"]]
+        refinement_evidence = (request.geometry_refinement,)
     if reference.get("unit") != "m" or reference.get("coordinate_frame") != "reference_z_up":
         raise DomainValidationError("reference assembly requires canonical metric Z-up geometry")
     links = {item["name"]: item for item in reference["links"]}
@@ -106,6 +199,10 @@ def reference_prior_asset(source: ArtifactRef, artifacts: ArtifactStore) -> Asse
             value=value, source=ParameterSource.DEFAULT, uncertainty=abs(value), confidence=0.0
         )
 
+    # ``reference_link_rest`` keeps every unposed part in the shared reference frame;
+    # it does not recenter vertices on a joint. A child link frame is joint-centred, so
+    # the same -origin transform is required for either geometry source. Together with
+    # parent_to_joint this exactly reproduces the pivot transform used by registration.
     geometries, bodies = [], []
     for name, link in links.items():
         visual = load_meshes(artifacts, ArtifactRef.model_validate(link["geometry"]))
@@ -116,17 +213,35 @@ def reference_prior_asset(source: ArtifactRef, artifacts: ArtifactStore) -> Asse
         volume = collision_volumes[name]
         if volume <= 0 or not np.isfinite(volume) or np.any(dimensions <= 0):
             raise DomainValidationError("collision proxy has no finite positive volume")
-        mass = volume * request.physics_prior.density_kg_m3
+        body_prediction = prediction.bodies[name] if prediction is not None else None
+        if body_prediction is not None:
+            mass = body_prediction.mass_kg.value
+        else:
+            assert request.physics_prior is not None
+            mass = volume * request.physics_prior.density_kg_m3
+
+        def body_parameter(key: str, prediction: Any = body_prediction) -> ScalarParameter:
+            if prediction is None:
+                assert request.physics_prior is not None
+                return prior(float(getattr(request.physics_prior, key)))
+            estimate = getattr(prediction, key)
+            return ScalarParameter(
+                value=estimate.value,
+                source=ParameterSource.INFERRED,
+                confidence=0.0,
+                uncertainty=max(estimate.value - estimate.lower, estimate.upper - estimate.value),
+            )
+
         moments = mass * (np.sum(dimensions**2) - dimensions**2) / 12
         bodies.append(
             BodyPhysicsSpec(
                 link=name,
-                mass_kg=prior(mass),
+                mass_kg=body_parameter("mass_kg") if body_prediction is not None else prior(mass),
                 center_of_mass_m=tuple((lower + upper) / 2 - origins[name]),
                 inertia_kg_m2=tuple(tuple(row) for row in np.diag(moments)),
-                static_friction=prior(request.physics_prior.static_friction),
-                dynamic_friction=prior(request.physics_prior.dynamic_friction),
-                restitution=prior(request.physics_prior.restitution),
+                static_friction=body_parameter("static_friction"),
+                dynamic_friction=body_parameter("dynamic_friction"),
+                restitution=body_parameter("restitution"),
             )
         )
         for role, key in (
@@ -146,6 +261,22 @@ def reference_prior_asset(source: ArtifactRef, artifacts: ArtifactStore) -> Asse
             )
     joints = []
     for joint in reference["joints"]:
+        if prediction is not None:
+            candidate = prediction.joints[joint["name"]]
+            lower_limit, upper_limit = predicted_document["motion"]["range"]
+            damping, friction, effort = (
+                candidate.damping.value,
+                candidate.friction.value,
+                candidate.effort_limit.value,
+            )
+        else:
+            assert request.physics_prior is not None
+            lower_limit, upper_limit = joint["lower_limit"], joint["upper_limit"]
+            damping, friction, effort = (
+                request.physics_prior.joint_damping,
+                request.physics_prior.joint_friction,
+                request.physics_prior.effort_limit,
+            )
         kind = {"slide": JointType.PRISMATIC, "hinge": JointType.REVOLUTE}.get(joint["joint_type"])
         if kind is None:
             raise DomainValidationError("reference joint type must be slide or hinge")
@@ -159,11 +290,11 @@ def reference_prior_asset(source: ArtifactRef, artifacts: ArtifactStore) -> Asse
                     translation_m=tuple(origins[joint["child"]] - origins[joint["parent"]])
                 ),
                 axis=joint["axis"],
-                lower_limit=joint["lower_limit"],
-                upper_limit=joint["upper_limit"],
-                damping=request.physics_prior.joint_damping,
-                friction=request.physics_prior.joint_friction,
-                effort_limit=request.physics_prior.effort_limit,
+                lower_limit=lower_limit,
+                upper_limit=upper_limit,
+                damping=damping,
+                friction=friction,
+                effort_limit=effort,
             )
         )
     appearance = {}
@@ -186,22 +317,40 @@ def reference_prior_asset(source: ArtifactRef, artifacts: ArtifactStore) -> Asse
         joints=tuple(joints),
         physics=tuple(bodies),
         contact_exclusions=tuple((j.parent, j.child) for j in joints)
-        if request.physics_prior.joint_models_adjacent_contact
+        if request.physics_prior is not None and request.physics_prior.joint_models_adjacent_contact
         else (),
         evidence_state=AssetEvidenceState.PRIOR,
         evidence=(
             source,
             request.reference_model,
             *request.collision_reports,
+            *geometry_evidence,
             *appearance_evidence,
+            *prediction_evidence,
+            *refinement_evidence,
         ),
         metadata={
             **appearance,
-            "evidence_scope": "usd_reference_with_explicit_physics_priors",
+            "evidence_scope": (
+                "real_reconstruction_geometry_with_registered_topology_and_physics_priors"
+                if request.reconstructed_geometry is not None
+                else "usd_reference_with_explicit_physics_priors"
+            ),
             "independent_physical_validation": False,
-            "mass_model": "convex_collision_volume_sum_times_assumed_density",
+            "geometry_source": (
+                "real_artgs_reconstruction"
+                if request.reconstructed_geometry is not None
+                else "reference_model"
+            ),
+            "mass_model": "vlm_visual_prior"
+            if prediction is not None
+            else "convex_collision_volume_sum_times_assumed_density",
             "inertia_model": "uniform_bounding_box_at_assumed_mass",
-            "physics_prior": request.physics_prior.model_dump(mode="json"),
+            "physics_prior": request.predicted_physics.model_dump(mode="json")
+            if request.predicted_physics is not None
+            else request.physics_prior.model_dump(mode="json")
+            if request.physics_prior
+            else {},
         },
     )
 
@@ -210,7 +359,7 @@ class ReferenceAssemblyAdapter:
     descriptor = builtin_method(
         MethodCapability.ASSET_ASSEMBLE,
         "reference_asset_assembly",
-        version="2.1.0",
+        version="2.2.0",
         input_contract="AssetAssemblyInput/1",
         output_contract="AssetAssemblyBundle/1",
         python=">=3.10,<3.13",
@@ -232,7 +381,7 @@ class ReferenceAssemblyAdapter:
             {
                 "asset_assembly": {
                     "schema": "physrealx.asset-assembly-bundle/1",
-                    "evidence_scope": "usd_reference_with_explicit_physics_priors",
+                    "evidence_scope": asset.metadata["evidence_scope"],
                     "source_input": source.model_dump(mode="json"),
                     "asset_spec": asset.model_dump(mode="json"),
                     "independent_physical_validation": False,

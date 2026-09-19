@@ -45,7 +45,10 @@ class AssetAssemblyInput(DomainModel):
 
 def assembled_asset(document: Mapping[str, Any], artifacts: ArtifactStore) -> AssetSpec:
     """Validate assembly according to its declared evidence origin before packaging."""
-    if document.get("evidence_scope") == "usd_reference_with_explicit_physics_priors":
+    if document.get("evidence_scope") in {
+        "usd_reference_with_explicit_physics_priors",
+        "real_reconstruction_geometry_with_registered_topology_and_physics_priors",
+    }:
         from physrealx.integrations.asset_prior import reference_prior_asset
 
         asset = reference_prior_asset(

@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 from importlib import import_module
+from pathlib import Path
 from typing import Any
 
 from physrealx.contracts import ArtifactStore
@@ -12,6 +13,147 @@ from physrealx.domain import ArtifactRef, AssetSpec, GeometryRole
 from physrealx.errors import DomainValidationError
 from physrealx.integrations._artifacts import read_json
 from physrealx.integrations._asset_preview import asset_geometry, link_transforms
+
+
+def preview_physics_video(
+    store: ArtifactStore, directory: Path, *, frames: int = 24, fps: int = 8
+) -> ArtifactRef:
+    """Animate source RGB, depth and reviewed masks without changing the observations."""
+    import numpy as np
+    from matplotlib import colormaps
+    from PIL import Image, ImageDraw
+
+    if type(frames) is not int or not 2 <= frames <= 60:
+        raise DomainValidationError("video preview frames must be an integer between 2 and 60")
+    if type(fps) is not int or not 1 <= fps <= 30:
+        raise DomainValidationError("video preview fps must be an integer between 1 and 30")
+    paths = {
+        "rgb": {p.stem: p for p in (directory / "img").glob("*.png")},
+        "depth": {p.stem: p for p in (directory / "depth").glob("*.npy")},
+        "mask": {p.stem: p for p in (directory / "mask").glob("*.png")},
+        "link": {p.stem: p for p in (directory / "link_mask").glob("*.png")},
+    }
+    names = set(paths["rgb"])
+    if not names or any(set(value) != names for value in paths.values()):
+        raise DomainValidationError("video preview requires synchronized RGB/depth/mask/link_mask")
+    try:
+        ordered = sorted(names, key=int)
+    except ValueError as error:
+        raise DomainValidationError("video frame names must be integer indices") from error
+    selected = np.linspace(0, len(ordered) - 1, min(frames, len(ordered))).round().astype(int)
+    selected = [ordered[index] for index in np.unique(selected)]
+    panel_size = (480, 270)
+    palette = np.asarray([[0, 0, 0], [0, 208, 190], [229, 58, 145]], dtype=np.uint8)
+    outputs = []
+    for name in selected:
+        rgb = np.asarray(Image.open(paths["rgb"][name]).convert("RGB"))
+        depth = np.load(paths["depth"][name], allow_pickle=False)
+        binary_mask = np.asarray(Image.open(paths["mask"][name]))
+        mask = binary_mask > 0
+        links = np.asarray(Image.open(paths["link"][name]))
+        if (
+            depth.shape != rgb.shape[:2]
+            or mask.shape != depth.shape
+            or links.shape != depth.shape
+            or not np.isfinite(depth).all()
+            or np.any(depth < 0)
+            or not set(np.unique(binary_mask)) <= {0, 255}
+            or not set(np.unique(links)) <= {0, 1, 2}
+            or not np.array_equal(mask, links > 0)
+        ):
+            raise DomainValidationError("video preview found invalid synchronized observations")
+        overlay = rgb.copy()
+        overlay[mask] = (0.45 * overlay[mask] + 0.55 * np.array([0, 208, 190])).astype(
+            np.uint8
+        )
+        valid = depth > 0
+        if not np.any(valid):
+            depth_rgb = np.zeros_like(rgb)
+        else:
+            lower, upper = np.quantile(depth[valid], [0.02, 0.98])
+            normalized = np.clip((depth.astype(float) - lower) / max(upper - lower, 1e-12), 0, 1)
+            depth_rgb = (colormaps["turbo_r"](normalized)[..., :3] * 255).astype(np.uint8)
+            depth_rgb[~valid] = 0
+        link_rgb = palette[np.clip(links.astype(int), 0, len(palette) - 1)]
+        panels = [rgb, overlay, depth_rgb, link_rgb]
+        captions = ["RGB", "Foreground mask", "Depth", "Link mask"]
+        canvas = Image.new("RGB", (960, 596), "white")
+        draw = ImageDraw.Draw(canvas)
+        draw.text((12, 6), f"Video observations · frame {name}", fill="black")
+        for index, (array, caption) in enumerate(zip(panels, captions)):
+            image = Image.fromarray(array).resize(panel_size, Image.Resampling.LANCZOS)
+            x, y = (index % 2) * 480, 28 + (index // 2) * 284
+            canvas.paste(image, (x, y + 14))
+            draw.text((x + 8, y), caption, fill="black")
+        outputs.append(canvas)
+    stream = io.BytesIO()
+    try:
+        outputs[0].save(
+            stream,
+            format="GIF",
+            save_all=True,
+            append_images=outputs[1:],
+            duration=round(1000 / fps),
+            loop=0,
+            disposal=2,
+            comment=json.dumps(
+                {"source_directory": str(directory), "frame_ids": selected, "fps": fps}
+            ).encode(),
+        )
+        return store.put_bytes(stream.getvalue(), media_type="image/gif")
+    finally:
+        for image in outputs:
+            image.close()
+
+
+def preview_physics_report(
+    store: ArtifactStore,
+    prior: ArtifactRef,
+    feasibility: ArtifactRef,
+    readiness: ArtifactRef,
+) -> ArtifactRef:
+    """Show uncertainty and measured simulation diagnostics without implying video fitting ran."""
+    import numpy as np
+    from matplotlib.figure import Figure
+
+    prediction = read_json(store, prior, "physrealx.visual-physics-prior/1")
+    report = read_json(store, feasibility, "physrealx.physical-feasibility-report/1")
+    video = read_json(store, readiness, "physrealx.video-physics-readiness/1")
+    assembly = read_json(
+        store,
+        ArtifactRef.model_validate(report["source_assembly"]),
+        "physrealx.asset-assembly-bundle/1",
+    )
+    if prior.artifact_id not in {ref["artifact_id"] for ref in assembly["asset_spec"]["evidence"]}:
+        raise DomainValidationError("physics preview prior does not belong to audited assembly")
+    figure = Figure(figsize=(10, 3.2), dpi=140, layout="constrained")
+    left, right = figure.subplots(1, 2)
+    bodies = prediction["prediction"]["bodies"]
+    masses = [v["mass_kg"] for v in bodies.values()]
+    values = np.array([v["value"] for v in masses])
+    errors = np.array(
+        [[v["value"] - v["lower"] for v in masses], [v["upper"] - v["value"] for v in masses]]
+    )
+    left.errorbar(list(bodies), values, yerr=errors, fmt="o", capsize=6, color="#2563eb")
+    implementation = prediction.get("prior_implementation", "VLM")
+    left.set(title=f"VLM mass priors · {implementation.split('/')[-1]}", ylabel="kg")
+    left.grid(axis="y", alpha=0.2)
+    rows = report["sweep"]
+    right.plot([v["q"] for v in rows], [1000 * v["penetration_m"] for v in rows], color="#dc2626")
+    right.axhline(1000 * report["config"]["penetration_tolerance_m"], linestyle="--", color="gray")
+    right.set(
+        title=f"Collision sweep: {report['status']}",
+        xlabel="Joint position (native unit)",
+        ylabel="Penetration (mm)",
+    )
+    right.grid(alpha=0.2)
+    figure.suptitle(
+        f"Fixed start/end | Video: {video['geometry_status']} | Physics remains PRIOR", fontsize=10
+    )
+    stream = io.BytesIO()
+    figure.savefig(stream, format="png")
+    figure.clear()
+    return store.put_bytes(stream.getvalue(), media_type="image/png")
 
 
 def preview_physical_asset(
@@ -106,12 +248,21 @@ def preview_physical_asset(
                     brightness = 0.45 + 0.55 * np.clip(
                         normals @ (np.array([1, -1, 2]) / np.sqrt(6)), 0, 1
                     )
-                    base = (
-                        visual_colors[link]
-                        if role is GeometryRole.VISUAL
-                        else collision_palette[mesh_index % len(collision_palette)]
-                    )
-                    face_colors.append(brightness[:, None] * np.asarray(base))
+                    if (
+                        role is GeometryRole.VISUAL
+                        and getattr(mesh.visual, "kind", None) == "vertex"
+                        and len(mesh.visual.vertex_colors) == len(mesh.vertices)
+                    ):
+                        base = np.asarray(mesh.visual.vertex_colors)[mesh.faces, :3].mean(axis=1)
+                        base = base / 255.0
+                    else:
+                        color = (
+                            visual_colors[link]
+                            if role is GeometryRole.VISUAL
+                            else collision_palette[mesh_index % len(collision_palette)]
+                        )
+                        base = np.tile(color, (len(mesh.faces), 1))
+                    face_colors.append(brightness[:, None] * base)
                 collection.set_verts(np.concatenate(triangles))
                 collection.set_facecolor(np.concatenate(face_colors))
             canvas.draw()

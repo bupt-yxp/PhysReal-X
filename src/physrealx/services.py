@@ -789,6 +789,18 @@ class AssetsService:
 
         return preview_physical_asset(self._platform.artifacts, assembly, frames=frames, fps=fps)
 
+    def register_reconstruction_geometry(
+        self, reconstruction: ArtifactRef, registration: ArtifactRef
+    ) -> ArtifactRef:
+        """Bind real reconstructed parts to registered articulated link rest frames."""
+        from physrealx.integrations.reconstructed_asset import (
+            register_reconstruction_geometry,
+        )
+
+        return register_reconstruction_geometry(
+            self._platform.artifacts, reconstruction, registration
+        )
+
     def validate(
         self,
         asset: AssetSpec | VersionedRef,
@@ -801,6 +813,26 @@ class AssetsService:
         except ValueError as error:
             raise DomainValidationError(f"unknown asset validation profile: {profile!r}") from error
         return self._platform._validate_asset(target, selected_profile)
+
+    def preview_physics_report(
+        self,
+        prior: ArtifactRef,
+        feasibility: ArtifactRef,
+        readiness: ArtifactRef,
+    ) -> ArtifactRef:
+        from physrealx.integrations.physical_preview import preview_physics_report
+
+        return preview_physics_report(self._platform.artifacts, prior, feasibility, readiness)
+
+    def preview_physics_video(
+        self, directory: Path, *, frames: int = 24, fps: int = 8
+    ) -> ArtifactRef:
+        """Animate synchronized RGB, depth and manually reviewed object/link masks."""
+        from physrealx.integrations.physical_preview import preview_physics_video
+
+        return preview_physics_video(
+            self._platform.artifacts, directory, frames=frames, fps=fps
+        )
 
     def articulate(
         self,
@@ -842,6 +874,64 @@ class AssetsService:
             method,
             inputs={"evidence": evidence},
             config=config,
+        )
+
+    def predict_physics(
+        self,
+        reference: ArtifactRef,
+        registration: ArtifactRef,
+        geometry: ArtifactRef,
+        images: tuple[ArtifactRef, ...],
+        *,
+        python: str,
+        model: str,
+        revision: str,
+    ) -> ArtifactRef:
+        """Initialize per-body and joint priors with a pinned local VLM implementation."""
+        from physrealx.integrations.physical_estimation import predict_physics
+
+        return predict_physics(
+            self._platform.artifacts,
+            reference,
+            registration,
+            geometry,
+            images,
+            python=python,
+            model=model,
+            revision=revision,
+        )
+
+    def refine_video_geometry(
+        self,
+        evidence: ArtifactRef,
+        *,
+        config: Mapping[str, JSONValue] | None = None,
+    ) -> ArtifactRef:
+        """Refine observed surfaces without changing the start/end joint range."""
+        from physrealx.integrations.video_geometry import (
+            GeometryRefinementConfig,
+            refine_video_geometry,
+        )
+
+        return refine_video_geometry(
+            self._platform.artifacts,
+            evidence,
+            config=GeometryRefinementConfig.model_validate(config or {}),
+        )
+
+    def check_physics_feasibility(
+        self,
+        assembly: ArtifactRef,
+        *,
+        config: Mapping[str, JSONValue] | None = None,
+    ) -> ArtifactRef:
+        """Audit collision clearance and dynamics; does not certify measured physical truth."""
+        from physrealx.integrations.physical_feasibility import FeasibilityConfig, check_feasibility
+
+        return check_feasibility(
+            self._platform.artifacts,
+            assembly,
+            config=FeasibilityConfig.model_validate(config or {}),
         )
 
     def validate_physics(

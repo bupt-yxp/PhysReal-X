@@ -8,9 +8,33 @@ python -m pip install -e '.[physical]'
 
 阶段输入均为已经写入当前制品库的 `ArtifactRef`。所有数值必须明确单位、来源与不确定度，缺失物性不会自动补默认值。
 
-## oven4 的显式先验路径
+## 功能二：真实重建、VLM 先验与仿真检查
 
-模块二使用 `reference_asset_assembly`：读取显式投影后的 USD 部件/关节，逐 link 构建 CoACD 碰撞体，明确给出密度、摩擦、恢复系数、阻尼、关节摩擦和作用力上限。质量先验从封闭凸碰撞代理体积之和与指定密度计算（重叠体积可能重复计入），惯量为包围盒近似，全部保持 `source=default / confidence=0 / evidence_state=prior`。
+`examples/physical_asset_building/demo.ipynb` 使用 laptop1。流程复用现有碰撞、装配和 USD 接口，不另建资产体系：
+
+1. `px.assets.register_reconstruction_geometry(reconstruction, registration)` 将模块一的 ArtGS 逐部件网格转换到已注册的 link 静止坐标。各部件保留共享参考原点，装配时再且仅再转换一次到关节局部坐标。参考 USD 只提供拓扑、关节与坐标注册，不再充当视觉或碰撞几何。
+2. `px.assets.predict_physics(reference, registration, geometry, images, python=..., model=..., revision=...)`
+   在独立进程运行固定版本的 VLM；当前示例方法为 Qwen3-VL。输出逐部件质量、材质、摩擦和恢复系数，以及逐关节阻尼、摩擦和载荷预算的候选范围。重心和惯量使用显式均匀包围盒近似，`confidence=0`。
+3. `px.assets.refine_video_geometry(evidence, config=...)` 对真实重建表面进行有界法向修正，并通过未参与拟合的帧检查。不修改关节轴、原点或 `start/end` 范围。
+4. 装配前从最终视觉网格重建 CoACD 碰撞体；`px.assets.check_physics_feasibility(assembly)` 扫描完整锁定范围并执行零外力回放。失败不会自动缩小运动范围。
+
+输出包括注册后的真实重建几何、VLM 先验、视频就绪报告、可选几何修正、碰撞体、资产装配、USD 和可行性报告，以及视频观测与资产动画。
+
+### 视频证据
+
+`physrealx.integrations.video_geometry.VideoGeometryEvidence` 使用不可变制品引用：
+
+- `reference`、`registration`、`source_geometry`、`capture_id`、显式 `depth_scale_m`；
+- `link_ids`：每个部件对应唯一正整数，0 表示背景、手或不可用像素；
+- `frames`：唯一帧 ID、`fit/check` 分组、对齐的深度 NPY、部件标签 PNG、`(fx,fy,cx,cy)`、OpenCV `camera_from_reference` 刚体矩阵以及逐关节位置。
+
+拟合和检查不能复用同一深度制品，每个部件至少需要各两帧有效观测。输入深度不允许 NaN/Inf，无效像素使用 0。当前支持单关节参考模型、单网格部件；不支持的情况明确返回诊断。原始 RGB-D 文件不等于该证据契约：不能猜测相机位姿、帧率或手部施力，也不把 VLM 的接触判断当成力传感器数据。
+
+当前 laptop1 视频有 186 帧同步 RGB/Depth、整物体 Mask 和部件 Mask。相机位姿尚未提供，因此 Demo 展示观测动画但不执行表面修正。手部施力未知时，动力学参数保持 VLM 先验；具有已知作用量和独立采集的数据可继续使用下文的 `bounded_inverse_dynamics`。
+
+### 显式先验路径
+
+显式提供参数时，`reference_asset_assembly` 读取投影后的 USD 部件/关节，逐 link 构建 CoACD 碰撞体，并使用给定的密度、摩擦、恢复系数、阻尼、关节摩擦和作用力上限。此路径的质量先验从封闭凸碰撞代理体积之和与指定密度计算（重叠体积可能重复计入），惯量为包围盒近似，保持 `source=default / confidence=0 / evidence_state=prior`。
 
 相邻部件接触由关节模型表示时，显式记录 `contact_exclusions`；MuJoCo 和 USD FilteredPairsAPI 使用同一排除关系，外部机器人接触保持开启。原始非流形 CAD 若需要 CoACD 修复，必须显式选择 `preprocessing="coacd"`，封闭源网格检查体积偏差；开放源表面不计算无定义的体积误差，改为检查源表面与碰撞代理外表面的双向 P95 距离。没有把修复网格或模型先验当作独立测量。
 
