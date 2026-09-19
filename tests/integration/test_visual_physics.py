@@ -35,7 +35,7 @@ def fixture(px, overlap, joint_origin=(0, 0, 0), localized_overlap=False):
         if name == "cover" and localized_overlap:
             intrusion = trimesh.creation.box([0.06, 0.04, 0.015])
             intrusion.apply_translation([0, 0, -0.05])
-            geometry = trimesh.Scene([mesh, intrusion])
+            geometry = trimesh.util.concatenate([mesh, intrusion])
         links.append(
             {
                 "name": name,
@@ -213,7 +213,7 @@ def test_collision_fails_without_reducing_observed_range(tmp_path):
     assert result["adjacent_contact_filter_disabled_for_audit"]
 
 
-def test_joint_local_collision_refinement_preserves_visuals_and_range(tmp_path):
+def test_joint_local_geometry_refinement_removes_visual_ghost_and_preserves_range(tmp_path):
     px = PhysRealX.open(tmp_path)
     request, _, _, _ = fixture(px, False, localized_overlap=True)
     assembled = px.assets.assemble(
@@ -223,14 +223,16 @@ def test_joint_local_collision_refinement_preserves_visuals_and_range(tmp_path):
     failed = px.assets.check_physics_feasibility(assembled, config=check_config)
     assert json.loads(px.artifacts.get_bytes(failed))["status"] == "FAILED"
 
-    refinement = px.assets.optimize_articulated_collision(assembled, failed)
+    refinement = px.assets.refine_articulated_geometry(assembled, failed)
     report = json.loads(px.artifacts.get_bytes(refinement))
     assert report["status"] == "PASSED"
     assert report["after"]["max_penetration_m"] <= 1e-6
-    assert report["visual_geometry_unchanged"]
+    assert report["visual_geometry_refined"]
     assert report["joint_model_unchanged"]
     assert report["parent_child_collision_enabled"]
     assert report["removed_volume_fraction"] < 0.2
+    assert report["removed_surface_fraction"] < 0.25
+    assert report["surface_error_p95_m"] < 0.008
 
     candidate = ArtifactRef.model_validate(report["candidate_assembly_input"])
     refined = px.assets.assemble(candidate, method="reference_asset_assembly").output(
@@ -247,9 +249,14 @@ def test_joint_local_collision_refinement_preserves_visuals_and_range(tmp_path):
         json.loads(px.artifacts.get_bytes(refined))["asset_spec"]
     )
     assert (after_asset.joints[0].lower_limit, after_asset.joints[0].upper_limit) == (-0.3, 0.3)
-    assert {
-        item.name: item.uri for item in before_asset.geometries if item.role.value == "visual"
-    } == {item.name: item.uri for item in after_asset.geometries if item.role.value == "visual"}
+    before_visuals = {
+        item.link: item.uri for item in before_asset.geometries if item.role.value == "visual"
+    }
+    after_visuals = {
+        item.link: item.uri for item in after_asset.geometries if item.role.value == "visual"
+    }
+    assert before_visuals["body"] == after_visuals["body"]
+    assert before_visuals["cover"] != after_visuals["cover"]
 
 
 def test_invalid_prediction_and_wrong_source_are_rejected(tmp_path):

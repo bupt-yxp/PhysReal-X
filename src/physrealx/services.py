@@ -941,24 +941,24 @@ class AssetsService:
             config=FeasibilityConfig.model_validate(config or {}),
         )
 
-    def optimize_articulated_collision(
+    def refine_articulated_geometry(
         self,
         assembly: ArtifactRef,
         feasibility: ArtifactRef,
         *,
         config: Mapping[str, JSONValue] | None = None,
     ) -> ArtifactRef:
-        """Refine joint-local collision fragments without changing visuals or limits."""
-        from physrealx.integrations.collision_refinement import (
-            CollisionRefinementConfig,
-            optimize_articulated_collision,
+        """Repair matching visual and collision ghosts without changing joint limits."""
+        from physrealx.integrations.articulated_geometry import (
+            ArticulatedGeometryRefinementConfig,
+            refine_articulated_geometry,
         )
 
-        return optimize_articulated_collision(
+        return refine_articulated_geometry(
             self._platform.artifacts,
             assembly,
             feasibility,
-            config=CollisionRefinementConfig.model_validate(config or {}),
+            config=ArticulatedGeometryRefinementConfig.model_validate(config or {}),
         )
 
     def validate_physics(

@@ -60,6 +60,7 @@ class ReferenceAssemblyInput(DomainModel):
     physics_prior: PhysicsPrior | None = None
     predicted_physics: ArtifactRef | None = None
     geometry_refinement: ArtifactRef | None = None
+    articulated_geometry_refinement: ArtifactRef | None = None
     registration: ArtifactRef | None = None
 
     @model_validator(mode="after")
@@ -161,6 +162,45 @@ def reference_prior_asset(source: ArtifactRef, artifacts: ArtifactStore) -> Asse
         for link in reference["links"]:
             link["geometry"] = refined["geometries"][link["name"]]
         refinement_evidence = (request.geometry_refinement,)
+    articulation_evidence: tuple[ArtifactRef, ...] = ()
+    if request.articulated_geometry_refinement is not None:
+        from physrealx.integrations.physical_estimation import locked_motion
+
+        refined = read_json(
+            artifacts,
+            request.articulated_geometry_refinement,
+            "physrealx.articulated-geometry-refinement/1",
+        )
+        if request.registration is None:
+            raise DomainValidationError("articulated geometry refinement requires registration")
+        registration = read_json(
+            artifacts, request.registration, "physrealx.metric-alignment-report/1"
+        )
+        expected_upstream = (
+            request.geometry_refinement.model_dump(mode="json")
+            if request.geometry_refinement is not None
+            else None
+        )
+        if (
+            refined.get("status") != "PASSED"
+            or refined.get("visual_geometry_changed") is not True
+            or refined.get("joint_model_changed") is not False
+            or refined["source_reference"] != request.reference_model.model_dump(mode="json")
+            or refined.get("source_geometry")
+            != (
+                request.reconstructed_geometry.model_dump(mode="json")
+                if request.reconstructed_geometry is not None
+                else None
+            )
+            or refined.get("upstream_geometry_refinement") != expected_upstream
+            or refined["registration"] != request.registration.model_dump(mode="json")
+            or refined["motion"] != locked_motion(reference, registration)
+            or set(refined["geometries"]) != {link["name"] for link in reference["links"]}
+        ):
+            raise DomainValidationError("articulated geometry refinement changed its sources")
+        for link in reference["links"]:
+            link["geometry"] = refined["geometries"][link["name"]]
+        articulation_evidence = (request.articulated_geometry_refinement,)
     if reference.get("unit") != "m" or reference.get("coordinate_frame") != "reference_z_up":
         raise DomainValidationError("reference assembly requires canonical metric Z-up geometry")
     links = {item["name"]: item for item in reference["links"]}
@@ -196,8 +236,13 @@ def reference_prior_asset(source: ArtifactRef, artifacts: ArtifactStore) -> Asse
             )
             if (
                 source_report.get("link") != name
-                or source_report.get("source_geometry") != links[name]["geometry"]
-                or refinement.get("visual_geometry_changed") is not False
+                or source_report.get("source_geometry")
+                != refinement.get("source_geometry_before")
+                or refinement.get("source_geometry_after") != links[name]["geometry"]
+                or request.articulated_geometry_refinement is None
+                or refinement.get("geometry_refinement")
+                != request.articulated_geometry_refinement.model_dump(mode="json")
+                or refinement.get("visual_geometry_changed") is not True
                 or refinement.get("joint_model_changed") is not False
                 or refinement.get("parent_child_collision_disabled") is not False
             ):
@@ -344,6 +389,7 @@ def reference_prior_asset(source: ArtifactRef, artifacts: ArtifactStore) -> Asse
             *appearance_evidence,
             *prediction_evidence,
             *refinement_evidence,
+            *articulation_evidence,
         ),
         metadata={
             **appearance,
@@ -354,7 +400,9 @@ def reference_prior_asset(source: ArtifactRef, artifacts: ArtifactStore) -> Asse
             ),
             "independent_physical_validation": False,
             "geometry_source": (
-                "real_artgs_reconstruction"
+                "articulation_refined_real_reconstruction"
+                if request.articulated_geometry_refinement is not None
+                else "real_artgs_reconstruction"
                 if request.reconstructed_geometry is not None
                 else "reference_model"
             ),

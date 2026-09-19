@@ -16,7 +16,7 @@ python -m pip install -e '.[physical]'
 2. `px.assets.predict_physics(reference, registration, geometry, images, python=..., model=..., revision=...)`
    在独立进程运行固定版本的 VLM；当前示例方法为 Qwen3-VL。输出逐部件质量、材质、摩擦和恢复系数，以及逐关节阻尼、摩擦和载荷预算的候选范围。重心和惯量使用显式均匀包围盒近似，`confidence=0`。
 3. `px.assets.refine_video_geometry(evidence, config=...)` 对真实重建表面进行有界法向修正，并通过未参与拟合的帧检查。不修改关节轴、原点或 `start/end` 范围。
-4. 装配前从最终视觉网格重建 CoACD 碰撞体；`px.assets.check_physics_feasibility(assembly)` 扫描完整锁定范围并执行零外力回放。若穿插仅来自铰链局部的重建碎片，`px.assets.optimize_articulated_collision(assembly, feasibility)` 剔除对应子部件凸块后重新验收；视觉网格、父子碰撞、关节轴和 `start/end` 范围保持不变。超出局部带或体积阈值时拒绝自动修正。
+4. 装配前从最终视觉网格重建 CoACD 碰撞体；`px.assets.check_physics_feasibility(assembly)` 扫描完整锁定范围并执行零外力回放。若穿插来自误分到可动部件的局部重建残片，`px.assets.refine_articulated_geometry(assembly, feasibility)` 同步移除错误视觉面及其碰撞凸块，再校验两者表面误差并重新验收。父子碰撞、关节轴和 `start/end` 范围保持不变；超出局部范围、面积或体积阈值时拒绝自动修正。
 
 输出包括注册后的真实重建几何、VLM 先验、视频就绪报告、可选几何修正、碰撞体、资产装配、USD 和可行性报告，以及视频观测与资产动画。
 
