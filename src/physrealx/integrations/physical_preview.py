@@ -40,8 +40,10 @@ def preview_physics_video(
         ordered = sorted(names, key=int)
     except ValueError as error:
         raise DomainValidationError("video frame names must be integer indices") from error
-    selected = np.linspace(0, len(ordered) - 1, min(frames, len(ordered))).round().astype(int)
-    selected = [ordered[index] for index in np.unique(selected)]
+    selected_indices = (
+        np.linspace(0, len(ordered) - 1, min(frames, len(ordered))).round().astype(int)
+    )
+    selected = [ordered[index] for index in np.unique(selected_indices)]
     panel_size = (480, 270)
     palette = np.asarray([[0, 0, 0], [0, 208, 190], [229, 58, 145]], dtype=np.uint8)
     outputs = []
@@ -111,6 +113,7 @@ def preview_physics_report(
     prior: ArtifactRef,
     feasibility: ArtifactRef,
     readiness: ArtifactRef,
+    initial_feasibility: ArtifactRef | None = None,
 ) -> ArtifactRef:
     """Show uncertainty and measured simulation diagnostics without implying video fitting ran."""
     import numpy as np
@@ -139,13 +142,32 @@ def preview_physics_report(
     left.set(title=f"VLM mass priors · {implementation.split('/')[-1]}", ylabel="kg")
     left.grid(axis="y", alpha=0.2)
     rows = report["sweep"]
-    right.plot([v["q"] for v in rows], [1000 * v["penetration_m"] for v in rows], color="#dc2626")
+    if initial_feasibility is not None:
+        initial = read_json(
+            store, initial_feasibility, "physrealx.physical-feasibility-report/1"
+        )
+        initial_rows = initial["sweep"]
+        if initial["locked_range"] != report["locked_range"]:
+            raise DomainValidationError("collision comparison changed the locked joint range")
+        right.plot(
+            [v["q"] for v in initial_rows],
+            [1000 * v["penetration_m"] for v in initial_rows],
+            color="#dc2626",
+            label="initial",
+        )
+    right.plot(
+        [v["q"] for v in rows],
+        [1000 * v["penetration_m"] for v in rows],
+        color="#059669",
+        label="refined" if initial_feasibility is not None else "sweep",
+    )
     right.axhline(1000 * report["config"]["penetration_tolerance_m"], linestyle="--", color="gray")
     right.set(
         title=f"Collision sweep: {report['status']}",
         xlabel="Joint position (native unit)",
         ylabel="Penetration (mm)",
     )
+    right.legend()
     right.grid(alpha=0.2)
     figure.suptitle(
         f"Fixed start/end | Video: {video['geometry_status']} | Physics remains PRIOR", fontsize=10

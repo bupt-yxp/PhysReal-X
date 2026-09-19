@@ -6,4 +6,4 @@
 
 首次推理需指定 VLM 的 Python、模型和版本；已导出的预测仅在重建几何与图像一致时复用。
 
-可视化包括 RGB/Depth/Mask 视频、视觉/碰撞体动画和物理检查图。当前视频已含逐帧 Mask；表面修正仍需相机位姿。证据格式见[模块说明](../../docs/user-guide/physical-assets.md)。
+可视化包括 RGB/Depth/Mask 视频、视觉/碰撞体动画和物理检查图。碰撞失败会在保持视觉网格和关节范围不变的前提下修正铰链局部代理并重新验收。当前视频已含逐帧 Mask；表面修正仍需相机位姿。证据格式见[模块说明](../../docs/user-guide/physical-assets.md)。

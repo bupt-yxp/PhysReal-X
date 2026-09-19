@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import xml.etree.ElementTree as ET
 from itertools import combinations
+from typing import Any
 
 from pydantic import Field
 
@@ -21,16 +22,16 @@ class FeasibilityConfig(DomainModel):
     rollout_seconds: float = Field(default=1.0, gt=0, le=10)
 
 
-def check_feasibility(
+def evaluate_asset_feasibility(
     store: ArtifactStore,
-    assembly: ArtifactRef,
+    asset: Any,
     *,
     config: FeasibilityConfig,
-) -> ArtifactRef:
+) -> dict[str, Any]:
+    """Evaluate one articulated asset and retain the geometry pairs behind failures."""
     import mujoco
     import numpy as np
 
-    asset = assembled_asset(read_json(store, assembly, "physrealx.asset-assembly-bundle/1"), store)
     if len(asset.joints) != 1:
         raise DomainValidationError("feasibility sweep currently requires one articulated joint")
     joint = asset.joints[0]
@@ -57,12 +58,16 @@ def check_feasibility(
     # filters adjacent bodies; exclusions must never hide geometry defects in this check.
     for child in list(contact):
         contact.remove(child)
-    geoms = [
-        (body.attrib["name"], geom.attrib["name"])
-        for body in root.iter("body")
-        for geom in body.findall("geom")
-        if geom.get("contype") == "1"
-    ]
+    geoms = []
+    geom_links: dict[str, str] = {}
+    for body in root.iter("body"):
+        body_name = body.attrib["name"]
+        for geom in body.findall("geom"):
+            if geom.get("contype") != "1":
+                continue
+            name = geom.attrib["name"]
+            geoms.append((body_name, name))
+            geom_links[name] = body_name.split("/", 1)[-1]
     for (body_a, geom_a), (body_b, geom_b) in combinations(geoms, 2):
         if body_a != body_b:
             ET.SubElement(contact, "pair", geom1=geom_a, geom2=geom_b)
@@ -73,12 +78,39 @@ def check_feasibility(
     address = int(model.joint(f"asset/{joint.name}").qposadr[0])
     positions = np.linspace(joint.lower_limit, joint.upper_limit, config.sweep_samples)
     rows = []
+    pair_stats: dict[tuple[str, str], dict[str, Any]] = {}
     for q in positions:
         mujoco.mj_resetData(model, data)
         data.qpos[address] = q
         mujoco.mj_forward(model, data)
-        worst = min((float(c.dist) for c in data.contact), default=0.0)
-        rows.append({"q": float(q), "penetration_m": max(0.0, -worst), "contacts": int(data.ncon)})
+        worst = 0.0
+        for item in data.contact:
+            distance = float(item.dist)
+            worst = min(worst, distance)
+            penetration = max(0.0, -distance)
+            if penetration <= 0:
+                continue
+            names = (
+                mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, int(item.geom1)),
+                mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, int(item.geom2)),
+            )
+            left, right = sorted(names)
+            stats = pair_stats.setdefault(
+                (left, right),
+                {
+                    "geom_a": left,
+                    "link_a": geom_links[left],
+                    "geom_b": right,
+                    "link_b": geom_links[right],
+                    "samples": 0,
+                    "max_penetration_m": 0.0,
+                },
+            )
+            stats["samples"] += 1
+            stats["max_penetration_m"] = max(stats["max_penetration_m"], penetration)
+        rows.append(
+            {"q": float(q), "penetration_m": max(0.0, -worst), "contacts": int(data.ncon)}
+        )
     rollouts = []
     for q in (joint.lower_limit, (joint.lower_limit + joint.upper_limit) / 2, joint.upper_limit):
         mujoco.mj_resetData(model, data)
@@ -98,21 +130,40 @@ def check_feasibility(
         rollouts.append({"initial_q": q, "stable": stable, "peak_speed": peak_speed})
     maximum = max(row["penetration_m"] for row in rows)
     passed = maximum <= config.penetration_tolerance_m and all(r["stable"] for r in rollouts)
+    return {
+        "status": "PASSED" if passed else "FAILED",
+        "locked_range": [joint.lower_limit, joint.upper_limit],
+        "max_penetration_m": maximum,
+        "sweep": rows,
+        "rollouts": rollouts,
+        "collision_pairs": sorted(
+            pair_stats.values(), key=lambda value: value["max_penetration_m"], reverse=True
+        ),
+    }
+
+
+def check_feasibility(
+    store: ArtifactStore,
+    assembly: ArtifactRef,
+    *,
+    config: FeasibilityConfig,
+) -> ArtifactRef:
+    import mujoco
+
+    asset = assembled_asset(read_json(store, assembly, "physrealx.asset-assembly-bundle/1"), store)
+    evaluation = evaluate_asset_feasibility(store, asset, config=config)
     return store.put_json(
         {
             "schema": "physrealx.physical-feasibility-report/1",
             "source_assembly": assembly.model_dump(mode="json"),
-            "status": "PASSED" if passed else "FAILED",
+            "status": evaluation["status"],
             "backend": "mujoco",
             "backend_version": mujoco.__version__,
             "config": config.model_dump(mode="json"),
             "scope": "fixed_root_collision_sweep_and_zero_effort_rollouts",
             "physical_validation": False,
             "evidence_state": asset.evidence_state.value,
-            "locked_range": [joint.lower_limit, joint.upper_limit],
-            "max_penetration_m": maximum,
-            "sweep": rows,
-            "rollouts": rollouts,
+            **evaluation,
             "adjacent_contact_filter_disabled_for_audit": True,
             "limitations": [
                 "discrete sweep, not continuous collision certification",

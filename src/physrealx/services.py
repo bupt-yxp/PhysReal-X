@@ -819,10 +819,17 @@ class AssetsService:
         prior: ArtifactRef,
         feasibility: ArtifactRef,
         readiness: ArtifactRef,
+        initial_feasibility: ArtifactRef | None = None,
     ) -> ArtifactRef:
         from physrealx.integrations.physical_preview import preview_physics_report
 
-        return preview_physics_report(self._platform.artifacts, prior, feasibility, readiness)
+        return preview_physics_report(
+            self._platform.artifacts,
+            prior,
+            feasibility,
+            readiness,
+            initial_feasibility,
+        )
 
     def preview_physics_video(
         self, directory: Path, *, frames: int = 24, fps: int = 8
@@ -932,6 +939,26 @@ class AssetsService:
             self._platform.artifacts,
             assembly,
             config=FeasibilityConfig.model_validate(config or {}),
+        )
+
+    def optimize_articulated_collision(
+        self,
+        assembly: ArtifactRef,
+        feasibility: ArtifactRef,
+        *,
+        config: Mapping[str, JSONValue] | None = None,
+    ) -> ArtifactRef:
+        """Refine joint-local collision fragments without changing visuals or limits."""
+        from physrealx.integrations.collision_refinement import (
+            CollisionRefinementConfig,
+            optimize_articulated_collision,
+        )
+
+        return optimize_articulated_collision(
+            self._platform.artifacts,
+            assembly,
+            feasibility,
+            config=CollisionRefinementConfig.model_validate(config or {}),
         )
 
     def validate_physics(

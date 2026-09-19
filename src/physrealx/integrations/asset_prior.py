@@ -186,6 +186,22 @@ def reference_prior_asset(source: ArtifactRef, artifacts: ArtifactStore) -> Asse
             or report["source_geometry"] != links[name]["geometry"]
         ):
             raise DomainValidationError("collision evidence differs from the supplied visual mesh")
+        refinement = report.get("articulation_refinement")
+        if refinement is not None:
+            source_report_ref = ArtifactRef.model_validate(
+                refinement.get("source_collision_report")
+            )
+            source_report = read_json(
+                artifacts, source_report_ref, "physrealx.collision-build-report/1"
+            )
+            if (
+                source_report.get("link") != name
+                or source_report.get("source_geometry") != links[name]["geometry"]
+                or refinement.get("visual_geometry_changed") is not False
+                or refinement.get("joint_model_changed") is not False
+                or refinement.get("parent_child_collision_disabled") is not False
+            ):
+                raise DomainValidationError("collision refinement changed immutable asset evidence")
         collision = load_meshes(artifacts, ArtifactRef.model_validate(report["collision_geometry"]))
         if any(not mesh.is_volume or not mesh.is_convex for mesh in collision):
             raise DomainValidationError("collision artifact does not contain closed convex parts")

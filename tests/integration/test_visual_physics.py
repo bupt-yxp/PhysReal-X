@@ -26,16 +26,21 @@ def estimate(value):
     }
 
 
-def fixture(px, overlap, joint_origin=(0, 0, 0)):
+def fixture(px, overlap, joint_origin=(0, 0, 0), localized_overlap=False):
     links = []
     for name, location in (("body", [0, 0, -0.05]), ("cover", [0, 0, -0.04 if overlap else 0.15])):
         mesh = trimesh.creation.box([0.3, 0.2, 0.02])
         mesh.apply_translation(location)
+        geometry = mesh
+        if name == "cover" and localized_overlap:
+            intrusion = trimesh.creation.box([0.06, 0.04, 0.015])
+            intrusion.apply_translation([0, 0, -0.05])
+            geometry = trimesh.Scene([mesh, intrusion])
         links.append(
             {
                 "name": name,
                 "geometry": px.artifacts.put_bytes(
-                    mesh.export(file_type="glb"), media_type="model/gltf-binary"
+                    geometry.export(file_type="glb"), media_type="model/gltf-binary"
                 ).model_dump(mode="json"),
             }
         )
@@ -206,6 +211,45 @@ def test_collision_fails_without_reducing_observed_range(tmp_path):
     assert result["max_penetration_m"] > 0.001
     assert result["locked_range"] == [-0.3, 0.3]
     assert result["adjacent_contact_filter_disabled_for_audit"]
+
+
+def test_joint_local_collision_refinement_preserves_visuals_and_range(tmp_path):
+    px = PhysRealX.open(tmp_path)
+    request, _, _, _ = fixture(px, False, localized_overlap=True)
+    assembled = px.assets.assemble(
+        px.artifacts.put_json(request), method="reference_asset_assembly"
+    ).output("asset_assembly")
+    check_config = {"sweep_samples": 31, "rollout_seconds": 0.02}
+    failed = px.assets.check_physics_feasibility(assembled, config=check_config)
+    assert json.loads(px.artifacts.get_bytes(failed))["status"] == "FAILED"
+
+    refinement = px.assets.optimize_articulated_collision(assembled, failed)
+    report = json.loads(px.artifacts.get_bytes(refinement))
+    assert report["status"] == "PASSED"
+    assert report["after"]["max_penetration_m"] <= 1e-6
+    assert report["visual_geometry_unchanged"]
+    assert report["joint_model_unchanged"]
+    assert report["parent_child_collision_enabled"]
+    assert report["removed_volume_fraction"] < 0.2
+
+    candidate = ArtifactRef.model_validate(report["candidate_assembly_input"])
+    refined = px.assets.assemble(candidate, method="reference_asset_assembly").output(
+        "asset_assembly"
+    )
+    final = json.loads(
+        px.artifacts.get_bytes(px.assets.check_physics_feasibility(refined, config=check_config))
+    )
+    assert final["status"] == "PASSED"
+    before_asset = AssetSpec.model_validate(
+        json.loads(px.artifacts.get_bytes(assembled))["asset_spec"]
+    )
+    after_asset = AssetSpec.model_validate(
+        json.loads(px.artifacts.get_bytes(refined))["asset_spec"]
+    )
+    assert (after_asset.joints[0].lower_limit, after_asset.joints[0].upper_limit) == (-0.3, 0.3)
+    assert {
+        item.name: item.uri for item in before_asset.geometries if item.role.value == "visual"
+    } == {item.name: item.uri for item in after_asset.geometries if item.role.value == "visual"}
 
 
 def test_invalid_prediction_and_wrong_source_are_rejected(tmp_path):
