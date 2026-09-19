@@ -230,7 +230,9 @@ def preview_physical_asset(
     figure = Figure(figsize=(9, 3.6), dpi=100, facecolor="white")
     canvas: Any = FigureCanvasAgg(figure)
     collections = []
-    for index, title in enumerate(("Visual geometry", "Collision geometry")):
+    for index, title in enumerate(
+        ("Visual geometry · RGB surface", "Collision proxy · shape only")
+    ):
         axis = figure.add_subplot(1, 2, index + 1, projection="3d")
         axis.set_title(title, fontsize=11, pad=-2, y=0.99)
         axis.set(
@@ -256,13 +258,17 @@ def preview_physical_asset(
         link: visual_palette[index % len(visual_palette)]
         for index, link in enumerate(sorted(asset.links))
     }
-    collision_palette = ((0.95, 0.55, 0.18), (0.84, 0.34, 0.24), (0.62, 0.38, 0.72))
+    collision_palette = ((0.95, 0.55, 0.18), (0.62, 0.38, 0.72), (0.84, 0.34, 0.24))
+    collision_colors = {
+        link: collision_palette[index % len(collision_palette)]
+        for index, link in enumerate(sorted(asset.links))
+    }
     images = []
     try:
         for transforms in states:
             for role, collection in zip((GeometryRole.VISUAL, GeometryRole.COLLISION), collections):
                 triangles, face_colors = [], []
-                for mesh_index, (link, mesh) in enumerate(geometry[role]):
+                for link, mesh in geometry[role]:
                     transform = transforms[link]
                     vertices = trimesh.transform_points(mesh.vertices, transform)
                     triangles.append(vertices[mesh.faces])
@@ -281,7 +287,7 @@ def preview_physical_asset(
                         color = (
                             visual_colors[link]
                             if role is GeometryRole.VISUAL
-                            else collision_palette[mesh_index % len(collision_palette)]
+                            else collision_colors[link]
                         )
                         base = np.tile(color, (len(mesh.faces), 1))
                     face_colors.append(brightness[:, None] * base)
