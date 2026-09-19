@@ -15,6 +15,7 @@ from physrealx.domain import (
     DomainModel,
     Episode,
     MethodCapability,
+    ModelManifest,
     OperationSpec,
     VersionedRef,
 )
@@ -165,6 +166,27 @@ def episode_group(episode: Episode) -> tuple[str, ...]:
     )
 
 
+def model_training_groups(store: ArtifactStore, model_ref: VersionedRef) -> set[tuple[str, ...]]:
+    """Include every ancestor's training data when checking evaluation independence."""
+    model = load_resource(store, model_ref, ModelManifest)
+    seen: set[str] = set()
+    groups: set[tuple[str, ...]] = set()
+    identifier = model_ref.artifact_id
+    while True:
+        if identifier is None or identifier in seen:
+            raise DomainValidationError("model ancestry must be resolved and acyclic")
+        seen.add(identifier)
+        dataset = load_resource(store, model.dataset, DatasetManifest)
+        groups.update(episode_group(load_episode(store, row)) for row in dataset.episodes)
+        checkpoint = model.trainer.checkpoint
+        if checkpoint is None:
+            return groups
+        if checkpoint.media_type != "application/vnd.physrealx.model+json":
+            raise DomainValidationError("model ancestry requires a complete parent manifest")
+        model = ModelManifest.model_validate_json(store.get_bytes(checkpoint))
+        identifier = checkpoint.artifact_id
+
+
 def load_snapshot(
     store: ArtifactStore, reference: ArtifactRef
 ) -> tuple[DatasetSnapshot, DatasetManifest, dict[str, list[Episode]]]:
@@ -209,6 +231,7 @@ def training_subset(
     resource_id: str,
     version: str,
     augmentations: tuple[VersionedRef, ...] = (),
+    excluded_datasets: tuple[VersionedRef, ...] = (),
     required_tag: str | None = None,
     selection: Literal["successful_demonstrations", "all_episodes"] = ("successful_demonstrations"),
 ) -> DatasetManifest:
@@ -221,6 +244,9 @@ def training_subset(
     protected = {
         episode_group(episode) for name in ("validation", "test") for episode in partitions[name]
     }
+    for reference in excluded_datasets:
+        excluded = load_resource(store, reference, DatasetManifest)
+        protected.update(episode_group(load_episode(store, row)) for row in excluded.episodes)
 
     def selected_episode(episode: Episode) -> bool:
         if selection == "all_episodes":
@@ -228,9 +254,18 @@ def training_subset(
         tags = episode.metadata.get("tags", [])
         if not isinstance(tags, list) or any(not isinstance(tag, str) for tag in tags):
             raise DomainValidationError("demonstration tags must be a list of strings")
+        if required_tag == "expert_demonstration" and (
+            "policy_evaluation" in tags or "model_artifact_id" in episode.policy.config
+        ):
+            return False
         return episode.success and (required_tag is None or required_tag in tags)
 
     selected = {episode.episode_id for episode in partitions["train"] if selected_episode(episode)}
+    if any(
+        episode.episode_id in selected and episode_group(episode) in protected
+        for episode in partitions["train"]
+    ):
+        raise DomainValidationError("training selection overlaps an excluded evaluation scenario")
     summaries = [row for row in dataset.episodes if row.episode_id in selected]
     for reference in augmentations:
         extra = load_resource(store, reference, DatasetManifest)
@@ -273,6 +308,7 @@ def training_subset(
             "selection": selection,
             "required_tag": required_tag,
             "augmentations": [ref.model_dump(mode="json") for ref in augmentations],
+            "excluded_datasets": [ref.model_dump(mode="json") for ref in excluded_datasets],
             "protected_groups": len(protected),
         },
     )

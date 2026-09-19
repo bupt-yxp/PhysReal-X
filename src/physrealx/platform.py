@@ -345,26 +345,27 @@ class PhysRealX:
         registered = self.repository.get_dataset(spec.dataset.resource_id, spec.dataset.version)
         if registered.artifact_id != spec.dataset.artifact_id:
             raise ResourceConflictError("training dataset does not match the registry")
+        dataset = self.datasets.get(registered)
+        self.plugins.resolve_method(spec.trainer)
+        if spec.trainer.checkpoint is not None and not self.artifacts.verify(
+            spec.trainer.checkpoint
+        ):
+            raise DomainValidationError("trainer checkpoint is not present in artifact storage")
         try:
             existing = self.repository.get_model(spec.resource_id, spec.version)
         except ResourceNotFoundError:
             existing = None
         if existing is not None:
             manifest = self.training.get_model(existing)
-            if manifest.dataset == registered and manifest.trainer == spec.trainer:
-                return existing
-            raise ResourceConflictError(
-                f"model/{spec.resource_id}@{spec.version} already uses a different training spec"
-            )
-        dataset = self.datasets.get(registered)
-        episodes = (self._executor.load_episode(summary) for summary in dataset.episodes)
-        trainer = self.plugins.trainer(spec.trainer.name)
-        self.plugins.resolve_method(spec.trainer)
-        if spec.trainer.checkpoint is not None and not self.artifacts.verify(
-            spec.trainer.checkpoint
-        ):
-            raise DomainValidationError("trainer checkpoint is not present in artifact storage")
-        manifest = trainer.train(spec, dataset, episodes, self.artifacts)
+            if manifest.dataset != registered or manifest.trainer != spec.trainer:
+                raise ResourceConflictError(
+                    f"model/{spec.resource_id}@{spec.version} "
+                    "already uses a different training spec"
+                )
+        else:
+            episodes = (self._executor.load_episode(summary) for summary in dataset.episodes)
+            trainer = self.plugins.trainer(spec.trainer.name)
+            manifest = trainer.train(spec, dataset, episodes, self.artifacts)
         if (
             manifest.resource_id != spec.resource_id
             or manifest.version != spec.version
@@ -379,6 +380,8 @@ class PhysRealX:
             raise DomainValidationError("trainer changed the dataset action schema")
         if not self.artifacts.verify(manifest.weights):
             raise DomainValidationError("trainer returned unpublished or corrupt model weights")
+        if existing is not None:
+            return existing
         return self._register(
             manifest,
             manifest.reference(),
@@ -428,6 +431,15 @@ class PhysRealX:
                 "base_seed": base_seed,
                 "dataset_id": f"{resource_id}.episodes",
                 "dataset_version": version,
+                "tags": [
+                    *(
+                        tag
+                        for tag in run.tags
+                        if tag
+                        not in {"expert_demonstration", "failure_recovery", "policy_evaluation"}
+                    ),
+                    "policy_evaluation",
+                ],
             }
         )
         evaluation_payload.pop("run_id", None)

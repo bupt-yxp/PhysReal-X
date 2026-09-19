@@ -36,7 +36,12 @@ from physrealx.domain import (
     TaskSpec,
     VersionedRef,
 )
-from physrealx.errors import DomainValidationError, PhysRealXError, ResourceConflictError
+from physrealx.errors import (
+    DomainValidationError,
+    PhysRealXError,
+    ResourceConflictError,
+    ResourceNotFoundError,
+)
 from physrealx.plugins import PluginRegistry
 
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
@@ -122,6 +127,15 @@ class RunExecutor:
         self._repository.transition_run(resolved.run_id, RunStatus.RUNNING)
         summaries: list[EpisodeSummary] = []
         try:
+            try:
+                self._repository.get_dataset(resolved.dataset_id, resolved.dataset_version)
+            except ResourceNotFoundError:
+                pass
+            else:
+                raise ResourceConflictError(
+                    f"dataset/{resolved.dataset_id}@{resolved.dataset_version} already exists; "
+                    "choose a new output identity for a different run"
+                )
             backend = self._plugins.backend(resolved.backend.name)
             self._preflight(backend.capabilities(), task)
             with ExitStack() as resources:

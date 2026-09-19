@@ -352,14 +352,6 @@ _SERVICE_METHOD_CONTRACTS: dict[MethodCapability, _ServiceMethodContract] = {
             _output("planning_report", "PlanningReport/1"),
         ),
     ),
-    MethodCapability.SIMULATION_RUN: _ServiceMethodContract(
-        "SceneSpec/1+TaskSpec/1",
-        ("scene", "task"),
-        (
-            _output("state_trajectory", "StateTrajectory/1"),
-            _output("simulation_report", "SimulationReport/1"),
-        ),
-    ),
     MethodCapability.RENDER_GENERATE: _ServiceMethodContract(
         "StateTrajectory/1",
         ("state_trajectory",),
@@ -1242,14 +1234,42 @@ class SimulationsService:
         scene: VersionedRef,
         task: VersionedRef,
         *,
-        method: str | MethodSpec,
+        backend: str | MethodSpec,
+        policy: MethodSpec,
+        dataset_id: str,
+        dataset_version: str = "1.0.0",
         config: Mapping[str, JSONValue] | None = None,
-    ) -> OperationManifest:
-        return self._platform.methods.execute(
-            MethodCapability.SIMULATION_RUN,
-            method,
-            inputs={"scene": scene, "task": task},
-            config=config,
+        episode_count: int = 1,
+        base_seed: int = 0,
+        stop_on_success: bool = True,
+        record_signals: tuple[str, ...] | None = None,
+    ) -> RunRecord:
+        """Execute a backend through the same lifecycle as runs.submit(RunSpec)."""
+        if isinstance(backend, MethodSpec) and config is not None:
+            raise DomainValidationError("config is already bound in the backend specification")
+        selected = (
+            self._platform.methods.bind(MethodCapability.SIMULATION_RUN, backend, config=config)
+            if isinstance(backend, str)
+            else backend
+        )
+        signals = (
+            tuple(item.name for item in self._platform.tasks.get(task).observations)
+            if record_signals is None
+            else record_signals
+        )
+        return self._platform.runs.submit(
+            RunSpec(
+                scene=scene,
+                task=task,
+                backend=selected,
+                policy=policy,
+                dataset_id=dataset_id,
+                dataset_version=dataset_version,
+                episode_count=episode_count,
+                base_seed=base_seed,
+                stop_on_success=stop_on_success,
+                record_signals=signals,
+            )
         )
 
 
@@ -1381,6 +1401,7 @@ class DatasetsService:
         camera: str | None = None,
         frames: int = 12,
         fps: int = 6,
+        sensor_source: str = "blender",
     ) -> ArtifactRef:
         """Render one recorded episode with synchronized physics and sensor views."""
         from physrealx.integrations.simulation_preview import preview_simulation_episode
@@ -1392,6 +1413,7 @@ class DatasetsService:
             camera=camera,
             frames=frames,
             fps=fps,
+            sensor_source=sensor_source,
         )
 
     def preview_snapshot(
@@ -1440,6 +1462,7 @@ class DatasetsService:
         resource_id: str,
         version: str = "1.0.0",
         augmentations: tuple[VersionedRef, ...] = (),
+        excluded_datasets: tuple[VersionedRef, ...] = (),
         required_tag: str | None = None,
         selection: Literal["successful_demonstrations", "all_episodes"] = (
             "successful_demonstrations"
@@ -1447,35 +1470,30 @@ class DatasetsService:
     ) -> VersionedRef:
         from physrealx.integrations.datasets import training_subset
 
+        selected = training_subset(
+            self._platform.artifacts,
+            snapshot,
+            resource_id=resource_id,
+            version=version,
+            augmentations=augmentations,
+            excluded_datasets=excluded_datasets,
+            required_tag=required_tag,
+            selection=selection,
+        )
         try:
             existing_ref = self._platform.repository.get_dataset(resource_id, version)
         except ResourceNotFoundError:
             existing_ref = None
         if existing_ref is not None:
             existing = self.get(existing_ref)
-            expected = {
-                "snapshot": snapshot.model_dump(mode="json"),
-                "split": "train",
-                "selection": selection,
-                "required_tag": required_tag,
-                "augmentations": [ref.model_dump(mode="json") for ref in augmentations],
-            }
-            if all(existing.metadata.get(key) == value for key, value in expected.items()):
+            if existing.model_dump(exclude={"created_at"}) == selected.model_dump(
+                exclude={"created_at"}
+            ):
                 return existing_ref
             raise ResourceConflictError(
                 f"dataset/{resource_id}@{version} already uses a different training selection"
             )
-        return self.register(
-            training_subset(
-                self._platform.artifacts,
-                snapshot,
-                resource_id=resource_id,
-                version=version,
-                augmentations=augmentations,
-                required_tag=required_tag,
-                selection=selection,
-            )
-        )
+        return self.register(selected)
 
 
 class TrainingService:
@@ -1746,6 +1764,13 @@ class FeedbackService:
     def __init__(self, platform: PhysRealX) -> None:
         self._platform = platform
 
+    def preview_demonstrations(self, datasets: tuple[VersionedRef, ...]) -> ArtifactRef:
+        from physrealx.integrations.feedback_preview import preview_demonstrations
+
+        for reference in datasets:
+            self._platform.datasets.get(reference)
+        return preview_demonstrations(self._platform.artifacts, datasets)
+
     def build_dataset(
         self,
         query: VersionedRef | ArtifactRef,
@@ -1785,16 +1810,22 @@ class FeedbackService:
         initial: VersionedRef,
         updated: VersionedRef,
         *,
+        reference_dataset: VersionedRef | None = None,
         config: Mapping[str, JSONValue] | None = None,
     ) -> ArtifactRef:
         """Gate a candidate policy with paired closed-loop evaluation episodes."""
         from physrealx.integrations.feedback import assess_policy_update
 
+        self._platform.evaluations.get_report(initial)
+        self._platform.evaluations.get_report(updated)
+        if reference_dataset is not None:
+            self._platform.datasets.get(reference_dataset)
         return assess_policy_update(
             self._platform.artifacts,
-            self._platform.evaluations.get_report(initial),
-            self._platform.evaluations.get_report(updated),
+            initial,
+            updated,
             config,
+            reference_dataset=reference_dataset,
         )
 
     def prepare_physics_calibration(

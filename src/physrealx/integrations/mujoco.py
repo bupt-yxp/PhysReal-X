@@ -3,20 +3,16 @@
 from __future__ import annotations
 
 import math
-import re
 import xml.etree.ElementTree as ET
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 from typing import Any
 
-from pydantic import Field, model_validator
-
 from physrealx.contracts import ArtifactStore, BackendCapabilities, Frame, MethodProbe, StepResult
 from physrealx.domain import (
     AssetSpec,
     DataValue,
-    DomainModel,
     GeometryRepresentation,
     GeometryRole,
     JointType,
@@ -34,7 +30,8 @@ from physrealx.errors import (
 )
 from physrealx.integrations._artifacts import dependency_probe
 from physrealx.integrations.collision import load_meshes, mesh_reference
-from physrealx.integrations.sensors import CAMERA_MODALITIES, CameraSpec, MujocoSensors
+from physrealx.integrations.sensors import CAMERA_MODALITIES, MujocoSensors
+from physrealx.integrations.simulation_config import PhysicsConfig
 from physrealx.integrations.visuals import png_bytes
 from physrealx.methods import builtin_method
 
@@ -48,71 +45,8 @@ def _pose(pose: PoseSpec) -> dict[str, str]:
     return {"pos": _numbers(pose.translation_m), "quat": _numbers((w, x, y, z))}
 
 
-class MujocoRandomization(DomainModel):
-    mass_scale: tuple[float, float] = (1.0, 1.0)
-    damping_scale: tuple[float, float] = (1.0, 1.0)
-    friction_scale: tuple[float, float] = (1.0, 1.0)
-    initial_position_jitter: float = Field(default=0.0, ge=0, allow_inf_nan=False)
-    color_jitter: float = Field(default=0.0, ge=0, le=1)
-    light_jitter: float = Field(default=0.0, ge=0, le=1)
-    material_shininess_jitter: float = Field(default=0.0, ge=0, le=1)
-    material_specular_jitter: float = Field(default=0.0, ge=0, le=1)
-    camera_position_jitter_m: float = Field(default=0.0, ge=0, le=1)
-    occlusion_probability: float = Field(default=0.0, ge=0, le=1)
-    occlusion_fraction: tuple[float, float] = (0.08, 0.2)
-
-    @model_validator(mode="after")
-    def validate_intervals(self) -> MujocoRandomization:
-        for interval in (self.mass_scale, self.damping_scale, self.friction_scale):
-            if (
-                not all(math.isfinite(v) for v in interval)
-                or interval[0] <= 0
-                or interval[0] > interval[1]
-            ):
-                raise ValueError(
-                    "physical randomization needs positive finite ordered scale bounds"
-                )
-        if not 0 < self.occlusion_fraction[0] <= self.occlusion_fraction[1] <= 0.5:
-            raise ValueError("occluder size must occupy a bounded fraction of the camera view")
-        return self
-
-
-class MujocoConfig(DomainModel):
-    cameras: dict[str, CameraSpec] = Field(default_factory=dict)
-    controlled_joints: tuple[str, ...] = Field(min_length=1)
-    timestep_seconds: float = Field(default=0.002, gt=0, le=0.01)
-    substeps: int = Field(default=25, ge=1, le=1000)
-    gravity_m_s2: tuple[float, float, float] = (0.0, 0.0, -9.81)
-    initial_positions: tuple[float, ...]
-    passive_positions: dict[str, float] = Field(default_factory=dict)
-    effort_limits: tuple[float, ...]
-    position_gain: float = Field(default=200.0, gt=0, allow_inf_nan=False)
-    velocity_gain: float = Field(default=20.0, ge=0, allow_inf_nan=False)
-    randomization: MujocoRandomization = Field(default_factory=MujocoRandomization)
-
-    @model_validator(mode="after")
-    def validate_vectors(self) -> MujocoConfig:
-        if len(self.cameras) > 8 or any(
-            re.fullmatch(r"[a-z][a-z0-9_]{0,63}", name) is None for name in self.cameras
-        ):
-            raise ValueError("at most eight uniquely named cameras are supported")
-        count = len(self.controlled_joints)
-        if (
-            len(set(self.controlled_joints)) != count
-            or len(self.initial_positions) != count
-            or len(self.effort_limits) != count
-        ):
-            raise ValueError("joint names, initial positions and effort limits must align uniquely")
-        if any(
-            not math.isfinite(v)
-            for v in (*self.gravity_m_s2, *self.initial_positions, *self.effort_limits)
-        ) or any(v <= 0 for v in self.effort_limits):
-            raise ValueError("physical configuration must be finite with positive effort limits")
-        if set(self.passive_positions) & set(self.controlled_joints) or any(
-            not math.isfinite(value) for value in self.passive_positions.values()
-        ):
-            raise ValueError("passive positions must be finite and exclude controlled joints")
-        return self
+class MujocoConfig(PhysicsConfig):
+    """MuJoCo uses the common physical configuration without engine-specific options."""
 
 
 @dataclass(frozen=True)
@@ -394,6 +328,7 @@ class MujocoSession:
         import numpy as np
 
         self._config, self._task, self._store = config, task, store
+        self._seed = 0
         declared_controlled = task.metadata.get("controlled_joints")
         controlled_entities = (
             {str(name).split("/", 1)[0] for name in declared_controlled}
@@ -419,6 +354,9 @@ class MujocoSession:
             for entity in scene.entities
             for link in assets[entity.name].links
         ]
+        body_names = {self.model.body(index).name for index in self._body_ids}
+        if set(config.external_wrenches) - body_names:
+            raise DomainValidationError("external wrench names must identify scene links")
         self._joint_indices = {
             name: (
                 int(self.model.joint(name).qposadr[0]),
@@ -566,6 +504,9 @@ class MujocoSession:
                 )
         mujoco.mj_setConst(self.model, self.data)
         mujoco.mj_resetData(self.model, self.data)
+        for name, wrench in self._config.external_wrenches.items():
+            self.data.xfrc_applied[self.model.body(name).id] = (*wrench.force_n, *wrench.torque_nm)
+        self._seed = seed
         for name, value in self._config.passive_positions.items():
             self.data.qpos[self._joint_indices[name][0]] = value
         for index, (q, (lo, hi)) in enumerate(zip(self._config.initial_positions, self._limits)):
@@ -729,6 +670,8 @@ class MujocoSession:
             value.assert_matches(signal)
             values[signal.name] = value
         metadata: dict[str, JSONValue] = {
+            "physics_engine": "MuJoCo",
+            "randomization_seed": self._seed,
             "body_pose_order": [self.model.body(index).name for index in self._body_ids],
             "segmentation_labels": {
                 str(index): self.model.body(index).name or "background_or_world"

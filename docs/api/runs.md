@@ -2,6 +2,25 @@
 
 `runs.submit(RunSpec) -> RunRecord` 同步执行已登记场景、任务、后端与策略。`runs.wait(run)` 读取终态 `RunResult`，`runs.get(run)` 读取运行记录，`runs.episodes(run)` 载入并验证不可变轨迹。
 
+仿真引擎用 `backend` 选择，策略用 `policy` 指定。`method` 仍用于重建、配准等算法选择；
+底层 `MethodSpec` 保存实现版本及配置，无需为每个后端新增一套数据类型。
+
+快捷入口与 `runs.submit` 共用执行器、失败处理和数据集发布：
+
+```python
+run = px.simulations.run(
+    scene_ref, task_ref,
+    backend="isaac_sim",  # 或 "mujoco"
+    config=control_config,
+    policy=policy,
+    dataset_id="simulation.dataset",
+    episode_count=4,
+    base_seed=2026,
+)
+```
+
+以下为需要固定 `run_id`、标签等完整配置时的调用：
+
 ```python
 from physrealx import MethodCapability, RunSpec
 
@@ -35,9 +54,9 @@ run = px.runs.submit(
 dataset = px.datasets.get(px.runs.wait(run).dataset)
 ```
 
-实际记录信号必须属于任务。后端配置固定在 MethodSpec 中；命令经有限增益、作用力限制后进入 MuJoCo，不直接改写物体状态。`passive_positions` 初始化未驱动关节，支持机器人与被动物体接触。
+实际记录信号必须属于任务。后端配置固定在 MethodSpec 中；命令经有限增益、作用力限制后进入物理引擎，不直接改写物体状态。`passive_positions` 初始化未驱动关节，支持机器人与被动物体接触。
 
-当前 MuJoCo 在一个状态上同步生成多相机 RGB/Depth/Mask/Event/点云/内外参及刚体位姿、外力/力矩，全部保留时间戳和语义标签。配置与信号表见[仿真指南](../user-guide/simulation-and-data-generation.md)。
+MuJoCo 与 Isaac Sim 在同一物理状态上同步生成多相机 RGB/Depth/Mask/Event/点云/内外参及刚体位姿、外力/力矩，全部保留时间戳和语义标签。配置与信号表见[仿真指南](../user-guide/simulation-and-data-generation.md)。
 
 ## 生命周期
 
@@ -51,6 +70,6 @@ dataset = px.datasets.get(px.runs.wait(run).dataset)
 `RunSpec.stop_on_success` 默认 `True`，满足任务成功条件后结束该 episode。
 采集世界模型的固定时长序列时可设为 `False`，继续到任务步数上限，并按末帧判断最终成功。
 后端自身终止、任务显式终止条件和截断仍立即生效；此选项不会覆盖这些停止条件。
-这一规则由运行编排层统一负责，MuJoCo 与 reference 后端保持一致。
+这一规则由运行编排层统一负责，MuJoCo、Isaac Sim 与 reference 后端保持一致。
 
-核心 `ExecutionLifecycle` 还支持校验外部离线物理轨迹与渲染证据，但它不代替引擎执行。当前集成多模态通过 `runs.submit` 完成；独立 simulations/renders/events/pointclouds/episodes 方法入口保留为扩展协议，没有注册未实现的方法名。
+核心 `ExecutionLifecycle` 还支持校验外部离线物理轨迹与渲染证据，但它不代替引擎执行。`simulations.run(backend=...)` 已接通统一执行器；旧的 `simulations.run(method=...)` 占位接口和对应虚构输出契约已删除。独立 renders/events/pointclouds/episodes 方法入口仍为扩展协议。

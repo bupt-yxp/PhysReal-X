@@ -1,4 +1,4 @@
-"""Synchronous MuJoCo cameras, metric projection, and frame-integrated event simulation."""
+"""Shared camera contracts, metric projection, events, and MuJoCo sensor acquisition."""
 
 from __future__ import annotations
 

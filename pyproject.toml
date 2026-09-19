@@ -257,5 +257,6 @@ module = "yaml.*"
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = ["scipy.*", "trimesh.*", "mujoco.*", "pxr.*", "coacd.*"]
+module = ["scipy.*", "trimesh.*", "mujoco.*", "pxr.*", "coacd.*", "isaacsim.*",
+    "carb", "omni.*"]
 ignore_missing_imports = true

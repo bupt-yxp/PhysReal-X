@@ -16,6 +16,7 @@ from physrealx.integrations.feedback import (
     TelemetryArchiveAdapter,
 )
 from physrealx.integrations.gaussian_render import RegisteredGaussianRenderer
+from physrealx.integrations.isaac_sim import IsaacSimBackend
 from physrealx.integrations.metric import MetricAlignmentAdapter
 from physrealx.integrations.mujoco import MujocoBackend
 from physrealx.integrations.physics import JointPhysicsAdapter
@@ -67,5 +68,6 @@ def register_physical_methods(registry: PluginRegistry, artifacts: ArtifactStore
     ):
         registry.register_adapter(adapter)
     registry.register_backend(MujocoBackend(artifacts))
+    registry.register_backend(IsaacSimBackend(artifacts))
     registry.register_policy(JointTargetPolicy.descriptor, JointTargetPolicy)
     registry.register_policy(JointSequencePolicy.descriptor, JointSequencePolicy)

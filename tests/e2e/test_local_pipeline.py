@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -16,7 +17,7 @@ from physrealx.domain import (
     TaskSpec,
     TrainingSpec,
 )
-from physrealx.errors import DomainValidationError
+from physrealx.errors import DomainValidationError, ResourceConflictError
 from physrealx.platform import PhysRealX
 from physrealx.reference import reference_asset, reference_run, reference_scene, reference_task
 from physrealx.training import TorchBehaviorCloningTrainer
@@ -80,6 +81,11 @@ def test_reference_run_publishes_replayable_dataset(
 
     # Submitting an identical immutable RunSpec is idempotent.
     assert platform.runs.submit(run) == record
+    conflicting = run.model_copy(update={"run_id": str(uuid.uuid4())})
+    with pytest.raises(ResourceConflictError, match="already exists"):
+        platform.runs.submit(conflicting)
+    assert created_sessions == 1
+    assert platform.runs.get(conflicting.run_id).status is RunStatus.FAILED
 
 
 @pytest.mark.integration
@@ -93,7 +99,9 @@ def test_dataset_trains_and_evaluates_torch_policy(tmp_path: Path) -> None:
     platform.assets.register(asset)
     platform.scenes.register(scene)
     platform.tasks.register(task)
-    base_run = reference_run(scene, task, episode_count=8, base_seed=31)
+    base_run = reference_run(scene, task, episode_count=8, base_seed=31).model_copy(
+        update={"tags": ("expert_demonstration", "domain_randomized")}
+    )
     record = platform.runs.submit(base_run)
     assert record.result is not None and record.result.dataset is not None
 
@@ -124,6 +132,13 @@ def test_dataset_trains_and_evaluates_torch_policy(tmp_path: Path) -> None:
     report = platform.evaluations.get_report(evaluation_ref)
     assert report.success_rate >= 0.75
     assert report.metrics["episode_count"] == 4.0
+    assert report.dataset is not None
+    from physrealx.runtime import load_episode
+
+    for summary in platform.datasets.get(report.dataset).episodes:
+        tags = load_episode(platform.artifacts, summary).metadata["tags"]
+        assert "expert_demonstration" not in tags
+        assert "policy_evaluation" in tags and "domain_randomized" in tags
 
     # The evaluation identity includes the requested output identity, not only
     # the model and base task, so independent reports cannot collide.

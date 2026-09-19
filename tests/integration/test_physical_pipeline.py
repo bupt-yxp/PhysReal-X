@@ -1103,3 +1103,365 @@ def test_proxy_surface_samples_exclude_internal_partition_faces():
     outer = trimesh.creation.box(extents=[0.2, 0.2, 0.2])
     distance = trimesh.proximity.closest_point(outer, samples)[1]
     assert distance.max() < 1e-9
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize(
+    "joint_kind,blocked", [("prismatic", False), ("revolute", False), ("prismatic", True)]
+)
+def test_isaac_sim_real_dynamics_reset_units_poses_and_contact(
+    px: PhysRealX,
+    joint_kind: str,
+    blocked: bool,
+) -> None:
+    """Opt-in native-engine test; never substitutes mocks for PhysX dynamics."""
+    import os
+
+    from scipy.spatial.transform import Rotation
+
+    from physrealx.domain import JointType, PoseSpec
+    from physrealx.integrations.isaac_sim import IsaacSimBackend
+
+    if os.environ.get("PHYSREALX_TEST_ISAAC_SIM") != "1":
+        pytest.skip("set PHYSREALX_TEST_ISAAC_SIM=1 with Isaac Sim 4.5 and a usable GPU")
+    asset, _ = assembled_asset(px, textured=True)
+    unit = "m" if joint_kind == "prismatic" else "rad"
+    if joint_kind == "revolute":
+        asset = AssetSpec.model_validate(
+            {
+                **asset.model_dump(),
+                "joints": [
+                    asset.joints[0].model_copy(
+                        update={
+                            "joint_type": JointType.REVOLUTE,
+                            "upper_limit": 1.2,
+                        }
+                    )
+                ],
+            }
+        )
+    scene, task, config = scene_task(px, asset)
+    pose = PoseSpec(
+        translation_m=(0.3, -0.2, 0.5),
+        rotation_xyzw=Rotation.from_euler("z", 30, degrees=True).as_quat(),
+    )
+    entity = scene.entities[0].model_copy(update={"pose": pose})
+    entities = [entity]
+    assets = {entity.name: asset}
+    if blocked:
+        obstacle = AssetSpec.model_validate(
+            {
+                **asset.model_dump(),
+                "resource_id": "fixture.obstacle",
+                "root_link": "drawer",
+                "links": ["drawer"],
+                "joints": [],
+                "contact_exclusions": [],
+                "geometries": [g for g in asset.geometries if g.link == "drawer"],
+                "physics": [p for p in asset.physics if p.link == "drawer"],
+            }
+        )
+        position = np.array(pose.translation_m) + Rotation.from_quat(pose.rotation_xyzw).apply(
+            [0.25, 0, 0]
+        )
+        entities.append(
+            SceneEntitySpec(
+                name="obstacle",
+                asset=obstacle.reference(),
+                role=SceneEntityRole.ENVIRONMENT,
+                pose=pose.model_copy(update={"translation_m": tuple(position)}),
+            )
+        )
+        assets["obstacle"] = obstacle
+    scene = scene.model_copy(update={"entities": tuple(entities)})
+    count = sum(len(a.links) for a in assets.values())
+    observations = (
+        *(
+            s.model_copy(update={"unit": unit + ("/s" if s.name.endswith("velocity") else "")})
+            for s in task.observations
+        ),
+        SignalSpec(
+            name="body.position",
+            shape=(count, 3),
+            dtype=SignalDType.FLOAT32,
+            unit="m",
+            frame="world",
+        ),
+        SignalSpec(
+            name="body.orientation",
+            shape=(count, 4),
+            dtype=SignalDType.FLOAT32,
+            unit="1",
+            frame="world",
+        ),
+        *(
+            SignalSpec(
+                name="body." + name,
+                shape=(count, 3),
+                dtype=SignalDType.FLOAT32,
+                unit=unit,
+                frame="world",
+            )
+            for name, unit in (
+                ("external_force", "N"),
+                ("external_torque", "N*m"),
+                ("wrench_origin", "m"),
+            )
+        ),
+        SignalSpec(
+            name="contact.force", shape=(1,), dtype=SignalDType.FLOAT32, unit="N", frame="joint"
+        ),
+    )
+    task = task.model_copy(
+        update={
+            "observations": observations,
+            "action": task.action.model_copy(
+                update={
+                    "signal": task.action.signal.model_copy(update={"unit": unit}),
+                }
+            ),
+        }
+    )
+    config.update(
+        timeout_seconds=600, position_gain=50.0, velocity_gain=5.0, initial_positions=[0.05]
+    )
+    if joint_kind == "revolute":
+        config.update(position_gain=20.0, velocity_gain=0.1, timestep_seconds=0.0005, substeps=100)
+    session = IsaacSimBackend(px.artifacts).create_session(scene, assets, task, config)
+    from physrealx.domain import DataValue
+
+    action = DataValue(
+        dtype=task.action.signal.dtype, shape=(1,), unit=unit, frame="joint", inline=(0.3,)
+    )
+    from physrealx.errors import InvalidStateTransitionError
+
+    try:
+        with pytest.raises(InvalidStateTransitionError, match="reset"):
+            session.step(action)
+        trajectories = []
+        peaks = []
+        for _ in range(2):
+            frame = session.reset(23)
+            assert frame.observations["joint.position"].inline[0] == pytest.approx(0.05, abs=1e-6)
+            positions = np.array(frame.observations["body.position"].inline).reshape(count, 3)
+            np.testing.assert_allclose(positions[0], pose.translation_m, atol=1e-5)
+            samples, forces, opposing_forces = [], [], []
+            for step_index in range(60):
+                frame = session.step(action).frame
+                samples.append(frame.observations["joint.position"].inline[0])
+                forces.append(frame.observations["contact.force"].inline[0])
+                loads = np.array(frame.observations["body.external_force"].inline).reshape(count, 3)
+                np.testing.assert_allclose(loads.sum(axis=0), 0, atol=1e-6)
+                moment = np.array(frame.observations["body.external_torque"].inline).reshape(
+                    count, 3
+                )
+                origins = np.array(frame.observations["body.wrench_origin"].inline).reshape(
+                    count, 3
+                )
+                np.testing.assert_allclose(
+                    (moment + np.cross(origins, loads)).sum(axis=0), 0, atol=1e-6
+                )
+                opposing_forces.append(
+                    float(
+                        loads[1]
+                        @ Rotation.from_quat(pose.rotation_xyzw).apply(asset.joints[0].axis)
+                    )
+                )
+                assert frame.observations["body.position"].timestamp_seconds == pytest.approx(
+                    (step_index + 1) * 0.05
+                )
+
+            # Compare recorded link poses with FK, independently of the engine joint readout.
+            def transform(pose_spec: PoseSpec) -> object:
+                matrix = np.eye(4)
+                matrix[:3, :3] = Rotation.from_quat(pose_spec.rotation_xyzw).as_matrix()
+                matrix[:3, 3] = pose_spec.translation_m
+                return matrix
+
+            motion = np.eye(4)
+            axis = np.array(asset.joints[0].axis)
+            if joint_kind == "prismatic":
+                motion[:3, 3] = axis * samples[-1]
+            else:
+                motion[:3, :3] = Rotation.from_rotvec(axis * samples[-1]).as_matrix()
+            expected = (
+                transform(pose)
+                @ transform(asset.root_pose)
+                @ transform(asset.joints[0].parent_to_joint)
+                @ motion
+            )
+            positions = np.array(frame.observations["body.position"].inline).reshape(count, 3)
+            rotations = np.array(frame.observations["body.orientation"].inline).reshape(count, 4)
+            moving_index = asset.links.index(asset.joints[0].child)
+            np.testing.assert_allclose(positions[moving_index], expected[:3, 3], atol=1e-4)
+            np.testing.assert_allclose(
+                Rotation.from_quat(rotations[moving_index]).as_matrix(), expected[:3, :3], atol=1e-4
+            )
+            if blocked:
+                assert min(opposing_forces) < -1.0
+            trajectories.append(samples)
+            peaks.append(max(forces))
+        np.testing.assert_allclose(trajectories[0], trajectories[1], atol=1e-5)
+        if blocked:
+            assert trajectories[0][-1] < 0.2
+            assert min(peaks) > 1.0
+        else:
+            assert trajectories[0][-1] == pytest.approx(0.3, abs=0.025)
+        # Illegal commands must leave a usable session, and reset must restore passive state.
+        with pytest.raises(DomainValidationError, match="bounds"):
+            session.step(action.model_copy(update={"inline": (0.9,)}))
+        assert session.reset(23).observations["joint.position"].inline[0] == pytest.approx(
+            0.05, abs=1e-6
+        )
+    finally:
+        session.close()
+    with pytest.raises(InvalidStateTransitionError, match="closed"):
+        session.reset(23)
+
+
+@pytest.mark.gpu
+def test_isaac_sim_publishes_replayable_episodes(px: PhysRealX) -> None:
+    import os
+
+    if os.environ.get("PHYSREALX_TEST_ISAAC_SIM") != "1":
+        pytest.skip("set PHYSREALX_TEST_ISAAC_SIM=1 with Isaac Sim 4.5 and a usable GPU")
+    asset, _ = assembled_asset(px)
+    scene, task, config = scene_task(px, asset)
+    config["timeout_seconds"] = 600
+    run = px.simulations.run(
+        scene.reference(),
+        task.reference(),
+        backend="isaac_sim",
+        config=config,
+        policy=px.methods.bind(
+            MethodCapability.POLICY_INFERENCE, "joint_target", config={"target": [0.3]}
+        ),
+        dataset_id="isaac.integration.dataset",
+        episode_count=2,
+    )
+    assert run.status is RunStatus.SUCCEEDED
+    episodes = px.runs.episodes(run)
+    assert len(episodes) == 2 and all(episode.success for episode in episodes)
+    assert all(episode.backend.name == "isaac_sim" for episode in episodes)
+    assert all(episode.steps[-1].action is None for episode in episodes)
+    assert all(episode.steps[-1].state["joint.position"].inline[0] >= 0.25 for episode in episodes)
+    assert episodes[0].metadata["sensor_metadata"]["physics_engine"] == "PhysX / Isaac Sim 4.5.0"
+    assert px.runs.submit(run.spec) == run
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("backend", ["mujoco", "isaac_sim"])
+def test_native_multimodal_backends_randomization_and_wrenches(
+    px: PhysRealX, backend: str
+) -> None:
+    """One task/config exercises native sensors and known loads in both real engines."""
+    import os
+
+    from physrealx.domain import DataValue, PoseSpec
+    from physrealx.integrations.sensors import CameraSpec, project_depth, with_sensor_signals
+
+    if backend == "isaac_sim" and os.environ.get("PHYSREALX_TEST_ISAAC_SIM") != "1":
+        pytest.skip("requires Isaac Sim 4.5 and a GPU")
+    asset, _ = assembled_asset(px, textured=True)
+    scene, task, config = scene_task(px, asset)
+    camera = CameraSpec(pose=PoseSpec(translation_m=(0, 0, 1)), width=64, height=48)
+    task = with_sensor_signals(
+        task, {"front": camera}, link_count=2, resource_id="native.camera.task", frequency_hz=20
+    )
+    config.update(
+        cameras={"front": camera.model_dump(mode="json")},
+        external_wrenches={"asset/drawer": {"force_n": [0, 0, 2], "torque_nm": [0, 0.1, 0]}},
+        randomization={
+            "mass_scale": [0.8, 1.2],
+            "damping_scale": [0.8, 1.2],
+            "friction_scale": [0.8, 1.2],
+            "initial_position_jitter": 0.01,
+            "color_jitter": 0.1,
+            "light_jitter": 0.2,
+            "material_shininess_jitter": 0.1,
+            "material_specular_jitter": 0.02,
+            "camera_position_jitter_m": 0.01,
+            "occlusion_probability": 1.0,
+        },
+    )
+    if backend == "isaac_sim":
+        config["timeout_seconds"] = 600
+    from physrealx.errors import MethodExecutionError
+
+    try:
+        session = px.plugins.backend(backend).create_session(scene, {"asset": asset}, task, config)
+    except MethodExecutionError as error:
+        pytest.fail(f"{error}: {error.details}")
+
+    def pixels(frame, modality):
+        value = frame.observations[f"camera.front.{modality}"]
+        return np.load(io.BytesIO(px.artifacts.get_bytes(value.artifact)), allow_pickle=False)
+
+    action = DataValue(dtype="float32", shape=(1,), unit="m", frame="joint", inline=(0.1,))
+    try:
+        first = session.reset(7)
+        first_result = session.step(action).frame
+        second = session.reset(8)
+        replay = session.reset(7)
+        replay_result = session.step(action).frame
+        np.testing.assert_allclose(
+            first.observations["joint.position"].inline,
+            replay.observations["joint.position"].inline,
+            atol=1e-6,
+        )
+        np.testing.assert_allclose(
+            first_result.observations["joint.position"].inline,
+            replay_result.observations["joint.position"].inline,
+            atol=1e-5,
+        )
+        np.testing.assert_allclose(pixels(first, "position"), pixels(replay, "position"), atol=1e-6)
+        assert not np.array_equal(pixels(first, "position"), pixels(second, "position"))
+        assert not np.array_equal(pixels(first, "rgb"), pixels(second, "rgb"))
+        assert np.count_nonzero(pixels(first, "depth")) > 100
+        assert np.ptp(pixels(first, "rgb")) > 50
+        assert not pixels(first, "events").any()
+        np.testing.assert_allclose(
+            pixels(first, "pointcloud"),
+            project_depth(pixels(first, "depth"), pixels(first, "intrinsics")),
+        )
+        labels = first.metadata["segmentation_labels"]
+        visible = {labels[str(int(v))] for v in np.unique(pixels(first, "mask"))}
+        assert "asset/drawer" in visible
+        assert "occluder/front" in visible
+        # Check raster calibration against authored geometry, not merely XYZ=unproject(depth).
+        from scipy.spatial.transform import Rotation
+
+        drawer_id = next(int(i) for i, name in labels.items() if name == "asset/drawer")
+        optical = pixels(first, "pointcloud")[pixels(first, "mask") == drawer_id]
+        world = Rotation.from_quat(pixels(first, "orientation")).apply(optical) + pixels(
+            first, "position"
+        )
+        q = first.observations["joint.position"].inline[0]
+        assert np.max(np.abs(world[:, 0] - q)) <= 0.06
+        assert np.max(np.abs(world[:, 1])) <= 0.06
+        np.testing.assert_allclose(world[:, 2], 0.05, atol=0.002)
+
+        force = np.array(first_result.observations["body.external_force"].inline).reshape(2, 3)
+        torque = np.array(first_result.observations["body.external_torque"].inline).reshape(2, 3)
+        np.testing.assert_allclose(force[-1], [0, 0, 2], atol=1e-4)
+        # MuJoCo reports torque about root-subtree COM; translate it to body COM for comparison.
+        origins = np.array(first_result.observations["body.wrench_origin"].inline).reshape(2, 3)
+        if backend == "mujoco":
+            com = session.data.xipos[session.model.body("asset/drawer").id]
+        else:
+            com = origins[-1]
+            assert first.metadata["randomization"] == replay.metadata["randomization"]
+            assert first.metadata["randomization"] != second.metadata["randomization"]
+            assert (
+                first.metadata["randomization"]["runtime_body_masses_kg"]
+                != second.metadata["randomization"]["runtime_body_masses_kg"]
+            )
+        np.testing.assert_allclose(
+            torque[-1] + np.cross(origins[-1] - com, force[-1]), [0, 0.1, 0], atol=1e-4
+        )
+        assert all(
+            v.timestamp_seconds == pytest.approx(session.dt_seconds)
+            for v in first_result.observations.values()
+        )
+    finally:
+        session.close()

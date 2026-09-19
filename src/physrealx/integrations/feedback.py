@@ -29,7 +29,11 @@ from physrealx.integrations._artifacts import (
     read_array,
     read_json,
 )
-from physrealx.integrations.datasets import validate_dataset
+from physrealx.integrations.datasets import (
+    episode_group,
+    model_training_groups,
+    validate_dataset,
+)
 from physrealx.methods import builtin_method
 from physrealx.runtime import load_episode
 
@@ -182,7 +186,7 @@ def _validate_deployment_evidence(
     if live:
         if evidence.deployment_report is None:
             raise DomainValidationError("real episodes require an immutable deployment report")
-        from physrealx.robot_agent import RobotExecutionEvidence
+        from physrealx.robot_agent import RobotExecutionEvidence, TelemetryManifest
 
         report = RobotExecutionEvidence.model_validate(
             read_json(artifacts, evidence.deployment_report, "physrealx.deployment-report/1"),
@@ -193,6 +197,30 @@ def _validate_deployment_evidence(
             for reference in (report.deployment_plan, report.telemetry, report.safety_events)
         ):
             raise DomainValidationError("real deployment report references missing evidence")
+        telemetry = TelemetryManifest.model_validate(
+            read_json(artifacts, report.telemetry, "physrealx.telemetry-manifest/1"), strict=False
+        )
+        if (
+            not artifacts.verify(telemetry.mcap)
+            or not artifacts.verify(telemetry.topic_schemas)
+            or telemetry.started_at_ns < report.started_at_ns
+            or telemetry.completed_at_ns > report.completed_at_ns
+        ):
+            raise DomainValidationError(
+                "real telemetry is unavailable or outside the deployment interval"
+            )
+        for summary in dataset.episodes:
+            episode = load_episode(artifacts, summary)
+            if (
+                not isinstance(episode.metadata.get("capture_id"), str)
+                or not episode.metadata["capture_id"]
+                or episode.metadata.get("deployment_report")
+                != evidence.deployment_report.model_dump(mode="json")
+                or episode.metadata.get("raw_telemetry") != telemetry.mcap.model_dump(mode="json")
+            ):
+                raise DomainValidationError(
+                    "real episodes must link their capture_id, deployment report and raw telemetry"
+                )
     elif evidence.deployment_report is not None:
         raise DomainValidationError("simulator episodes cannot claim a hardware deployment report")
     return dataset, quality, live
@@ -202,7 +230,7 @@ class TelemetryArchiveAdapter:
     descriptor = builtin_method(
         MethodCapability.TELEMETRY_RECORD,
         "episode_telemetry",
-        version="3.0.0",
+        version="4.0.0",
         input_contract="DeploymentEvidence/1",
         output_contract="TelemetryBundle/2+TelemetryManifest/2",
     )
@@ -351,9 +379,41 @@ class PolicyInterventionEvidence(DomainModel):
 
 
 class PolicyGateConfig(DomainModel):
+    min_episodes: int = Field(default=20, ge=2)
+    min_success_rate: float = Field(default=0.8, gt=0, le=1, allow_inf_nan=False)
+    min_quality_pairs: int = Field(default=3, ge=1)
     max_target_error_regression: float = Field(default=0.05, ge=0, allow_inf_nan=False)
     max_tracking_rmse_regression: float = Field(default=0.01, ge=0, allow_inf_nan=False)
     max_contact_variation_regression_n: float = Field(default=5.0, ge=0, allow_inf_nan=False)
+
+
+def _validate_paired_conditions(baseline: Episode, candidate: Episode) -> None:
+    import numpy as np
+
+    if (baseline.scene, baseline.task, baseline.backend, baseline.source, baseline.seed) != (
+        candidate.scene,
+        candidate.task,
+        candidate.backend,
+        candidate.source,
+        candidate.seed,
+    ):
+        raise DomainValidationError(
+            "paired episodes must share scene, task, backend, source, and seed"
+        )
+    if baseline.source is EpisodeSource.SIMULATOR:
+        for name, value in baseline.steps[0].observations.items():
+            if not name.startswith("joint.") or not name.endswith((".position", ".velocity")):
+                continue
+            other = candidate.steps[0].observations.get(name)
+            if (
+                other is None
+                or value.inline is None
+                or other.inline is None
+                or value.unit != other.unit
+                or value.shape != other.shape
+                or not np.allclose(value.inline, other.inline, atol=1e-6, rtol=0)
+            ):
+                raise DomainValidationError("paired execution changed the initial joint state")
 
 
 def analyze_policy_intervention(artifacts: ArtifactStore, evidence_ref: ArtifactRef) -> ArtifactRef:
@@ -404,17 +464,20 @@ def analyze_policy_intervention(artifacts: ArtifactStore, evidence_ref: Artifact
                 "each failure requires one same-condition rerun that changes only the policy"
             )
         recovered = matches[0]
+        simulated = original.source is EpisodeSource.SIMULATOR
+        _validate_paired_conditions(original, recovered)
         task = load_resource(artifacts, recovered.task, TaskSpec)
         after = episode_metrics(artifacts, recovered, task)
         validated = bool(
-            recovered.success
+            simulated
+            and recovered.success
             and not original.success
             and all(goal["satisfied"] for goal in after["task_goals"])
         )
         paired.append(
             {
                 **failure,
-                "causal_category": "planning" if validated else "unresolved",
+                "causal_category": "policy" if validated else "unresolved",
                 "causal_validation": validated,
                 "intervention": "policy",
                 "recovery_episode_id": recovered.episode_id,
@@ -432,64 +495,95 @@ def analyze_policy_intervention(artifacts: ArtifactStore, evidence_ref: Artifact
         "schema": "physrealx.causal-failure-report/1",
         "failure_report": request.failure_report.model_dump(mode="json"),
         "changed_factor": "policy",
-        "control": "same simulator backend, scene, task, source, and seed",
+        "control": "same backend, scene, task, source, seed and recorded initial joint state",
         "paired_failures": paired,
         "validated_count": sum(row["causal_validation"] for row in paired),
-        "attribution_scope": "paired policy intervention; other causal factors remain unresolved",
+        "attribution_scope": (
+            "simulated policy intervention; real reruns are observational, "
+            "other causal factors remain unresolved"
+        ),
     }
     return artifacts.put_json(causal)
 
 
 def assess_policy_update(
     artifacts: ArtifactStore,
-    initial: EvaluationReport,
-    updated: EvaluationReport,
+    initial_ref: VersionedRef,
+    updated_ref: VersionedRef,
     config: Mapping[str, Any] | None = None,
+    *,
+    reference_dataset: VersionedRef | None = None,
 ) -> ArtifactRef:
-    """Gate a policy update with paired closed-loop episodes from identical conditions."""
+    """Require independent task success and comparable successful execution quality."""
     import numpy as np
 
+    initial = load_resource(artifacts, initial_ref, EvaluationReport)
+    updated = load_resource(artifacts, updated_ref, EvaluationReport)
     gate = PolicyGateConfig.model_validate(config or {})
     if initial.model == updated.model:
         raise DomainValidationError("policy update assessment requires two distinct models")
-    if initial.dataset is None or updated.dataset is None:
-        raise DomainValidationError("policy update assessment requires evaluation datasets")
 
-    def episodes(report: EvaluationReport) -> dict[int, Episode]:
-        dataset_ref = report.dataset
-        if dataset_ref is None:
-            raise DomainValidationError("policy update assessment requires an evaluation dataset")
-        dataset = load_resource(artifacts, dataset_ref, DatasetManifest)
+    def episodes(reference: VersionedRef | None) -> dict[int, Episode]:
+        if reference is None:
+            raise DomainValidationError("policy update assessment requires evaluation datasets")
+        dataset = load_resource(artifacts, reference, DatasetManifest)
+        validate_dataset(artifacts, dataset)
         rows = [load_episode(artifacts, summary) for summary in dataset.episodes]
         if len({row.seed for row in rows}) != len(rows):
             raise DomainValidationError("policy evaluation seeds must be unique")
         return {row.seed: row for row in rows}
 
-    before, after = episodes(initial), episodes(updated)
-    if set(before) != set(after):
-        raise DomainValidationError("policy evaluations must use identical seeds")
+    before, after = episodes(initial.dataset), episodes(updated.dataset)
+    reference = episodes(reference_dataset) if reference_dataset else before
+    if set(before) != set(after) or set(before) != set(reference):
+        raise DomainValidationError("policy evaluations and reference must use identical seeds")
+    trained = model_training_groups(artifacts, initial.model) | model_training_groups(
+        artifacts, updated.model
+    )
+    if any(episode_group(row) in trained for row in (*before.values(), *after.values())):
+        raise DomainValidationError("policy gate evaluation overlaps model training ancestry")
+    for report, rows in ((initial, before), (updated, after)):
+        if not np.isclose(report.success_rate, np.mean([row.success for row in rows.values()])):
+            raise DomainValidationError("evaluation success rate differs from recorded episodes")
+
     paired: list[dict[str, Any]] = []
+    quality: list[dict[str, float | int]] = []
     for seed in sorted(before):
-        baseline, candidate = before[seed], after[seed]
-        if (
-            baseline.scene != candidate.scene
-            or baseline.task != candidate.task
-            or baseline.backend != candidate.backend
-            or baseline.source != candidate.source
-        ):
-            raise DomainValidationError(
-                "policy evaluations must share scene, task, backend, and deployment source"
-            )
+        baseline, candidate, expert = before[seed], after[seed], reference[seed]
+        _validate_paired_conditions(baseline, candidate)
+        _validate_paired_conditions(expert, candidate)
         if baseline.policy == candidate.policy:
             raise DomainValidationError("paired policy evaluations did not change the policy")
+        if reference_dataset:
+            tags = expert.metadata.get("tags", [])
+            if not isinstance(tags, list) or "expert_demonstration" not in tags:
+                raise DomainValidationError(
+                    "quality reference requires expert demonstration episodes"
+                )
+            if expert.policy == candidate.policy or expert.episode_id == candidate.episode_id:
+                raise DomainValidationError("quality reference must be a separate expert execution")
         task = load_resource(artifacts, baseline.task, TaskSpec)
         baseline_metrics = episode_metrics(artifacts, baseline, task)
         candidate_metrics = episode_metrics(artifacts, candidate, task)
+        expert_metrics = episode_metrics(artifacts, expert, task)
+        if candidate.success and expert.success:
+            quality.append(
+                {
+                    "seed": seed,
+                    "target_error_delta": candidate_metrics["control_target_error"]
+                    - expert_metrics["control_target_error"],
+                    "tracking_rmse_delta": candidate_metrics["tracking_rmse"]
+                    - expert_metrics["tracking_rmse"],
+                    "contact_variation_delta_n": candidate_metrics["contact_force_variation_rms_n"]
+                    - expert_metrics["contact_force_variation_rms_n"],
+                }
+            )
         paired.append(
             {
                 "seed": seed,
                 "initial_episode_id": baseline.episode_id,
                 "updated_episode_id": candidate.episode_id,
+                "reference_episode_id": expert.episode_id,
                 "initial_success": baseline.success,
                 "updated_success": candidate.success,
                 "initial_target_error": baseline_metrics["control_target_error"],
@@ -503,53 +597,58 @@ def assess_policy_update(
     initial_success = float(np.mean([row["initial_success"] for row in paired]))
     updated_success = float(np.mean([row["updated_success"] for row in paired]))
     success_delta = updated_success - initial_success
-
-    def mean(name: str) -> float:
-        return float(np.mean([float(row[name]) for row in paired]))
-
+    thresholds = {
+        "target_error_delta": gate.max_target_error_regression,
+        "tracking_rmse_delta": gate.max_tracking_rmse_regression,
+        "contact_variation_delta_n": gate.max_contact_variation_regression_n,
+    }
     metrics = {
         "initial_success_rate": initial_success,
         "updated_success_rate": updated_success,
         "success_rate_delta": success_delta,
-        "target_error_delta": mean("updated_target_error") - mean("initial_target_error"),
-        "tracking_rmse_delta": mean("updated_tracking_rmse") - mean("initial_tracking_rmse"),
-        "contact_variation_delta_n": mean("updated_contact_variation_n")
-        - mean("initial_contact_variation_n"),
+        "episode_count": len(paired),
+        "quality_pair_count": len(quality),
+        **{
+            name: float(np.mean([row[name] for row in quality])) if quality else None
+            for name in thresholds
+        },
     }
-    violations = [
-        name
-        for name, threshold in (
-            ("target_error_delta", gate.max_target_error_regression),
-            ("tracking_rmse_delta", gate.max_tracking_rmse_regression),
-            ("contact_variation_delta_n", gate.max_contact_variation_regression_n),
-        )
-        if metrics[name] > threshold
-    ]
+    violations = []
+    if len(paired) < gate.min_episodes:
+        violations.append("insufficient_evaluation_episodes")
+    if updated_success < gate.min_success_rate:
+        violations.append("success_rate_below_minimum")
+    if len(quality) < gate.min_quality_pairs:
+        violations.append("insufficient_successful_quality_pairs")
+    for name, threshold in thresholds.items():
+        value = metrics[name]
+        if value is not None and value > threshold:
+            violations.append(name)
     if success_delta < 0:
-        status = "REJECT"
-        reason = "paired closed-loop success rate regressed"
+        status, reason = "REJECT", "paired closed-loop success rate regressed"
     elif success_delta == 0:
-        status = "COLLECT_MORE_DATA"
-        reason = "paired closed-loop success rate did not improve"
+        status, reason = "COLLECT_MORE_DATA", "paired closed-loop success rate did not improve"
     elif violations:
-        status = "COLLECT_MORE_DATA"
-        reason = "success improved but trajectory or contact guardrails regressed"
+        status, reason = "COLLECT_MORE_DATA", "; ".join(violations)
     else:
-        status = "PROMOTE"
-        reason = "success improved without violating trajectory or contact guardrails"
-
+        status, reason = "PROMOTE", "independent success and successful execution quality passed"
     return artifacts.put_json(
         {
-            "schema": "physrealx.policy-update-assessment/1",
+            "schema": "physrealx.policy-update-assessment/2",
             "status": status,
             "reason": reason,
-            "control": "same scene, task, backend, deployment source, and seed",
-            "initial_evaluation": initial.reference().model_dump(mode="json"),
-            "updated_evaluation": updated.reference().model_dump(mode="json"),
+            "control": "same scene, task, backend, source, seed and initial joint state",
+            "quality_scope": "successful candidate/reference pairs only",
+            "reference_dataset": reference_dataset.model_dump(mode="json")
+            if reference_dataset
+            else None,
+            "initial_evaluation": initial_ref.model_dump(mode="json"),
+            "updated_evaluation": updated_ref.model_dump(mode="json"),
             "metrics": metrics,
             "guardrails": gate.model_dump(mode="json"),
             "guardrail_violations": violations,
             "paired_episodes": paired,
+            "quality_pairs": quality,
         }
     )
 
@@ -568,7 +667,7 @@ class FailureDatasetAdapter:
     descriptor = builtin_method(
         MethodCapability.FEEDBACK_BUILD_DATASET,
         "failure_episodes",
-        version="2.0.0",
+        version="3.0.0",
         input_contract="FailureQuery/2",
         output_contract="DatasetBundle/1+SelectionReport/2",
     )
@@ -610,7 +709,7 @@ class FailureDatasetAdapter:
             total_steps=sum(row.step_count for row in summaries),
             source_runs=list(dict.fromkeys(row.run_id for row in summaries)),
             metadata={
-                "failure_report": query.report.model_dump(mode="json"),
+                "source_dataset": report["dataset"],
                 "purpose": "failure_feedback; not expert imitation labels",
             },
         )
@@ -637,6 +736,31 @@ class FailureDatasetAdapter:
         )
 
 
+def _calibration_captures(artifacts: ArtifactStore, telemetry: dict[str, Any]) -> list[Episode]:
+    """Select recorded, explicitly isolated and gravity-compensated real captures."""
+    dataset, _, live = _validate_deployment_evidence(
+        artifacts,
+        DeploymentEvidence(
+            dataset=VersionedRef.model_validate(telemetry["dataset"]),
+            deployment_report=(
+                ArtifactRef.model_validate(telemetry["deployment_report"])
+                if telemetry.get("deployment_report")
+                else None
+            ),
+        ),
+    )
+    if not live:
+        raise DomainValidationError("physics calibration evidence must come from real deployment")
+    return [
+        episode
+        for episode in (load_episode(artifacts, row) for row in dataset.episodes)
+        if len(episode.steps) >= 16
+        and episode.metadata.get("gravity_compensated") is True
+        and isinstance(episode.metadata.get("isolated_joint"), str)
+        and episode.metadata["isolated_joint"]
+    ]
+
+
 def build_physics_calibration_plan(
     artifacts: ArtifactStore, telemetry_ref: ArtifactRef, failure_report_ref: ArtifactRef
 ) -> ArtifactRef:
@@ -657,7 +781,22 @@ def build_physics_calibration_plan(
     elif not affected:
         status, reason = "NOT_REQUIRED", "no control or contact symptom requires calibration"
     else:
-        status, reason = "READY", "real train/holdout trajectories are available for identification"
+        captures = _calibration_captures(artifacts, telemetry)
+        groups: dict[str, set[str]] = {}
+        for episode in captures:
+            groups.setdefault(str(episode.metadata["isolated_joint"]), set()).add(
+                str(episode.metadata["capture_id"])
+            )
+        if any(len(group) >= 2 for group in groups.values()):
+            status, reason = (
+                "READY",
+                "independent compensated captures can be checked for identification",
+            )
+        else:
+            status, reason = (
+                "AWAITING_CALIBRATION_EVIDENCE",
+                "requires two isolated-joint gravity-compensated captures of at least 16 samples",
+            )
     return artifacts.put_json(
         {
             "schema": "physrealx.physics-calibration-plan/1",
@@ -695,43 +834,49 @@ def prepare_joint_identification_evidence(
     telemetry = read_json(artifacts, telemetry_ref, "physrealx.telemetry-bundle/2")
     if set(telemetry["source_counts"]) != {EpisodeSource.REAL.value}:
         raise DomainValidationError("physics calibration evidence must come from real deployment")
-    dataset = load_resource(
-        artifacts, VersionedRef.model_validate(telemetry["dataset"]), DatasetManifest
-    )
-    episodes = [load_episode(artifacts, row) for row in dataset.episodes]
+    if type(joint_index) is not int or joint_index < 0:
+        raise DomainValidationError("joint_index must be a nonnegative integer")
+    episodes = [
+        episode
+        for episode in _calibration_captures(artifacts, telemetry)
+        if episode.metadata["isolated_joint"] == joint_name
+    ]
     if len(episodes) < 2:
         raise DomainValidationError(
-            "physics calibration requires independent train and holdout episodes"
+            "physics calibration requires independent isolated gravity-compensated captures "
+            "with at least 16 samples"
         )
-    episodes.sort(
-        key=lambda episode: float(
-            np.ptp(
-                np.asarray(
-                    [step.observations["joint.position"].inline for step in episode.steps],
-                    dtype=float,
-                )[:, joint_index]
+    units = ("m", "m/s", "N") if joint_type == "slide" else ("rad", "rad/s", "N*m")
+    validated: list[tuple[Episode, Any]] = []
+    for episode in episodes:
+        time = np.asarray([step.timestamp_seconds for step in episode.steps], dtype=float)
+        signals = []
+        for name, unit in zip(
+            ("joint.position", "joint.velocity", "joint.effort"), units, strict=True
+        ):
+            rows = [step.observations.get(name) for step in episode.steps]
+            if any(row is None or row.inline is None or row.unit != unit for row in rows):
+                raise DomainValidationError(f"calibration requires inline {name} with units {unit}")
+            values = np.asarray([row.inline for row in rows if row is not None], dtype=float)
+            if values.ndim != 2 or joint_index >= values.shape[1] or not np.isfinite(values).all():
+                raise DomainValidationError("calibration joint_index or signal values are invalid")
+            signals.append(values[:, joint_index])
+        if not np.isfinite(time).all() or (np.diff(time) <= 0).any():
+            raise DomainValidationError(
+                "calibration requires strictly increasing finite timestamps"
             )
-        ),
-        reverse=True,
-    )
+        position, velocity, effort = signals
+        acceleration = np.gradient(velocity, time, edge_order=2)
+        validated.append(
+            (episode, np.column_stack((time, position, velocity, acceleration, effort)))
+        )
+    validated.sort(key=lambda item: float(np.ptp(item[1][:, 1])), reverse=True)
     captures: list[str] = []
     arrays: list[ArtifactRef] = []
-    for episode in episodes:
+    for episode, values in validated:
         capture = episode.metadata.get("capture_id")
         if not isinstance(capture, str) or not capture or capture in captures:
             continue
-        time = np.asarray([step.timestamp_seconds for step in episode.steps], dtype=float)
-        position = np.asarray(
-            [step.observations["joint.position"].inline for step in episode.steps], dtype=float
-        )[:, joint_index]
-        velocity = np.asarray(
-            [step.observations["joint.velocity"].inline for step in episode.steps], dtype=float
-        )[:, joint_index]
-        effort = np.asarray(
-            [step.observations["joint.effort"].inline for step in episode.steps], dtype=float
-        )[:, joint_index]
-        acceleration = np.gradient(velocity, time, edge_order=2)
-        values = np.column_stack((time, position, velocity, acceleration, effort))
         stream = io.BytesIO()
         np.save(stream, values, allow_pickle=False)
         arrays.append(artifacts.put_bytes(stream.getvalue(), media_type="application/x-npy"))

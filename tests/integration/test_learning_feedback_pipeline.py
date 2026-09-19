@@ -21,16 +21,15 @@ from physrealx.domain import (
     EpisodeStep,
     EpisodeSummary,
     MethodCapability,
+    ModelManifest,
     Predicate,
     PredicateOperator,
-    ResourceType,
     SignalDType,
     SignalSpec,
     TaskSpec,
     TrainingSpec,
-    VersionedRef,
 )
-from physrealx.errors import DomainValidationError
+from physrealx.errors import DomainValidationError, ResourceConflictError
 from physrealx.integrations.datasets import EpisodeCollection, load_snapshot
 from physrealx.integrations.feedback import (
     DeploymentEvidence,
@@ -56,6 +55,36 @@ def array(px, value):
     stream = io.BytesIO()
     np.save(stream, value, allow_pickle=False)
     return px.artifacts.put_bytes(stream.getvalue(), media_type="application/x-npy")
+
+
+def fixture_model(px, dataset_ref, resource_id, *, parent=None):
+    dataset = px.datasets.get(dataset_ref)
+    model = ModelManifest(
+        resource_id=resource_id,
+        version="1.0.0",
+        trainer=builtin_method(
+            MethodCapability.POLICY_TRAIN,
+            "fixture",
+            input_contract="fixture/1",
+            output_contract="fixture/1",
+        ).bind(checkpoint=parent),
+        policy=builtin_method(
+            MethodCapability.POLICY_INFERENCE,
+            "fixture",
+            input_contract="fixture/1",
+            output_contract="fixture/1",
+        ).bind(),
+        dataset=dataset_ref,
+        weights=px.artifacts.put_bytes(
+            b"synthetic model fixture", media_type="application/octet-stream"
+        ),
+        observation_signals=dataset.observation_schema,
+        action_signal=dataset.action_schema,
+        training_config={},
+        metrics={},
+    )
+    artifact = px.artifacts.put_json(model, media_type="application/vnd.physrealx.model+json")
+    return model.reference(artifact.artifact_id), artifact
 
 
 @pytest.fixture
@@ -143,7 +172,9 @@ def episode_data(tmp_path: Path):
                     timestamp_seconds=timestamp,
                     inline=(value,),
                 )
-                for signal, value in zip(signals, (position, 0.75 if success else 0, 0.1, 0.0))
+                for signal, value in zip(
+                    signals, (position, 0.75 if success and step > 0 else 0, 0.1, 0.0)
+                )
             }
             rgb = np.full((32, 32, 3), 30 + int(position * 400), np.uint8)
             values["camera.front.rgb"] = DataValue(
@@ -253,13 +284,24 @@ def test_split_pins_sources_and_feedback_keeps_original_failure_labels(episode_d
     selected = DatasetManifest.model_validate(read(px, output(feedback, "dataset"))["manifest"])
     assert len(selected.episodes) == 2 and all(not row.success for row in selected.episodes)
     assert {row.artifact for row in selected.episodes} <= {row.artifact for row in dataset.episodes}
+    selected_ref = px.datasets.register(selected)
+    copied_report = px.artifacts.put_json(read(px, report))
+    assert copied_report.artifact_id != report.artifact_id
+    repeated = px.feedback.build_dataset(
+        px.artifacts.put_json(FailureQuery(report=copied_report, resource_id="learning.failures")),
+        method="failure_episodes",
+    )
+    repeated_dataset = DatasetManifest.model_validate(
+        read(px, output(repeated, "dataset"))["manifest"]
+    )
+    assert px.datasets.register(repeated_dataset) == selected_ref
     tampered = read(px, output(archive, "telemetry"))
     tampered["episodes"][0]["success"] = False
     with pytest.raises(DomainValidationError, match="differ"):
         px.failures.analyze(px.artifacts.put_json(tampered), method="trajectory_diagnostics")
 
 
-def test_feedback_validates_policy_intervention_and_renders_evidence(episode_data):
+def test_feedback_validates_policy_intervention_and_renders_evidence(episode_data, monkeypatch):
     from physrealx.domain import EvaluationReport
 
     px, dataset, reference, _, episodes, _ = episode_data
@@ -291,6 +333,21 @@ def test_feedback_validates_policy_intervention_and_renders_evidence(episode_dat
                 "backend": original.backend,
                 "policy": recovery_policy,
                 "metadata": {"tags": ["expert_demonstration", "failure_recovery"]},
+                "steps": tuple(
+                    step.model_copy(
+                        update={
+                            "observations": {
+                                **step.observations,
+                                "contact.force": step.observations["contact.force"].model_copy(
+                                    update={
+                                        "inline": (100.0 if 2 <= step.index <= 4 else 0.0,),
+                                    }
+                                ),
+                            },
+                        }
+                    )
+                    for step in successful.steps
+                ),
             }
         )
         artifact = px.artifacts.put_json(recovery)
@@ -324,19 +381,26 @@ def test_feedback_validates_policy_intervention_and_renders_evidence(episode_dat
     )
     causal_document = read(px, causal)
     assert causal_document["validated_count"] == len(failed)
+    assert all(row["causal_category"] == "policy" for row in causal_document["paired_failures"])
     plan = px.feedback.plan_physics_calibration(telemetry, failure_report)
     assert read(px, plan)["status"] == "AWAITING_REAL_EVIDENCE"
 
-    model_artifact = px.artifacts.put_json({"model": "initial"})
+    training_dataset = px.datasets.register(
+        dataset.model_copy(
+            update={
+                "resource_id": "feedback.training",
+                "episodes": (dataset.episodes[0],),
+                "source_runs": (dataset.episodes[0].run_id,),
+                "total_steps": dataset.episodes[0].step_count,
+            }
+        )
+    )
+    initial_model, parent = fixture_model(px, training_dataset, "feedback.initial.model")
+    updated_model, _ = fixture_model(px, training_dataset, "feedback.updated.model", parent=parent)
     initial_report = EvaluationReport(
         resource_id="feedback.initial",
         version="1.0.0",
-        model=VersionedRef(
-            resource_type=ResourceType.MODEL,
-            resource_id="feedback.model",
-            version="1.0.0",
-            artifact_id=model_artifact.artifact_id,
-        ),
+        model=initial_model,
         dataset=reference,
         success_rate=6 / 8,
         metrics={"episode_count": 8.0, "success_count": 6.0},
@@ -366,12 +430,7 @@ def test_feedback_validates_policy_intervention_and_renders_evidence(episode_dat
     updated_report = initial_report.model_copy(
         update={
             "resource_id": "feedback.updated",
-            "model": VersionedRef(
-                resource_type=ResourceType.MODEL,
-                resource_id="feedback.model.updated",
-                version="1.0.0",
-                artifact_id=px.artifacts.put_json({"model": "updated"}).artifact_id,
-            ),
+            "model": updated_model,
             "dataset": updated_dataset,
             "success_rate": 1.0,
             "metrics": {
@@ -410,12 +469,121 @@ def test_feedback_validates_policy_intervention_and_renders_evidence(episode_dat
             },
         }
     )
-    assessment = assess_policy_update(px.artifacts, initial_paired, updated_report)
-    assert read(px, assessment)["status"] == "PROMOTE"
+    initial_paired_ref = initial_paired.reference(px.artifacts.put_json(initial_paired).artifact_id)
+    updated_report_ref = updated_report.reference(px.artifacts.put_json(updated_report).artifact_id)
+    assessment = assess_policy_update(px.artifacts, initial_paired_ref, updated_report_ref)
+    assert read(px, assessment)["initial_evaluation"] == initial_paired_ref.model_dump(mode="json")
+    document = read(px, assessment)
+    assert document["status"] == "COLLECT_MORE_DATA"
+    assert "insufficient_evaluation_episodes" in document["guardrail_violations"]
+    assert document["metrics"]["contact_variation_delta_n"] is None
+    assert document["metrics"]["quality_pair_count"] == 0
+
+    # Independently executed experts enable comparison when the baseline never succeeds.
+    expert_episodes = [
+        row.model_copy(
+            update={
+                "episode_id": str(uuid.uuid4()),
+                "run_id": str(uuid.uuid4()),
+                "policy": recovery_policy.model_copy(update={"config": {"expert": True}}),
+            }
+        )
+        for row in recovery_episodes
+    ]
+    expert_summaries = tuple(
+        EpisodeSummary(
+            episode_id=row.episode_id,
+            run_id=row.run_id,
+            index=row.index,
+            success=row.success,
+            step_count=len(row.steps),
+            artifact=px.artifacts.put_json(row),
+        )
+        for row in expert_episodes
+    )
+    expert_dataset = px.datasets.register(
+        dataset.model_copy(
+            update={
+                "resource_id": "feedback.quality.reference",
+                "episodes": expert_summaries,
+                "source_runs": tuple(row.run_id for row in expert_episodes),
+                "total_steps": sum(row.step_count for row in expert_summaries),
+            }
+        )
+    )
+    small_fixture_gate = {"min_episodes": 2, "min_quality_pairs": 2}
+    passed = assess_policy_update(
+        px.artifacts,
+        initial_paired_ref,
+        updated_report_ref,
+        small_fixture_gate,
+        reference_dataset=expert_dataset,
+    )
+    assert read(px, passed)["status"] == "PROMOTE"
+    assert read(px, passed)["metrics"]["quality_pair_count"] == 2
+    assert read(px, passed)["metrics"]["contact_variation_delta_n"] == 0
+    assert all(
+        row["updated_contact_variation_n"] > row["initial_contact_variation_n"]
+        for row in read(px, passed)["paired_episodes"]
+    )
+    insufficient = assess_policy_update(
+        px.artifacts, initial_paired_ref, updated_report_ref, reference_dataset=expert_dataset
+    )
+    assert read(px, insufficient)["guardrail_violations"] == [
+        "insufficient_evaluation_episodes",
+        "insufficient_successful_quality_pairs",
+    ]
+
+    # Same seed alone is insufficient: recorded initial state must also agree.
+    from physrealx.integrations.feedback import _validate_paired_conditions
+
+    changed = recovery_episodes[0]
+    initial_step = changed.steps[0]
+    initial_value = initial_step.observations["joint.position"]
+    changed = changed.model_copy(
+        update={
+            "steps": (
+                initial_step.model_copy(
+                    update={
+                        "observations": {
+                            **initial_step.observations,
+                            "joint.position": initial_value.model_copy(update={"inline": (0.01,)}),
+                        }
+                    }
+                ),
+                *changed.steps[1:],
+            )
+        }
+    )
+    with pytest.raises(DomainValidationError, match="initial joint state"):
+        _validate_paired_conditions(failed[0], changed)
+    with pytest.raises(DomainValidationError, match="separate expert"):
+        assess_policy_update(
+            px.artifacts,
+            initial_paired_ref,
+            updated_report_ref,
+            small_fixture_gate,
+            reference_dataset=updated_dataset,
+        )
+
+    # Changing the candidate training set cannot erase its parent's leaked scenario.
+    _, checkpoint = fixture_model(px, initial_paired_dataset, "leaked.parent")
+    contaminated_model, _ = fixture_model(px, training_dataset, "leaked.child", parent=checkpoint)
+    contaminated_report = updated_report.model_copy(update={"model": contaminated_model})
+    contaminated_ref = contaminated_report.reference(
+        px.artifacts.put_json(contaminated_report).artifact_id
+    )
+    with pytest.raises(DomainValidationError, match="training ancestry"):
+        assess_policy_update(px.artifacts, initial_paired_ref, contaminated_ref)
+
+    preview = px.feedback.preview_demonstrations(tuple(recovery_refs))
+    assert px.artifacts.get_bytes(preview).startswith(b"\x89PNG")
+    with pytest.raises(DomainValidationError, match="duplicate"):
+        px.feedback.preview_demonstrations((recovery_refs[0], recovery_refs[0]))
 
     dashboard = preview_feedback_report(
         px.artifacts,
-        initial_report,
+        initial_paired,
         updated_report,
         failure_report,
         causal,
@@ -434,9 +602,48 @@ def test_feedback_validates_policy_intervention_and_renders_evidence(episode_dat
             "episode_id": str(uuid.uuid4()),
             "run_id": str(uuid.uuid4()),
             "policy": updated_policy,
+            "steps": tuple(
+                step.model_copy(
+                    update={
+                        "timestamp_seconds": step.timestamp_seconds * 2,
+                        "observations": {
+                            name: value.model_copy(
+                                update={"timestamp_seconds": step.timestamp_seconds * 2}
+                            )
+                            for name, value in step.observations.items()
+                        },
+                        "state": {
+                            name: value.model_copy(
+                                update={"timestamp_seconds": step.timestamp_seconds * 2}
+                            )
+                            for name, value in step.state.items()
+                        },
+                    }
+                )
+                for step in recovery_episodes[0].steps
+            ),
         }
     )
     updated_artifact = px.artifacts.put_json(updated_episode)
+    from matplotlib.figure import Figure
+
+    captured = []
+    savefig = Figure.savefig
+
+    def capture(figure, *args, **kwargs):
+        captured.append(
+            {
+                "rgb": [np.asarray(axis.images[0].get_array()).copy() for axis in figure.axes[:3]],
+                "positions": [
+                    np.asarray(axis.lines[0].get_ydata()).copy() for axis in figure.axes[3:6]
+                ],
+                "limits": [axis.get_ylim() for axis in figure.axes[3:6]],
+                "units": figure.axes[3].get_ylabel(),
+            }
+        )
+        return savefig(figure, *args, **kwargs)
+
+    monkeypatch.setattr(Figure, "savefig", capture)
     cycle = preview_feedback_cycle(
         px.artifacts,
         next(episode for episode in dataset.episodes if not episode.success).artifact,
@@ -446,12 +653,50 @@ def test_feedback_validates_policy_intervention_and_renders_evidence(episode_dat
         fps=2,
     )
     assert px.artifacts.get_bytes(cycle).startswith(b"GIF")
+    assert len(captured) == 3
+    assert len(set(captured[0]["limits"])) == 1
+    assert "(m)" in captured[0]["units"]
+    assert captured[0]["positions"][1][-1] == pytest.approx(0.3)
+    assert captured[1]["rgb"][1][0, 0, 0] > captured[1]["rgb"][2][0, 0, 0]
+    with pytest.raises(DomainValidationError, match="differs from policy assessment"):
+        preview_feedback_report(
+            px.artifacts, initial_report, updated_report, failure_report, causal, plan, assessment
+        )
 
 
 def test_real_feedback_requires_deployment_attestation_and_prepares_calibration(episode_data):
-    from physrealx.robot_agent import DeploymentMode, RobotExecutionEvidence
+    from physrealx.domain import canonical_record_id
+    from physrealx.robot_agent import DeploymentMode, RobotExecutionEvidence, TelemetryManifest
 
     px, dataset, _, _, episodes, _ = episode_data
+    raw = px.artifacts.put_bytes(b"synthetic mcap fixture", media_type="application/vnd.mcap")
+    telemetry_manifest = px.artifacts.put_json(
+        TelemetryManifest(
+            deployment_record_id=canonical_record_id("synthetic deployment"),
+            robot_id="test-robot",
+            clock_domain="ros_time",
+            started_at_ns=0,
+            completed_at_ns=1,
+            message_count=34,
+            topics=("/joint_states",),
+            mcap=raw,
+            topic_schemas=px.artifacts.put_json({"/joint_states": "sensor_msgs/msg/JointState"}),
+            crc_verified=True,
+            index_verified=True,
+            timestamps_monotonic=True,
+        )
+    )
+    deployment_report = px.artifacts.put_json(
+        RobotExecutionEvidence(
+            status="COMPLETED",
+            deployment_plan=px.artifacts.put_json({"kind": "deployment-plan"}),
+            telemetry=telemetry_manifest,
+            safety_events=px.artifacts.put_json({"events": []}),
+            final_mode=DeploymentMode.REVOKED,
+            started_at_ns=0,
+            completed_at_ns=1,
+        )
+    )
     summaries = []
     real_episodes = []
     for index, source in enumerate(episodes[:2]):
@@ -460,7 +705,31 @@ def test_real_feedback_requires_deployment_attestation_and_prepares_calibration(
                 "episode_id": str(uuid.uuid4()),
                 "run_id": str(uuid.uuid4()),
                 "source": EpisodeSource.REAL,
-                "metadata": {"capture_id": f"robot-capture-{index}"},
+                "metadata": {
+                    "capture_id": f"robot-capture-{index}",
+                    "deployment_report": deployment_report.model_dump(mode="json"),
+                    "raw_telemetry": raw.model_dump(mode="json"),
+                    "gravity_compensated": True,
+                    "isolated_joint": "joint-0",
+                },
+                "steps": tuple(
+                    source.steps[min(i // 2, 8)].model_copy(
+                        update={
+                            "index": i,
+                            "timestamp_seconds": i * 0.025,
+                            "is_first": i == 0,
+                            "observations": {
+                                name: value.model_copy(update={"timestamp_seconds": i * 0.025})
+                                for name, value in source.steps[min(i // 2, 8)].observations.items()
+                            },
+                            "state": {
+                                name: value.model_copy(update={"timestamp_seconds": i * 0.025})
+                                for name, value in source.steps[min(i // 2, 8)].state.items()
+                            },
+                        }
+                    )
+                    for i in range(17)
+                ),
             }
         )
         artifact = px.artifacts.put_json(episode)
@@ -492,17 +761,6 @@ def test_real_feedback_requires_deployment_attestation_and_prepares_calibration(
             method="episode_telemetry",
         )
 
-    deployment_report = px.artifacts.put_json(
-        RobotExecutionEvidence(
-            status="COMPLETED",
-            deployment_plan=px.artifacts.put_json({"kind": "deployment-plan"}),
-            telemetry=px.artifacts.put_bytes(b"mcap", media_type="application/vnd.mcap"),
-            safety_events=px.artifacts.put_json({"events": []}),
-            final_mode=DeploymentMode.REVOKED,
-            started_at_ns=0,
-            completed_at_ns=1,
-        )
-    )
     archive = px.telemetry.record(
         px.artifacts.put_json(
             DeploymentEvidence(dataset=real_dataset, deployment_report=deployment_report)
@@ -514,14 +772,91 @@ def test_real_feedback_requires_deployment_attestation_and_prepares_calibration(
     calibration = px.feedback.prepare_physics_calibration(
         output(archive, "telemetry"),
         joint_name="joint-0",
-        joint_type="hinge",
+        joint_type="slide",
         joint_index=0,
         prior_parameters=(1.0, 0.1, 0.05),
     )
     assert read(px, calibration)["schema"] == ("physrealx.joint-system-identification-evidence/1")
 
+    assert read(px, calibration)["gravity_compensated"] is True
+    for changes, message in (
+        ({"joint_index": -1}, "nonnegative"),
+        ({"joint_index": 2}, "joint_index"),
+        ({"joint_type": "hinge"}, "units"),
+    ):
+        with pytest.raises(DomainValidationError, match=message):
+            px.feedback.prepare_physics_calibration(
+                output(archive, "telemetry"),
+                **{
+                    "joint_name": "joint-0",
+                    "joint_type": "slide",
+                    "joint_index": 0,
+                    "prior_parameters": (1.0, 0.1, 0.05),
+                    **changes,
+                },
+            )
+    unqualified = []
+    for index, episode in enumerate(real_episodes):
+        without_compensation = episode.model_copy(
+            update={
+                "episode_id": str(uuid.uuid4()),
+                "metadata": {
+                    key: value
+                    for key, value in episode.metadata.items()
+                    if key not in {"gravity_compensated", "isolated_joint"}
+                },
+            }
+        )
+        unqualified.append(
+            summaries[index].model_copy(
+                update={
+                    "episode_id": without_compensation.episode_id,
+                    "artifact": px.artifacts.put_json(without_compensation),
+                }
+            )
+        )
+    unqualified_ref = px.datasets.register(
+        px.datasets.get(real_dataset).model_copy(
+            update={
+                "resource_id": "learning.real.uncompensated",
+                "episodes": tuple(unqualified),
+            }
+        )
+    )
+    unqualified_archive = px.telemetry.record(
+        px.artifacts.put_json(
+            DeploymentEvidence(dataset=unqualified_ref, deployment_report=deployment_report)
+        ),
+        method="episode_telemetry",
+    )
+    with pytest.raises(DomainValidationError, match="gravity-compensated"):
+        px.feedback.prepare_physics_calibration(
+            output(unqualified_archive, "telemetry"),
+            joint_name="joint-0",
+            joint_type="slide",
+            joint_index=0,
+            prior_parameters=(1.0, 0.1, 0.05),
+        )
+    unrelated_report = read(px, deployment_report)
+    unrelated_manifest = read(px, telemetry_manifest)
+    unrelated_manifest["mcap"] = px.artifacts.put_bytes(
+        b"unrelated-capture", media_type="application/vnd.mcap"
+    ).model_dump(mode="json")
+    unrelated_report["telemetry"] = px.artifacts.put_json(unrelated_manifest).model_dump(
+        mode="json"
+    )
+    with pytest.raises(DomainValidationError, match="must link"):
+        px.telemetry.record(
+            px.artifacts.put_json(
+                DeploymentEvidence(
+                    dataset=real_dataset, deployment_report=px.artifacts.put_json(unrelated_report)
+                )
+            ),
+            method="episode_telemetry",
+        )
 
-def test_act_official_network_checkpoint_and_action_chunks_roundtrip(episode_data):
+
+def test_act_official_network_checkpoint_and_action_chunks_roundtrip(episode_data, monkeypatch):
     torch = pytest.importorskip("torch")
     pytest.importorskip("torchvision")
     pytest.importorskip("einops")
@@ -565,7 +900,7 @@ def test_act_official_network_checkpoint_and_action_chunks_roundtrip(episode_dat
     assert px.artifacts.get_bytes(policy_preview).startswith(b"\x89PNG\r\n\x1a\n")
     assert model.policy.config["n_action_steps"] == 2
     assert model.training_config["code"]["source_tree"]["artifact_id"].startswith("art_")
-    policy = ACTPolicy({"model_artifact_id": ref.artifact_id, "n_action_steps": 2}, px.artifacts)
+    policy = ACTPolicy({"model_artifact_id": ref.artifact_id}, px.artifacts)
     policy.reset(0)
     action = policy.act(Frame(observations=episodes[0].steps[0].observations, state={}), task, 0)
     assert 0 <= action.inline[0] <= 1
@@ -573,13 +908,26 @@ def test_act_official_network_checkpoint_and_action_chunks_roundtrip(episode_dat
     policy.reset(1)
     assert not policy._commands
     policy.close()
+    parent = px.artifacts.put_json(model, media_type="application/vnd.physrealx.model+json")
+    dataset = px.datasets.get(reference)
+    summary = dataset.episodes[0]
+    shifted_ref = px.datasets.register(
+        dataset.model_copy(
+            update={
+                "resource_id": "learning.act.shifted",
+                "episodes": (summary,),
+                "source_runs": (summary.run_id,),
+                "total_steps": summary.step_count,
+            }
+        )
+    )
     tuned_ref = px.training.submit(
         TrainingSpec(
             resource_id="learning.act.tuned",
             version="1.0.0",
-            dataset=reference,
+            dataset=shifted_ref,
             trainer=ACTTrainer.descriptor.bind(
-                checkpoint=model.weights,
+                checkpoint=parent,
                 config={
                     "steps": 1,
                     "chunk_size": 3,
@@ -591,9 +939,47 @@ def test_act_official_network_checkpoint_and_action_chunks_roundtrip(episode_dat
     )
     tuned = px.training.get_model(tuned_ref)
     assert tuned.training_config["training_scope"] == "fine_tune_on_selected_episode_split"
-    assert tuned.training_config["parent_checkpoint"] == model.weights.model_dump(mode="json")
-    assert tuned.trainer.checkpoint == model.weights
+    assert tuned.training_config["parent_checkpoint"] == parent.model_dump(mode="json")
+    assert tuned.trainer.checkpoint == parent
     assert torch.get_num_threads() == previous
+
+    for name in ("state_mean", "state_scale", "action_mean", "action_scale"):
+        assert tuned.training_config[name] == model.training_config[name]
+    with pytest.raises(DomainValidationError, match="complete model manifest"):
+        px.training.submit(
+            spec.model_copy(
+                update={
+                    "resource_id": "learning.act.raw",
+                    "trainer": spec.trainer.model_copy(update={"checkpoint": model.weights}),
+                }
+            )
+        )
+    with pytest.raises(DomainValidationError, match="incompatible"):
+        px.training.submit(
+            spec.model_copy(
+                update={
+                    "resource_id": "learning.act.reordered",
+                    "trainer": spec.trainer.model_copy(
+                        update={
+                            "checkpoint": parent,
+                            "config": {
+                                **spec.trainer.config,
+                                "observation_signals": ["joint.velocity", "joint.position"],
+                            },
+                        }
+                    ),
+                }
+            )
+        )
+    original_verify = px.artifacts.verify
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            px.artifacts,
+            "verify",
+            lambda reference: False if reference == model.weights else original_verify(reference),
+        )
+        with pytest.raises(DomainValidationError, match="corrupt model weights"):
+            px.training.submit(spec)
 
 
 def test_iql_trains_on_mixed_returns_and_roundtrips_policy(episode_data):
@@ -753,6 +1139,17 @@ def test_training_augmentation_rejects_heldout_scenarios_and_bad_demonstrations(
         row.episode_id for row in partitions["train"] if row.success
     }
 
+    # A matching recipe label is insufficient when the registered episodes differ.
+    wrong = dataset.model_copy(
+        update={
+            "resource_id": "training.wrong-selection",
+            "metadata": selected.metadata,
+        }
+    )
+    px.datasets.register(wrong)
+    with pytest.raises(ResourceConflictError, match="different training selection"):
+        px.datasets.training_subset(snapshot_ref, resource_id=wrong.resource_id)
+
     def augment(source, *, seed=None, tags=None):
         # Regeneration has new record IDs; scenario identity must still be protected.
         episode = source.model_copy(
@@ -796,10 +1193,31 @@ def test_training_augmentation_rejects_heldout_scenarios_and_bad_demonstrations(
         )
     expert = next(e for e in episodes if e.success)
     extra = augment(expert, seed=998, tags=["expert"])
+    labelled_evaluation = augment(
+        expert, seed=997, tags=["expert_demonstration", "policy_evaluation"]
+    )
+    with pytest.raises(DomainValidationError, match="required tag"):
+        px.datasets.training_subset(
+            snapshot_ref,
+            resource_id="not-an-expert",
+            augmentations=(labelled_evaluation,),
+            required_tag="expert_demonstration",
+        )
     result = px.datasets.training_subset(
         snapshot_ref, resource_id="augmented", augmentations=(extra,)
     )
     assert len(px.datasets.get(result).episodes) == len(selected.episodes) + 1
+    with pytest.raises(DomainValidationError, match="held-out"):
+        px.datasets.training_subset(
+            snapshot_ref,
+            resource_id="external-heldout",
+            augmentations=(extra,),
+            excluded_datasets=(extra,),
+        )
+    with pytest.raises(DomainValidationError, match="excluded evaluation"):
+        px.datasets.training_subset(
+            snapshot_ref, resource_id="leaked-base", excluded_datasets=(selected_ref,)
+        )
     with pytest.raises(DomainValidationError, match="duplicates"):
         px.datasets.training_subset(
             snapshot_ref, resource_id="duplicates", augmentations=(extra, extra)

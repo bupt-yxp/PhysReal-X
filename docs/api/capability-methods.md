@@ -40,6 +40,7 @@ python -m pip install --no-build-isolation -e '.[artgs]'
 | `asset.package` | `openusd` | 自包含 USDZ（含纹理与已绑定高斯模型）；数值复核几何、质量、惯量、关节和单位 |
 | `asset.validate` | `mujoco_holdout` | 第三份独立轨迹的真实动力学回放；报告具体位置/速度误差 |
 | `simulation.run` | `mujoco` | 通过 `runs.submit` 执行场景、关节控制和同步多相机 RGB/Depth/Mask/Event/点云/位姿及刚体外力/力矩；当前固定各资产根节点 |
+| `simulation.run` | `isaac_sim` | Isaac Sim 4.5 独立进程执行 USD 动力学、RTX 多模态相机、刚体外力矩与按种子域随机化；通过 `simulations.run(backend=...)` 或 `RunSpec.backend` 使用 |
 | `simulation.run` | `reference_drawer` | 平台契约回归 |
 | `render.generate` | `registered_artgs` | CUDA 原生高斯渲染，由同一物理资产的实际关节状态驱动；单目标物体 |
 | `policy.inference` | `joint_target` | 与引擎无关的确定性位置/增量目标控制 |
@@ -89,7 +90,7 @@ print(operation.metrics)
 
 ## 尚未接入的扩展
 
-Isaac Sim、Genesis、学习式场景生成、全场景高斯合成及 ROS 2 硬件适配器仍需独立实现和验收。OpenVLA-OFT/TD-MPC2 已有数据与启动交接接口，外部官方运行器和检查点仍需单独部署。真实部署还需要节点 Agent、硬件驱动和现场证据。
+Genesis、学习式场景生成、全场景高斯合成及 ROS 2 硬件适配器仍需独立实现和验收。OpenVLA-OFT/TD-MPC2 已有数据与启动交接接口，外部官方运行器和检查点仍需单独部署。真实部署还需要节点 Agent、硬件驱动和现场证据。
 
 `assets.import_reference` 直接从已导入 USD 提取参考网格与关节；`assets.prepare_rgbd` 将源序列解码为绑定视角的阶段制品，复用现有制品库和方法服务。
 

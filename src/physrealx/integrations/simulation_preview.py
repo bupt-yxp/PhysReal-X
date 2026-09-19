@@ -301,6 +301,7 @@ def preview_simulation_episode(
     camera: str | None = None,
     frames: int = 12,
     fps: int = 6,
+    sensor_source: str = "blender",
 ) -> ArtifactRef:
     """Render physics, synchronized modalities and state traces into one GIF."""
     import matplotlib
@@ -310,6 +311,8 @@ def preview_simulation_episode(
     matplotlib.use("Agg")
     from matplotlib import pyplot as plt
 
+    if sensor_source not in {"blender", "recorded"}:
+        raise DomainValidationError("sensor_source must be 'blender' or 'recorded'")
     dataset = load_resource(store, dataset_ref, DatasetManifest)
     if type(episode_index) is not int or not 0 <= episode_index < len(dataset.episodes):
         raise DomainValidationError("simulation preview episode index is out of range")
@@ -336,21 +339,39 @@ def preview_simulation_episode(
     sensor, camera_positions, camera_orientations, camera_spec = _sensor_camera(
         episode, selected, store, camera_name
     )
-    rendered = render_blender_scene_frames(store, episode.scene, states, sensor=sensor)
+    rendered = render_blender_scene_frames(
+        store, episode.scene, states, sensor=sensor if sensor_source == "blender" else None
+    )
     scene_frames = list(rendered.overview)
-    display_rgbs = list(rendered.rgb)
-    depths = list(rendered.depth)
-    masks = list(rendered.mask)
-    accumulator = EventAccumulator(camera_spec.event_threshold)
-    events = [accumulator.update(np.asarray(rgb)) for rgb in display_rgbs]
-    intrinsics = camera_spec.intrinsics()
+    if sensor_source == "blender":
+        display_rgbs = list(rendered.rgb)
+        depths = list(rendered.depth)
+        masks = list(rendered.mask)
+        accumulator = EventAccumulator(camera_spec.event_threshold)
+        events = [accumulator.update(np.asarray(rgb)) for rgb in display_rgbs]
+        intrinsics_by_frame = [camera_spec.intrinsics()] * count
+        source_label = "Blender PBR"
+    else:
+
+        def recorded(modality: str) -> list[Any]:
+            return [
+                _observation_array(episode.steps[int(i)], f"camera.{camera_name}.{modality}", store)
+                for i in selected
+            ]
+
+        display_rgbs, depths, masks, events = (
+            recorded(m) for m in ("rgb", "depth", "mask", "events")
+        )
+        intrinsics_by_frame = recorded("intrinsics")
+        source_label = f"{episode.backend.name} native"
     point_clouds = []
     point_colours = []
-    for rgb, depth, position, orientation in zip(
+    for rgb, depth, position, orientation, intrinsics in zip(
         display_rgbs,
         depths,
         camera_positions,
         camera_orientations,
+        intrinsics_by_frame,
         strict=True,
     ):
         organized = project_depth(depth, intrinsics)
@@ -402,7 +423,7 @@ def preview_simulation_episode(
             )
         ]
         axes[0].imshow(display_rgb)
-        axes[0].set_title(f"{camera_name} / PBR RGB")
+        axes[0].set_title(f"{camera_name} / {source_label} RGB")
         valid = depth[depth > 0]
         if valid.size:
             axes[1].imshow(
@@ -423,7 +444,7 @@ def preview_simulation_episode(
         point_axis = figure.add_axes((0.36, 0.315, 0.34, 0.55))
         point_axis.imshow(point_cloud_frame)
         point_axis.set_title(
-            f"Blender PBR RGB point cloud ({len(point_cloud):,} points)\n"
+            f"{source_label} RGB point cloud ({len(point_cloud):,} points)\n"
             f"t = {step.timestamp_seconds:.2f} s"
         )
         point_axis.axis("off")

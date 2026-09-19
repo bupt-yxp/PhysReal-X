@@ -90,6 +90,28 @@ def network(config: ACTNetworkConfig) -> Any:
     return algorithm_module("act").ACT(config)
 
 
+def _statistics(manifest: ModelManifest, architecture: ACTNetworkConfig) -> dict[str, Any]:
+    """Normalization is part of a trained model's input/output contract."""
+    import numpy as np
+
+    result = {}
+    for prefix, dimension in (
+        ("state", architecture.state_dim),
+        ("action", architecture.action_dim),
+    ):
+        for suffix in ("mean", "scale"):
+            name = f"{prefix}_{suffix}"
+            values = np.asarray(manifest.training_config.get(name), dtype=np.float32)
+            if (
+                values.shape != (dimension,)
+                or not np.isfinite(values).all()
+                or (suffix == "scale" and (values <= 0).any())
+            ):
+                raise DomainValidationError(f"ACT checkpoint has invalid {name}")
+            result[name] = values
+    return result
+
+
 class ACTTrainingConfig(DomainModel):
     observation_signals: tuple[str, ...] = ("joint.position", "joint.velocity")
     image_signals: tuple[str, ...] = ("camera.front.rgb",)
@@ -149,6 +171,7 @@ class ACTTrainer:
     descriptor = builtin_method(
         MethodCapability.POLICY_TRAIN,
         "act",
+        version="2.0.0",
         input_contract="TrainingSpec/1+DatasetManifest/1+Episode/1",
         output_contract="ModelManifest/1",
         python=">=3.10,<3.13",
@@ -175,6 +198,15 @@ class ACTTrainer:
         from safetensors.torch import load, save
 
         config = ACTTrainingConfig.model_validate(spec.trainer.config)
+        selected_names = (*config.observation_signals, *config.image_signals)
+        schema = {signal.name: signal for signal in dataset.observation_schema}
+        if len(set(selected_names)) != len(selected_names) or any(
+            name not in schema for name in selected_names
+        ):
+            raise DomainValidationError(
+                "ACT training signals must uniquely match the dataset schema"
+            )
+        selected_signals = tuple(schema[name] for name in selected_names)
         started_at = datetime.now(timezone.utc)
         source, environment = capture_runtime(self.store, algorithms=("act",))
         if config.device == "cuda" and not torch.cuda.is_available():
@@ -218,6 +250,26 @@ class ACTTrainer:
             image_signals=config.image_signals,
             chunk_size=config.chunk_size,
         )
+        parent = None
+        if spec.trainer.checkpoint is not None:
+            checkpoint = spec.trainer.checkpoint
+            if checkpoint.media_type != "application/vnd.physrealx.model+json":
+                raise DomainValidationError("ACT fine-tuning requires a complete model manifest")
+            parent = ModelManifest.model_validate_json(self.store.get_bytes(checkpoint))
+            if (
+                parent.policy.descriptor != ACTPolicy.descriptor
+                or parent.training_config.get("source_revision") != SOURCE_REVISION
+                or parent.observation_signals != selected_signals
+                or parent.action_signal != dataset.action_schema
+                or ACTNetworkConfig.model_validate(parent.training_config["architecture"])
+                != architecture
+            ):
+                raise DomainValidationError(
+                    "ACT parent model has incompatible source, signals or architecture"
+                )
+            statistics = _statistics(parent, architecture)
+            mean, scale = statistics["state_mean"], statistics["state_scale"]
+            action_mean, action_scale = statistics["action_mean"], statistics["action_scale"]
         previous_threads = torch.get_num_threads()
         torch.set_num_threads(config.threads)
         try:
@@ -226,15 +278,10 @@ class ACTTrainer:
             ):
                 torch.manual_seed(config.seed)
                 model = network(architecture).to(config.device)
-                parent_checkpoint = spec.trainer.checkpoint
-                if parent_checkpoint is not None:
-                    if parent_checkpoint.media_type != "application/vnd.safetensors":
-                        raise DomainValidationError(
-                            "ACT fine-tuning requires a safetensors weight checkpoint"
-                        )
+                if parent is not None:
                     try:
                         model.load_state_dict(
-                            load(self.store.get_bytes(parent_checkpoint)), strict=True
+                            load(self.store.get_bytes(parent.weights)), strict=True
                         )
                     except (RuntimeError, ValueError) as error:
                         raise DomainValidationError(
@@ -281,23 +328,25 @@ class ACTTrainer:
                     losses.append(float(loss.detach()))
                 model.eval()
                 with torch.inference_mode():
-                    predicted, _ = model(
-                        {
-                            "observation.state": x[: config.batch_size],
-                            "observation.images": [image[: config.batch_size] for image in cameras],
-                        }
-                    )
-                    training_mae = float(
-                        (
-                            predicted[:, 0] * torch.tensor(action_scale, device=config.device)
-                            + torch.tensor(action_mean, device=config.device)
-                            - torch.tensor(
-                                action_array[: config.batch_size, 0], device=config.device
-                            )
+                    absolute_error = 0.0
+                    for start in range(0, len(states), config.batch_size):
+                        selection = slice(start, start + config.batch_size)
+                        predicted, _ = model(
+                            {
+                                "observation.state": x[selection],
+                                "observation.images": [image[selection] for image in cameras],
+                            }
                         )
-                        .abs()
-                        .mean()
-                    )
+                        absolute_error += float(
+                            (
+                                predicted[:, 0] * torch.tensor(action_scale, device=config.device)
+                                + torch.tensor(action_mean, device=config.device)
+                                - torch.tensor(action_array[selection, 0], device=config.device)
+                            )
+                            .abs()
+                            .sum()
+                        )
+                    training_mae = absolute_error / (len(states) * architecture.action_dim)
                 weights = artifacts.put_bytes(
                     save(
                         {
@@ -309,14 +358,6 @@ class ACTTrainer:
                 )
         finally:
             torch.set_num_threads(previous_threads)
-        selected_names = (*config.observation_signals, *config.image_signals)
-        schema = {signal.name: signal for signal in dataset.observation_schema}
-        if len(set(selected_names)) != len(selected_names) or any(
-            name not in schema for name in selected_names
-        ):
-            raise DomainValidationError(
-                "ACT training signals must uniquely match the dataset schema"
-            )
         return ModelManifest(
             resource_id=spec.resource_id,
             version=spec.version,
@@ -327,7 +368,7 @@ class ACTTrainer:
             ),
             dataset=spec.dataset,
             weights=weights,
-            observation_signals=tuple(schema[name] for name in selected_names),
+            observation_signals=selected_signals,
             action_signal=dataset.action_schema,
             training_config={
                 "configuration": config.model_dump(mode="json"),
@@ -398,7 +439,11 @@ class ACTPolicy:
         self.architecture = ACTNetworkConfig.model_validate(
             manifest.training_config["architecture"]
         )
-        self.n_action_steps = self.config.n_action_steps or self.architecture.chunk_size
+        self.n_action_steps = (
+            self.config.n_action_steps
+            or self.training.n_action_steps
+            or self.architecture.chunk_size
+        )
         if self.n_action_steps > self.architecture.chunk_size:
             raise DomainValidationError(
                 "ACT execution chunk exceeds the trained prediction horizon"
@@ -407,10 +452,8 @@ class ACTPolicy:
         self.model.load_state_dict(load(store.get_bytes(manifest.weights)), strict=True)
         self.model.eval()
         self.statistics = {
-            name: torch.tensor(
-                manifest.training_config[name], dtype=torch.float32, device=self.config.device
-            )
-            for name in ("state_mean", "state_scale", "action_mean", "action_scale")
+            name: torch.tensor(values, dtype=torch.float32, device=self.config.device)
+            for name, values in _statistics(manifest, self.architecture).items()
         }
         self.action_signal = manifest.action_signal
         self._commands: deque[Any] = deque()
