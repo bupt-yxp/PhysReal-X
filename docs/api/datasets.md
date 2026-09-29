@@ -19,7 +19,7 @@ collection = px.artifacts.put_json(
 operation = px.datasets.ingest(
     collection,
     method="episode_dataset",
-    config={"resource_id": "oven4.dataset", "version": "1.0.0"},
+    config={"resource_id": "laptop1.dataset", "version": "1.0.0"},
 )
 ```
 

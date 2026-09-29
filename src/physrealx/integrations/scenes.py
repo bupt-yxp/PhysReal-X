@@ -286,7 +286,23 @@ def place_robot_for_joint_task(
     home_transforms = link_transforms(robot_asset, home_map)
     home_effector_transform = home_transforms[end_effector_link]
     home_effector = home_effector_transform[:3, 3]
-    yaw = math.pi / 2
+    contact_motion = contacts[1] - contacts[0]
+    horizontal_motion = contact_motion.copy()
+    horizontal_motion[2] = 0.0
+    horizontal_motion_norm = float(np.linalg.norm(horizontal_motion))
+    # Revolute contacts follow an arc.  Place the base on that arc's horizontal
+    # tangent and center its workspace over both endpoints; using only the first
+    # endpoint can make an otherwise feasible closing motion unreachable.
+    # Purely vertical motion retains the stable room-facing approach.
+    tangent_approach = (
+        target_joint.joint_type is JointType.REVOLUTE
+        and horizontal_motion_norm > 1e-4
+    )
+    if tangent_approach:
+        push_direction = horizontal_motion / horizontal_motion_norm
+        yaw = math.atan2(float(push_direction[1]), float(push_direction[0]))
+    else:
+        yaw = math.pi / 2
     base_rotation = Rotation.from_euler("z", yaw)
     forward_world = base_rotation.apply(np.asarray([1.0, 0.0, 0.0]))
     desired_world_orientation = base_rotation.as_matrix() @ home_effector_transform[:3, :3]
@@ -321,8 +337,12 @@ def place_robot_for_joint_task(
         raise DomainValidationError("robot end effector has no forward contact surface")
     tool_reach = float(np.median(leading_tool))
     hand_contacts = [point - forward_world * tool_reach for point in contacts]
-    base_translation = hand_contacts[0] - base_rotation.apply(
-        home_effector + np.asarray([clearance_m + 0.15, 0.0, 0.0])
+    placement_contact = (
+        (hand_contacts[0] + hand_contacts[1]) / 2 if tangent_approach else hand_contacts[0]
+    )
+    standoff = clearance_m if tangent_approach else clearance_m + 0.15
+    base_translation = placement_contact - base_rotation.apply(
+        home_effector + np.asarray([standoff, 0.0, 0.0])
     )
     base_translation[2] = 0.0
     base_pose = PoseSpec(
@@ -330,32 +350,100 @@ def place_robot_for_joint_task(
         rotation_xyzw=tuple(float(value) for value in base_rotation.as_quat()),
     )
 
+    moving_robot_links = {item.child for item in controlled}
+    while True:
+        added = {
+            item.child
+            for item in robot_asset.joints
+            if item.parent in moving_robot_links and item.child not in moving_robot_links
+        }
+        if not added:
+            break
+        moving_robot_links.update(added)
+    static_robot_points = []
+    for link, mesh in robot_geometry:
+        if link in moving_robot_links:
+            continue
+        transform = home_transforms[link]
+        points = mesh.vertices @ transform[:3, :3].T + transform[:3, 3]
+        static_robot_points.append(base_rotation.apply(points) + base_translation)
+    if not static_robot_points:
+        raise DomainValidationError("robot requires static base collision geometry")
+    base_points = np.concatenate(static_robot_points)
+    base_bounds = np.asarray((base_points.min(axis=0), base_points.max(axis=0)))
+    occupied = scene_bounds(scene, store)
+    colliding = []
+    for item in scene.entities:
+        if item.role is SceneEntityRole.ENVIRONMENT:
+            continue
+        other = occupied[item.name]
+        separated = bool(
+            np.any(base_bounds[1] + clearance_m <= other[0])
+            or np.any(other[1] + clearance_m <= base_bounds[0])
+        )
+        if not separated:
+            colliding.append(item.name)
+    if colliding:
+        raise DomainValidationError(
+            "task-aware robot base placement collides with " f"{sorted(colliding)}"
+        )
+
     lower = np.asarray([item.lower_limit for item in controlled]) + 1e-5
     upper = np.asarray([item.upper_limit for item in controlled]) - 1e-5
 
     def solve(destination: Any, seed: Any) -> Any:
         local = base_rotation.inv().apply(np.asarray(destination) - base_translation)
+        seed = np.clip(np.asarray(seed), lower, upper)
 
-        def residual(values: Any) -> Any:
+        def residual(values: Any, regularization: Any) -> Any:
             positions = {item.name: float(value) for item, value in zip(controlled, values)}
             transform = link_transforms(robot_asset, positions)[end_effector_link]
             return np.r_[
                 transform[:3, 3] - local,
-                0.01 * (np.asarray(values) - home_positions),
+                0.00001 * (np.asarray(values) - regularization),
             ]
 
-        result = least_squares(
-            residual,
-            np.asarray(seed),
-            bounds=(lower, upper),
-            max_nfev=500,
-            ftol=1e-11,
-            xtol=1e-11,
-            gtol=1e-11,
+        span = upper - lower
+        joint_offsets = np.arange(1, len(controlled) + 1, dtype=float)
+        dispersed = tuple(
+            lower
+            + np.mod((sample + 1) * joint_offsets * 0.6180339887498949, 1.0)
+            * span
+            for sample in range(12)
         )
-        if not result.success or np.linalg.norm(residual(result.x)[:3]) > 0.01:
-            raise DomainValidationError("robot cannot reach the target articulation")
-        return result.x
+        starts = (
+            seed,
+            np.clip(home_positions, lower, upper),
+            lower + 0.50 * span,
+            lower + 0.25 * span,
+            lower + 0.75 * span,
+            *dispersed,
+        )
+        best = None
+        best_error = math.inf
+        for start in starts:
+            result = least_squares(
+                lambda values: residual(values, seed),
+                start,
+                bounds=(lower, upper),
+                max_nfev=500,
+                ftol=1e-11,
+                xtol=1e-11,
+                gtol=1e-11,
+            )
+            position_error = float(
+                np.linalg.norm(residual(result.x, seed)[:3])
+            )
+            if result.success and position_error < best_error:
+                best, best_error = result.x, position_error
+            if best_error <= 0.01:
+                break
+        if best is None or best_error > 0.01:
+            raise DomainValidationError(
+                "robot cannot reach the target articulation; "
+                f"best endpoint error is {best_error:.4f} m"
+            )
+        return best
 
     approach_direction = base_translation - hand_contacts[0]
     approach_direction[2] = 0.0
@@ -416,6 +504,9 @@ def place_robot_for_joint_task(
                     "contact_points_m": [point.tolist() for point in contacts],
                     "tool_reach_m": tool_reach,
                     "approach_point_m": approach_point.tolist(),
+                    "approach_yaw_rad": yaw,
+                    "approach_policy": "closing_tangent_or_vertical_front",
+                    "base_clearance_m": clearance_m,
                 },
             },
         }
@@ -529,16 +620,22 @@ class SceneGenerationAdapter:
         )
 
 
-class PhySceneGuidanceAdapter:
-    """Place explicit assets with PhyScene collision, room and interaction guidance."""
+class SceneSmithAdapter:
+    """Place a retrieved candidate with SceneSmith physical and interaction guidance."""
 
     descriptor = builtin_method(
         MethodCapability.SCENE_GENERATE,
-        "physcene_guidance",
+        "scenesmith",
         input_contract="SceneGenerationRequest/1",
         output_contract="SceneDraft/1",
         python=">=3.10,<3.13",
-        version="1.0.0",
+        version="1.1.0",
+    ).model_copy(
+        update={
+            "source_uri": "https://github.com/nepfaff/scenesmith",
+            "source_revision": "67cc408fd38334b4a926efef45e284302ed5055b",
+            "license_spdx": "MIT",
+        }
     )
 
     def probe(self) -> MethodProbe:
@@ -714,13 +811,21 @@ class PhySceneGuidanceAdapter:
             metadata={
                 "domain": request.domain,
                 "seed": request.seed,
-                "layout_method": "physcene_guidance",
-                "method_scope": "collision_room_and_interaction_guidance_without_diffusion",
+                "layout_method": "scenesmith",
+                "method_scope": "task_conditioned_candidate_placement_and_physical_screening",
                 "method_basis": {
-                    "project": "PhyScene",
-                    "source": "https://github.com/PhyScene/PhyScene",
-                    "revision": "50a32af9b114448d89e002b2d06e86bccdcec202",
-                    "objectives": ["collision", "room_layout", "reachability"],
+                    "project": "SceneSmith",
+                    "source": "https://github.com/nepfaff/scenesmith",
+                    "revision": "67cc408fd38334b4a926efef45e284302ed5055b",
+                    "license": "MIT",
+                    "adaptation": "PhysReal-X canonical SceneSpec and PM URDF bridge",
+                    "objectives": [
+                        "semantic_relations",
+                        "collision",
+                        "support",
+                        "room_layout",
+                        "interaction_reachability",
+                    ],
                 },
                 "relations": [item.model_dump(mode="json") for item in request.relations],
                 "interaction_corridor": None

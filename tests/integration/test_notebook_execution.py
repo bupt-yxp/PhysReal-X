@@ -29,7 +29,7 @@ def notebooks(tmp_path: Path, monkeypatch):
     )
     monkeypatch.setenv("JUPYTER_PATH", str(tmp_path / "jupyter"))
     monkeypatch.setenv("JUPYTER_RUNTIME_DIR", str(tmp_path / "runtime"))
-    for module in MODULES[:2]:
+    for module in MODULES:
         output = tmp_path / "examples" / module / "output"
         output.mkdir(parents=True)
         (output / "results.json").write_text('{"old": true}')
@@ -74,7 +74,6 @@ def test_resumed_execution_accepts_only_current_upstream_evidence(notebooks, mon
         modules[1:],
         timeout=30,
         kernel_name="test-python",
-        include_current_upstream=True,
     )
     assert report["requested_modules"] == [modules[1]]
     assert report["accepted_modules"] == list(modules)
@@ -89,7 +88,6 @@ def test_resumed_execution_accepts_only_current_upstream_evidence(notebooks, mon
             modules[1:],
             timeout=30,
             kernel_name="test-python",
-            include_current_upstream=True,
         )
 
 
@@ -153,3 +151,65 @@ def test_concurrent_runner_does_not_invalidate_active_results(notebooks):
     assert json.loads(
         (notebooks / "examples" / MODULES[0] / "output/results.json").read_text()
     ) == {"old": True}
+
+
+@pytest.mark.parametrize("changed", ["results", "executed", "sdk"])
+def test_completed_receipt_binds_results_execution_and_sdk(notebooks, changed):
+    from examples.run_all import _load_current_receipt
+
+    execute_notebooks(notebooks, MODULES[:1], timeout=30, kernel_name="test-python")
+    output = notebooks / "examples" / MODULES[0] / "output"
+    if changed == "sdk":
+        source = notebooks / "src/physrealx/platform.py"
+        source.parent.mkdir(parents=True)
+        source.write_text("# implementation changed after execution\n")
+    elif changed == "results":
+        (output / "results.json").write_text('{"value": 999}')
+    else:
+        path = output / "demo.executed.ipynb"
+        path.write_text(path.read_text() + "\n")
+    with pytest.raises(RuntimeError, match="stale or incomplete"):
+        _load_current_receipt(notebooks, MODULES[0])
+
+
+def test_independent_scene_demo_needs_no_real_capture_receipt(notebooks):
+    report = execute_notebooks(notebooks, (MODULES[2],), timeout=30, kernel_name="test-python")
+    assert report["execution_status"] == "COMPLETED"
+    assert report["accepted_modules"] == [MODULES[2]]
+    assert report["resumed_from_current_evidence"] == []
+    assert (notebooks / "examples" / MODULES[0] / "output/results.json").exists()
+    for name in MODULES[3:]:
+        assert not (notebooks / "examples" / name / "output/results.json").exists()
+
+
+def test_downstream_requires_current_actual_dependency_before_removing_outputs(notebooks):
+    with pytest.raises(RuntimeError, match="no valid completed execution evidence"):
+        execute_notebooks(notebooks, (MODULES[3],), timeout=30, kernel_name="test-python")
+    # Missing inputs cannot destroy the previous output before a run can start.
+    assert (notebooks / "examples" / MODULES[3] / "output/results.json").exists()
+
+
+def test_out_of_order_request_is_rejected_without_removing_outputs(notebooks):
+    with pytest.raises(ValueError, match="dependency order"):
+        execute_notebooks(notebooks, tuple(reversed(MODULES[:2])), kernel_name="test-python")
+    assert (notebooks / "examples" / MODULES[0] / "output/results.json").exists()
+
+
+def test_skipping_intermediate_dependency_is_rejected_before_invalidating_outputs(notebooks):
+    with pytest.raises(ValueError, match="include intermediate dependencies"):
+        execute_notebooks(notebooks, (MODULES[2], MODULES[4]), kernel_name="test-python")
+    assert (notebooks / "examples" / MODULES[3] / "output/results.json").exists()
+
+
+def test_final_acceptance_rechecks_previously_completed_notebooks(notebooks):
+    import nbformat
+
+    source = notebooks / "examples" / MODULES[1] / "demo.ipynb"
+    notebook = nbformat.read(source, as_version=4)
+    upstream = f"examples/{MODULES[0]}/demo.ipynb"
+    notebook.cells[1].source += f"\np = Path({upstream!r})\np.write_text(p.read_text() + ' ')"
+    nbformat.write(notebook, source)
+    with pytest.raises(RuntimeError, match="stale or incomplete"):
+        execute_notebooks(notebooks, MODULES[:2], timeout=30, kernel_name="test-python")
+    report = json.loads((notebooks / "examples/output/notebook-acceptance.json").read_text())
+    assert report["execution_status"] == "FAILED"

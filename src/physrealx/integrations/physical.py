@@ -23,9 +23,9 @@ from physrealx.integrations.physics import JointPhysicsAdapter
 from physrealx.integrations.registration import ReferenceRegistrationAdapter
 from physrealx.integrations.rgbd_fusion import RGBDFusionAdapter
 from physrealx.integrations.scenes import (
-    PhySceneGuidanceAdapter,
     SceneCompositionAdapter,
     SceneGenerationAdapter,
+    SceneSmithAdapter,
     TaskTemplateAdapter,
     TaskValidationAdapter,
 )
@@ -53,7 +53,7 @@ def register_physical_methods(registry: PluginRegistry, artifacts: ArtifactStore
         UsdPackageAdapter(),
         PhysicalValidationAdapter(),
         SceneGenerationAdapter(),
-        PhySceneGuidanceAdapter(),
+        SceneSmithAdapter(),
         SceneCompositionAdapter(),
         TaskTemplateAdapter(),
         TaskValidationAdapter(),

@@ -4,26 +4,21 @@
 
 `evaluations.submit(resource_id=..., version=..., model=..., run=RunSpec, episode_count=..., base_seed=...)` 使用模型精确推理方法实际执行引擎；返回报告 VersionedRef。`evaluations.get_report(ref)` / `evaluations.list_reports()` 读取成功率、失败案例和数据集引用。
 
-示例在新随机种子上验证同一 oven4 任务，不能解读为未见资产或现场机器人泛化。
+示例在新随机种子上验证同一 PartNet 笔记本任务，不能解读为未见资产或现场机器人泛化。
 
 ## 遥测、诊断与回流
 
 ```python
-source = px.artifacts.put_json(
-    {
-        "schema": "physrealx.run-evidence/1",
-        "dataset": dataset_ref.model_dump(mode="json"),
-    }
-)
-telemetry = px.telemetry.record(source, method="episode_telemetry")
-telemetry_ref = next(item.artifact for item in telemetry.outputs if item.name == "telemetry")
+from physrealx.integrations.feedback import DeploymentEvidence, FailureQuery
+
+source = px.artifacts.put_json(DeploymentEvidence(dataset=dataset_ref))
+archive = px.telemetry.record(source, method="episode_telemetry")
+telemetry_ref = archive.output("telemetry")
 failures = px.failures.analyze(telemetry_ref, method="trajectory_diagnostics")
-report_ref = next(item.artifact for item in failures.outputs if item.name == "failure_report")
-feedback = px.feedback.build_dataset(
-    report_ref,
-    method="failure_episodes",
-    config={"resource_id": "oven4.failures", "version": "1.0.0"},
+query = px.artifacts.put_json(
+    FailureQuery(report=failures.output("failure_report"), resource_id="partnet.failures")
 )
+feedback = px.feedback.build_dataset(query, method="failure_episodes")
 ```
 
 全部返回 `OperationManifest`。原始 Episode 与任务用于重新计算指标；篡改遥测不能成为证据。反馈保留失败标签、种子与原始制品，输出再生成计划；模块六实际在同初态执行专家轨迹并发布新增成功集。

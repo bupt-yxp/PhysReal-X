@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 
@@ -562,6 +563,8 @@ def test_textures_survive_portable_packaging_and_simulator_compilation(
     compiled = compile_scene(
         scene, {"asset": asset}, px.artifacts, MujocoConfig.model_validate(config)
     )
+    mesh_elements = ET.fromstring(compiled.xml).findall("asset/mesh")
+    assert mesh_elements and all(mesh.get("inertia") == "shell" for mesh in mesh_elements)
     model = mujoco.MjModel.from_xml_string(compiled.xml, assets=compiled.files)
     assert model.ntex == 1 and model.nmat == 2
     assert np.any(model.tex_data > 0)
@@ -884,6 +887,19 @@ def test_grounded_layout_task_and_trajectory_execute_real_dynamics(px: PhysRealX
             method="mujoco_joint_trajectory",
             config={"duration_seconds": 2.0, "settle_seconds": 1.0, "max_tracking_error": 1e-8},
         )
+    rejected = px.trajectories.generate(
+        source,
+        method="mujoco_joint_trajectory",
+        config={
+            "duration_seconds": 2.0,
+            "settle_seconds": 1.0,
+            "max_tracking_error": 1e-8,
+            "require_success": False,
+        },
+    )
+    rejected_report = json.loads(px.artifacts.get_bytes(output(rejected, "planning_report")))
+    assert rejected_report["status"] == "FAILED"
+    assert rejected_report["gates"]["tracking_error"] is False
     with pytest.raises(DomainValidationError, match="horizon"):
         px.trajectories.generate(
             source, method="mujoco_joint_trajectory", config={"duration_seconds": 100.0}
@@ -1103,6 +1119,17 @@ def test_proxy_surface_samples_exclude_internal_partition_faces():
     outer = trimesh.creation.box(extents=[0.2, 0.2, 0.2])
     distance = trimesh.proximity.closest_point(outer, samples)[1]
     assert distance.max() < 1e-9
+
+
+def test_collision_component_budgets_are_global_and_area_weighted():
+    from physrealx.integrations.collision import _allocate_component_budgets
+
+    budgets = _allocate_component_budgets([92.0, 8.0], 256)
+
+    assert sum(budgets) == 256
+    assert budgets[0] > budgets[1] >= 1
+    with pytest.raises(MethodExecutionError, match="3 non-convex components"):
+        _allocate_component_budgets([1.0, 1.0, 1.0], 2)
 
 
 @pytest.mark.gpu
@@ -1351,9 +1378,7 @@ def test_isaac_sim_publishes_replayable_episodes(px: PhysRealX) -> None:
 
 @pytest.mark.gpu
 @pytest.mark.parametrize("backend", ["mujoco", "isaac_sim"])
-def test_native_multimodal_backends_randomization_and_wrenches(
-    px: PhysRealX, backend: str
-) -> None:
+def test_native_multimodal_backends_randomization_and_wrenches(px: PhysRealX, backend: str) -> None:
     """One task/config exercises native sensors and known loads in both real engines."""
     import os
 

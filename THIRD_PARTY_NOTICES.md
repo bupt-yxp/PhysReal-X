@@ -41,6 +41,13 @@ PhysReal-X 自有代码使用 MIT 许可证。`algorithms/` 中的内嵌方法�
 
 The `physical` extra uses unmodified official distributions: NumPy 1.26.4 (BSD-3-Clause), SciPy 1.13.1 (BSD-3-Clause), Trimesh 4.5.1 (MIT), CoACD 1.0.9 (MIT), MuJoCo 3.3.7 (Apache-2.0), and OpenUSD `usd-core` 24.11 (Apache-2.0 with its upstream modified terms). Their license files remain in the installed distributions. PhysReal-X adapters are first-party MIT code; no external cloned source tree or second interpreter is required.
 
+## SceneSmith
+
+- SceneSmith: MIT, pinned at commit `67cc408fd38334b4a926efef45e284302ed5055b`.
+- PhysReal-X adapts its articulated retrieval, candidate generation and physical screening
+  contracts. The complete upstream runtime is not copied into this repository; provenance and
+  the upstream license are retained in `algorithms/scenesmith/`.
+
 ## Visual policy and world-model sources
 
 - `algorithms/act/`: official LeRobot v0.3.3 ACT network, Apache-2.0, revision `b883328e6c95681ca90a18b102e4ae5e1f91e2bf`; framework integration removed, network equations retained.

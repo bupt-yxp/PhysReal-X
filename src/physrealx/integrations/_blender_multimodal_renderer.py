@@ -209,6 +209,9 @@ def main():
         item.pass_index = labels[f"{entity}/{link}"]
         if not item.data.materials:
             item.data.materials.append(fallback_materials.get(entity, fallback_materials["other"]))
+        for material in item.data.materials:
+            if material is not None:
+                material.use_backface_culling = False
         visual_items.append((item, entity, link))
 
     for frame_index, state in enumerate(config["states"]):

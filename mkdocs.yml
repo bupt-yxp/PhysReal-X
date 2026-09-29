@@ -51,12 +51,12 @@ nav:
   - 首页: index.md
   - 入门:
       - 平台概览: getting-started/index.md
+      - 六模块可视化: getting-started/demos.md
       - 安装与环境: getting-started/installation.md
-      - 快速开始: getting-started/quickstart.md
-      - 第一个可复现契约实验: getting-started/first-project.md
+      - Jupyter 入门与运行: getting-started/quickstart.md
+      - 契约参考实验: getting-started/first-project.md
   - 用户指南:
-      - 指南总览: user-guide/index.md
-      - 功能验收与证据范围: acceptance.md
+      - 六模块输入输出: user-guide/index.md
       - 真实资产接入与数字孪生: user-guide/real-assets-and-digital-twin.md
       - 物理可信资产构建: user-guide/physical-assets.md
       - 场景与任务生成: user-guide/scenes-and-tasks.md
@@ -67,9 +67,6 @@ nav:
       - API 总览: api/index.md
       - 客户端与公共约定: api/client.md
       - 技术能力与方法 API: api/capability-methods.md
-      - 内嵌方法:
-          - ArtGS 视觉几何重建: api/artgs.md
-          - DTArt 几何与运动重建: api/dtart.md
       - 资产 API: api/assets.md
       - 场景与任务 API: api/scenes-and-tasks.md
       - 运行与数据生成 API: api/runs.md
@@ -97,7 +94,15 @@ markdown_extensions:
 extra_css:
   - stylesheets/extra.css
 
-extra_javascript:
-  - javascripts/toc-sync.js
+hooks:
+  - docs/_hooks/demo_gallery.py
+
+exclude_docs: |
+  _hooks/
 
 copyright: Copyright &copy; 2026 PhysReal-X · MIT 许可证
+
+validation:
+  links:
+    anchors: warn
+    not_found: warn

@@ -438,7 +438,7 @@ class RecipeExecutor:
                 arguments=step.arguments,
                 outputs=step.outputs,
             )
-            manifest = self._platform._execute_operation(operation)
+            manifest = self._platform.operations.execute(operation)
             if manifest.spec != operation:
                 raise DomainValidationError(
                     f"recipe step {step.name!r} returned evidence for another operation"

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
-from itertools import combinations
 from typing import Any
 
 from pydantic import Field
@@ -17,7 +16,7 @@ from physrealx.integrations.mujoco import MujocoConfig, compile_scene
 
 
 class FeasibilityConfig(DomainModel):
-    sweep_samples: int = Field(default=181, ge=3, le=2001)
+    sweep_samples: int = Field(default=361, ge=3, le=2001)
     penetration_tolerance_m: float = Field(default=0.001, ge=0, le=0.01)
     rollout_seconds: float = Field(default=1.0, gt=0, le=10)
 
@@ -27,13 +26,24 @@ def evaluate_asset_feasibility(
     asset: Any,
     *,
     config: FeasibilityConfig,
+    retain_contact_constraints: bool = False,
+    contact_constraint_tolerance_m: float | None = None,
 ) -> dict[str, Any]:
-    """Evaluate one articulated asset and retain the geometry pairs behind failures."""
+    """Evaluate one articulated asset and optionally retain all failed sweep contacts."""
     import mujoco
     import numpy as np
 
     if len(asset.joints) != 1:
         raise DomainValidationError("feasibility sweep currently requires one articulated joint")
+    constraint_tolerance = (
+        config.penetration_tolerance_m
+        if contact_constraint_tolerance_m is None
+        else contact_constraint_tolerance_m
+    )
+    if not 0 <= constraint_tolerance <= config.penetration_tolerance_m:
+        raise DomainValidationError(
+            "contact constraint tolerance must be between zero and the acceptance tolerance"
+        )
     joint = asset.joints[0]
     scene = SceneSpec(
         resource_id="physical.feasibility",
@@ -46,7 +56,9 @@ def evaluate_asset_feasibility(
     simulation = MujocoConfig(
         controlled_joints=(f"asset/{joint.name}",),
         initial_positions=(joint.lower_limit,),
-        effort_limits=(joint.effort_limit,),
+        # Collision-only audits do not apply actuator effort.  Keep assets with
+        # an unspecified optional effort limit auditable without mutating them.
+        effort_limits=(joint.effort_limit if joint.effort_limit is not None else 1.0,),
         substeps=1,
     )
     compiled = compile_scene(scene, {"asset": asset}, store, simulation)
@@ -58,7 +70,6 @@ def evaluate_asset_feasibility(
     # filters adjacent bodies; exclusions must never hide geometry defects in this check.
     for child in list(contact):
         contact.remove(child)
-    geoms = []
     geom_links: dict[str, str] = {}
     for body in root.iter("body"):
         body_name = body.attrib["name"]
@@ -66,24 +77,34 @@ def evaluate_asset_feasibility(
             if geom.get("contype") != "1":
                 continue
             name = geom.attrib["name"]
-            geoms.append((body_name, name))
             geom_links[name] = body_name.split("/", 1)[-1]
-    for (body_a, geom_a), (body_b, geom_b) in combinations(geoms, 2):
-        if body_a != body_b:
-            ET.SubElement(contact, "pair", geom1=geom_a, geom2=geom_b)
+    # Use MuJoCo's dynamic broad/mid phase at every position, including soft-limit
+    # excursions. Disable only adjacent-body filtering; retain same-body filtering
+    # and each geometry's original contact parameters. Explicit all-pairs lists
+    # bypass native pruning and replace geometry contact parameters with pair defaults.
+    # https://mujoco.readthedocs.io/en/stable/computation/#collision-detection
+    option = root.find("option")
+    if option is None:
+        option = ET.SubElement(root, "option")
+    flags = option.find("flag")
+    if flags is None:
+        flags = ET.SubElement(option, "flag")
+    flags.set("filterparent", "disable")
     model = mujoco.MjModel.from_xml_string(
         ET.tostring(root, encoding="unicode"), assets=compiled.files
     )
     data = mujoco.MjData(model)
     address = int(model.joint(f"asset/{joint.name}").qposadr[0])
     positions = np.linspace(joint.lower_limit, joint.upper_limit, config.sweep_samples)
-    rows = []
+    rows: list[dict[str, Any]] = []
     pair_stats: dict[tuple[str, str], dict[str, Any]] = {}
+    contact_constraints: list[dict[str, Any]] = []
     for q in positions:
         mujoco.mj_resetData(model, data)
         data.qpos[address] = q
         mujoco.mj_forward(model, data)
         worst = 0.0
+        deepest_contact: dict[str, Any] | None = None
         for item in data.contact:
             distance = float(item.dist)
             worst = min(worst, distance)
@@ -107,9 +128,42 @@ def evaluate_asset_feasibility(
                 },
             )
             stats["samples"] += 1
-            stats["max_penetration_m"] = max(stats["max_penetration_m"], penetration)
+            normal = item.frame[:3] if left == names[0] else -item.frame[:3]
+            if deepest_contact is None or penetration > deepest_contact["penetration_m"]:
+                deepest_contact = {
+                    "geom_a": left,
+                    "link_a": geom_links[left],
+                    "geom_b": right,
+                    "link_b": geom_links[right],
+                    "penetration_m": penetration,
+                    "position_m": item.pos.tolist(),
+                    "normal_a_to_b": normal.tolist(),
+                }
+            if retain_contact_constraints and penetration > constraint_tolerance:
+                contact_constraints.append(
+                    {
+                        "geom_a": left,
+                        "link_a": geom_links[left],
+                        "geom_b": right,
+                        "link_b": geom_links[right],
+                        "penetration_m": penetration,
+                        "q": float(q),
+                        "contact_position_m": item.pos.tolist(),
+                        "normal_a_to_b": normal.tolist(),
+                    }
+                )
+            if penetration > stats["max_penetration_m"]:
+                stats["max_penetration_m"] = penetration
+                stats["peak_q"] = float(q)
+                stats["contact_position_m"] = item.pos.tolist()
+                stats["normal_a_to_b"] = normal.tolist()
         rows.append(
-            {"q": float(q), "penetration_m": max(0.0, -worst), "contacts": int(data.ncon)}
+            {
+                "q": float(q),
+                "penetration_m": max(0.0, -worst),
+                "contacts": int(data.ncon),
+                "deepest_contact": deepest_contact,
+            }
         )
     rollouts = []
     for q in (joint.lower_limit, (joint.lower_limit + joint.upper_limit) / 2, joint.upper_limit):
@@ -130,16 +184,24 @@ def evaluate_asset_feasibility(
         rollouts.append({"initial_q": q, "stable": stable, "peak_speed": peak_speed})
     maximum = max(row["penetration_m"] for row in rows)
     passed = maximum <= config.penetration_tolerance_m and all(r["stable"] for r in rollouts)
-    return {
+    result = {
         "status": "PASSED" if passed else "FAILED",
         "locked_range": [joint.lower_limit, joint.upper_limit],
         "max_penetration_m": maximum,
         "sweep": rows,
         "rollouts": rollouts,
+        "pair_broadphase": {
+            "method": "mujoco_native",
+            "parent_child_filter_disabled": True,
+            "explicit_pairs": int(model.npair),
+        },
         "collision_pairs": sorted(
             pair_stats.values(), key=lambda value: value["max_penetration_m"], reverse=True
         ),
     }
+    if retain_contact_constraints:
+        result["contact_constraints"] = contact_constraints
+    return result
 
 
 def check_feasibility(

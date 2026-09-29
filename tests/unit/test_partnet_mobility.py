@@ -1,4 +1,5 @@
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -7,7 +8,7 @@ from physrealx import PhysRealX, SceneSpec
 from physrealx.domain import GeometryRole, JointType
 from physrealx.errors import DomainValidationError
 from physrealx.integrations._asset_preview import asset_geometry
-from physrealx.integrations.partnet_mobility import select_partnet_scene_assets
+from physrealx.integrations.partnet_mobility import retrieve_partnet_scene_assets
 from physrealx.integrations.scenes import scene_bounds
 
 
@@ -19,6 +20,27 @@ def partnet_fixture(root: Path) -> Path:
     (model / "textured_objs/cube.obj").write_text(
         trimesh.creation.box(extents=(2.0, 1.0, 0.5)).export(file_type="obj")
     )
+    (model / "textured_objs/panel.mtl").write_text(
+        "newmtl front\nKd 0.8 0.8 0.8\nnewmtl back\nKd 0.6 0.6 0.6\n"
+    )
+    (model / "textured_objs/panel.obj").write_text(
+        """mtllib panel.mtl
+v -1.0 -0.5 -0.20
+v  1.0 -0.5 -0.20
+v  1.0  0.5 -0.20
+v -1.0  0.5 -0.20
+v -1.0 -0.5 -0.21
+v -1.0  0.5 -0.21
+v  1.0  0.5 -0.21
+v  1.0 -0.5 -0.21
+usemtl front
+f 1 2 3
+f 1 3 4
+usemtl back
+f 5 6 7
+f 5 7 8
+"""
+    )
     (model / "meta.json").write_text(json.dumps({"model_cat": "Laptop"}))
     (model / "bounding_box.json").write_text(
         json.dumps({"min": [-1.0, -0.5, -0.25], "max": [1.0, 0.5, 0.25]})
@@ -28,6 +50,7 @@ def partnet_fixture(root: Path) -> Path:
 <link name="base"/>
 <link name="body">
   <visual><geometry><mesh filename="textured_objs/cube.obj"/></geometry></visual>
+  <visual><geometry><mesh filename="textured_objs/panel.obj"/></geometry></visual>
   <collision><geometry><mesh filename="textured_objs/cube.obj"/></geometry></collision>
 </link>
 <joint name="mount" type="fixed">
@@ -83,6 +106,9 @@ def test_partnet_mobility_import_is_metric_articulated_and_idempotent(tmp_path):
         if link == "body"
     )
     assert body.extents == pytest.approx((0.4, 0.2, 0.1))
+    assert len(body.faces) == 16
+    assert asset.metadata["source_faces"]["visual"] == 28
+    assert asset.metadata["imported_faces"]["visual"] == 28
     assert [joint.joint_type for joint in asset.joints] == [JointType.FIXED, JointType.REVOLUTE]
     assert next(joint for joint in asset.joints if joint.name == "hinge").friction > 0.01
     assert {geometry.role.value for geometry in asset.geometries} == {"visual", "collision"}
@@ -97,43 +123,82 @@ def test_partnet_mobility_import_is_metric_articulated_and_idempotent(tmp_path):
         )
 
 
-def test_scene_type_selects_reproducible_catalog_assets(tmp_path):
-    catalog = tmp_path / "catalog"
-    entries = []
-    for index, category in enumerate(("Table", "Chair", "Laptop", "Lamp", "Bottle"), 1):
-        model = catalog / str(index)
-        model.mkdir(parents=True)
-        (model / "meta.json").write_text(json.dumps({"model_cat": category}))
-        (model / "bounding_box.json").write_text("{}")
-        (model / "mobility.urdf").write_text("<robot/>")
-        entries.append(
-            {
-                "name": category.lower(),
-                "category": category,
-                "model_ids": [str(index)],
-                "target_extent_m": 0.5,
-            }
-        )
+def test_scenesmith_searches_full_library_and_returns_reproducible_candidates(tmp_path):
+    catalog = partnet_fixture(tmp_path / "catalog")
+    for model_id in ("124", "125"):
+        shutil.copytree(catalog / "123", catalog / model_id)
     (catalog / "catalog.json").write_text(
         json.dumps(
             {
-                "schema": "physrealx.partnet-scene-catalog/1",
-                "profiles": {"home": entries},
+                "schema": "physrealx.scenesmith-partnet-catalog/1",
+                "profiles": {
+                    "home": [
+                        {
+                            "name": "laptop",
+                            "query": "articulated laptop",
+                            "categories": ["Laptop"],
+                            "target_extent_m": 0.5,
+                            "role": "target",
+                            "required_joint_types": ["revolute"],
+                        }
+                    ]
+                },
             }
         )
     )
 
-    first = select_partnet_scene_assets(catalog, scene_type="home", seed=13)
-    second = select_partnet_scene_assets(catalog, scene_type="home", seed=13)
+    first = retrieve_partnet_scene_assets(
+        catalog,
+        scene_type="home",
+        instruction="关闭笔记本电脑屏幕",
+        seed=13,
+        candidate_count=2,
+    )
+    second = retrieve_partnet_scene_assets(
+        catalog,
+        scene_type="home",
+        instruction="关闭笔记本电脑屏幕",
+        seed=13,
+        candidate_count=2,
+    )
 
     assert first == second
-    assert [item.name for item in first] == ["table", "chair", "laptop", "lamp", "bottle"]
-    assert [item.category for item in first] == ["Table", "Chair", "Laptop", "Lamp", "Bottle"]
+    assert first.evaluated_models == 3
+    assert first.valid_models == 3
+    assert len(first.candidates) == 2
+    assert len({item.assets[0].model_id for item in first.candidates}) == 2
+    assert all(item.assets[0].score_components["function"] == 1.0 for item in first.candidates)
+
+    px = PhysRealX.open(tmp_path / "retrieval-workspace", discover_plugins=False)
+    selection = px.assets.retrieve_partnet_mobility(
+        catalog,
+        scene_type="home",
+        instruction="关闭笔记本电脑屏幕",
+        method="SceneSmith  ",
+        seed=13,
+        candidate_count=2,
+    )
+    report = json.loads(px.artifacts.get_bytes(selection.retrieval_report))
+    assert len(selection.candidates) == 2
+    assert report["schema"] == "physrealx.scenesmith-retrieval-report/1"
+    assert report["method"] == "scenesmith"
+    assert report["library"] == {
+        "evaluated_models": 3,
+        "valid_models": 3,
+        "rejected_models": 0,
+    }
+    assert len(report["selected"]) == 2
+
     with pytest.raises(DomainValidationError, match="does not define"):
-        select_partnet_scene_assets(catalog, scene_type="industrial", seed=13)
+        retrieve_partnet_scene_assets(
+            catalog,
+            scene_type="industrial",
+            instruction="关闭保险柜",
+            seed=13,
+        )
 
 
-def test_physcene_guidance_resolves_support_orientation_and_composes(tmp_path):
+def test_scenesmith_resolves_support_orientation_and_composes(tmp_path):
     px = PhysRealX.open(tmp_path / "workspace", discover_plugins=False)
     catalog = partnet_fixture(tmp_path / "catalog")
     table = px.assets.import_partnet_mobility(
@@ -173,7 +238,7 @@ def test_physcene_guidance_resolves_support_orientation_and_composes(tmp_path):
             "interaction_target": "laptop",
             "seed": 7,
         },
-        method="physcene_guidance",
+        method="SceneSmith  ",
     )
     composed = px.scenes.compose(operation.output("scene_draft"), method="collision_constraints")
     scene = SceneSpec.model_validate_json(px.artifacts.get_bytes(composed.output("scene_spec")))
@@ -187,8 +252,8 @@ def test_physcene_guidance_resolves_support_orientation_and_composes(tmp_path):
     assert scene.entities[0].name == "room"
     assert scene.entities[0].role.value == "environment"
     assert bounds["laptop"][0, 2] == pytest.approx(bounds["table"][1, 2])
-    assert scene.metadata["layout_method"] == "physcene_guidance"
-    assert scene.metadata["method_scope"].endswith("without_diffusion")
+    assert scene.metadata["layout_method"] == "scenesmith"
+    assert scene.metadata["method_basis"]["project"] == "SceneSmith"
     assert scene.metadata["interaction_corridor"]["target"] == "laptop"
     assert scene.entities[2].pose.rotation_xyzw[2] == pytest.approx(0.247403959)
 

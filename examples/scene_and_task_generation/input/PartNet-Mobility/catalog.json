@@ -1,29 +1,31 @@
 {
-  "schema": "physrealx.partnet-scene-catalog/1",
+  "schema": "physrealx.scenesmith-partnet-catalog/1",
   "profiles": {
     "home": [
-      {"name": "table", "category": "Table", "model_ids": ["20279"], "target_extent_m": 1.2},
-      {"name": "chair", "category": "Chair", "model_ids": ["38357"], "target_extent_m": 0.82},
-      {"name": "laptop", "category": "Laptop", "model_ids": ["10707"], "target_extent_m": 0.36},
-      {"name": "lamp", "category": "Lamp", "model_ids": ["14127"], "target_extent_m": 0.45},
-      {"name": "bottle", "category": "Bottle", "model_ids": ["6209"], "target_extent_m": 0.22}
+      {"name": "table", "query": "home office table", "categories": ["Table"], "target_extent_m": 1.2, "target_dimensions_m": [1.2, 0.7, 0.75], "role": "support"},
+      {"name": "chair", "query": "desk chair", "categories": ["Chair", "FoldingChair"], "target_extent_m": 0.82, "target_dimensions_m": [0.55, 0.55, 0.82], "role": "context"},
+      {"name": "laptop", "query": "articulated laptop computer", "categories": ["Laptop"], "target_extent_m": 0.36, "target_dimensions_m": [0.36, 0.25, 0.24], "role": "target", "required_joint_types": ["revolute"]},
+      {"name": "lamp", "query": "desk lamp", "categories": ["Lamp"], "target_extent_m": 0.45, "target_dimensions_m": [0.18, 0.18, 0.45], "role": "context"},
+      {"name": "bottle", "query": "desktop bottle", "categories": ["Bottle"], "target_extent_m": 0.22, "target_dimensions_m": [0.08, 0.08, 0.22], "role": "context"}
     ],
     "tabletop": [
-      {"name": "table", "category": "Table", "model_ids": ["20279"], "target_extent_m": 1.2},
-      {"name": "laptop", "category": "Laptop", "model_ids": ["10707"], "target_extent_m": 0.36},
-      {"name": "lamp", "category": "Lamp", "model_ids": ["14127"], "target_extent_m": 0.45},
-      {"name": "bottle", "category": "Bottle", "model_ids": ["6209"], "target_extent_m": 0.22}
+      {"name": "table", "query": "work table", "categories": ["Table"], "target_extent_m": 1.2, "target_dimensions_m": [1.2, 0.7, 0.75], "role": "support"},
+      {"name": "laptop", "query": "laptop computer", "categories": ["Laptop"], "target_extent_m": 0.36, "target_dimensions_m": [0.36, 0.25, 0.24], "role": "context"},
+      {"name": "lamp", "query": "desk lamp", "categories": ["Lamp"], "target_extent_m": 0.45, "target_dimensions_m": [0.18, 0.18, 0.45], "role": "context"},
+      {"name": "bottle", "query": "bottle with movable cap", "categories": ["Bottle"], "target_extent_m": 0.22, "target_dimensions_m": [0.08, 0.08, 0.22], "role": "target", "required_joint_types": ["revolute", "prismatic"]}
     ],
     "shelf": [
-      {"name": "shelf", "category": "StorageFurniture", "model_ids": ["46653"], "target_extent_m": 1.6},
-      {"name": "box", "category": "Box", "model_ids": ["100194"], "target_extent_m": 0.3},
-      {"name": "bottle", "category": "Bottle", "model_ids": ["4084"], "target_extent_m": 0.22}
+      {"name": "shelf", "query": "storage shelf", "categories": ["StorageFurniture"], "target_extent_m": 1.6, "target_dimensions_m": [1.2, 0.45, 1.6], "role": "support"},
+      {"name": "cabinet", "query": "low storage cabinet with hinged door", "categories": ["StorageFurniture"], "target_extent_m": 0.9, "target_dimensions_m": [0.75, 0.4, 0.9], "role": "target", "required_joint_types": ["revolute"]},
+      {"name": "box", "query": "storage box", "categories": ["Box"], "target_extent_m": 0.3, "target_dimensions_m": [0.3, 0.24, 0.2], "role": "context"},
+      {"name": "bottle", "query": "bottle", "categories": ["Bottle"], "target_extent_m": 0.22, "target_dimensions_m": [0.08, 0.08, 0.22], "role": "context"}
     ],
     "industrial": [
-      {"name": "workbench", "category": "Table", "model_ids": ["22241"], "target_extent_m": 1.4},
-      {"name": "storage", "category": "StorageFurniture", "model_ids": ["46653"], "target_extent_m": 1.5},
-      {"name": "cart", "category": "Cart", "model_ids": ["101060"], "target_extent_m": 0.85},
-      {"name": "box", "category": "Box", "model_ids": ["100194"], "target_extent_m": 0.35}
+      {"name": "workbench", "query": "industrial workbench", "categories": ["Table"], "target_extent_m": 1.4, "target_dimensions_m": [1.4, 0.75, 0.9], "role": "support"},
+      {"name": "safe", "query": "safe with hinged door", "categories": ["Safe"], "target_extent_m": 0.8, "target_dimensions_m": [0.8, 0.55, 0.8], "role": "target", "required_joint_types": ["revolute"]},
+      {"name": "storage", "query": "industrial storage cabinet", "categories": ["StorageFurniture"], "target_extent_m": 1.5, "target_dimensions_m": [1.0, 0.5, 1.5], "role": "context"},
+      {"name": "cart", "query": "industrial utility cart", "categories": ["Cart"], "target_extent_m": 0.85, "target_dimensions_m": [0.85, 0.5, 0.8], "role": "context"},
+      {"name": "box", "query": "industrial box", "categories": ["Box"], "target_extent_m": 0.35, "target_dimensions_m": [0.35, 0.28, 0.22], "role": "context"}
     ]
   }
 }

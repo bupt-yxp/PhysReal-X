@@ -1,0 +1,13 @@
+{
+  "name": "SceneSmith",
+  "source": "https://github.com/nepfaff/scenesmith",
+  "revision": "67cc408fd38334b4a926efef45e284302ed5055b",
+  "license": "MIT",
+  "paper": "https://arxiv.org/abs/2602.09153",
+  "adapted_components": [
+    "articulated asset semantic retrieval and size reranking",
+    "multi-candidate task-conditioned scene generation",
+    "collision, support and reachability screening",
+    "robot execution validation contract"
+  ]
+}

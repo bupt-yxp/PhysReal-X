@@ -2,6 +2,8 @@
 
 提供 MuJoCo、Isaac Sim 4.5 物理后端，以及 Reference 契约回归后端。两个物理后端共用控制、相机、随机化和 Episode 契约，通过 `backend="mujoco"` 或 `backend="isaac_sim"` 选择。
 
+<!-- demo-preview:simulation_and_data_generation -->
+
 ## 1. 声明任务与后端
 
 ```python
@@ -92,7 +94,9 @@ MuJoCo 对接触使用自己的求解模型和动态滑动摩擦；不能自动�
 固定时长训练轨迹使用 `RunSpec.stop_on_success=False`，成功后继续记录，到时域末帧重新判断成败；
 后端故障和显式终止条件仍优先执行。当前 Demo 生成两条随机化专家 Episode 和两条无动作失败 Episode，每条 201 帧。扩大数据规模只需增加 `RunSpec.episode_count`，不改变数据契约。
 
-`datasets.preview_episode(...)` 不重复执行动力学，而是用 Episode 中逐帧记录的刚体位姿驱动同一个 Blender PBR 场景。overview 相机生成执行视图；front 相机在相同材质、光照和时刻生成 RGB Beauty、米制 Depth 与实例/Link Mask；XYZRGB 点云严格由该组 front RGB-D 反投影。关节、接触、动作和相机位姿直接读取同一 Episode。
+`datasets.preview_episode(..., sensor_source="blender")` 抽取 Episode 帧，用记录的刚体位姿驱动统一 Blender PBR 场景。overview 显示执行视图；front 在相同材质、光照与时刻生成 RGB Beauty、米制 Depth 和实例/Link Mask；XYZRGB 点云由这组 RGB-D 反投影。
+
+这是离线展示重渲染。训练 Episode 中的 RGB-D 等数组仍来自所选仿真后端，预览不会替换训练数据。`sensor_source="recorded"` 才展示 Episode 实际保存的原生传感器输出。
 
 PartNet-Mobility 资产只生成域随机化仿真数据，不声明实拍外观对齐。仅当场景实体显式绑定模块一生成的 `registered_appearance`，并且配准来源、相机和关节状态通过校核时，才可另行调用 `registered_artgs`。
 
@@ -109,7 +113,8 @@ export PHYSREALX_ISAAC_SIM_ROOT=/path/to/isaac-sim-4.5.0
 
 ```python
 run = px.simulations.run(
-    scene_ref, task_ref,
+    scene_ref,
+    task_ref,
     backend="isaac_sim",
     config={
         "controlled_joints": ["robot/joint_1"],

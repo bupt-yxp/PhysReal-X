@@ -57,3 +57,24 @@ def test_no_compatibility_namespaces_are_present() -> None:
     }
 
     assert names.isdisjoint(forbidden)
+
+
+def test_domain_services_do_not_import_the_facade_or_storage_at_runtime() -> None:
+    """Composition injects the workspace; domain services must not construct one."""
+
+    def runtime_imports(node: ast.AST) -> set[str]:
+        if (
+            isinstance(node, ast.If)
+            and isinstance(node.test, ast.Name)
+            and node.test.id == "TYPE_CHECKING"
+        ):
+            return set()
+        if isinstance(node, ast.Import):
+            return {alias.name for alias in node.names}
+        if isinstance(node, ast.ImportFrom):
+            return {node.module or ""}
+        return set().union(*(runtime_imports(child) for child in ast.iter_child_nodes(node)))
+
+    for path in (PACKAGE / "services").glob("*.py"):
+        imports = runtime_imports(ast.parse(path.read_text(encoding="utf-8")))
+        assert imports.isdisjoint({"physrealx.platform", "physrealx.storage"}), path.name

@@ -20,7 +20,8 @@ hide:
 PhysReal-X 统一描述和编排数字孪生、场景任务、仿真执行、Episode 数据、策略训练、独立评测与真机反馈；只有通过能力注册和证据门禁的阶段才能执行与发布。
 
 <div class="prx-actions">
-  <a class="md-button md-button--primary" href="getting-started/quickstart/">快速开始</a>
+  <a class="md-button md-button--primary" href="getting-started/demos/">查看六模块 Demo</a>
+  <a class="md-button" href="getting-started/quickstart/">Jupyter 入门</a>
   <a class="md-button" href="api/">浏览 API</a>
 </div>
 
@@ -44,7 +45,7 @@ PhysReal-X 统一描述和编排数字孪生、场景任务、仿真执行、Epi
 </section>
 
 <nav class="prx-entry-strip" aria-label="文档快捷入口">
-  <a href="getting-started/"><span>01</span><strong>入门</strong><small>完成安装、环境配置与首个契约实验</small></a>
+  <a href="getting-started/"><span>01</span><strong>入门</strong><small>观看六模块动画，使用 Jupyter 运行实验</small></a>
   <a href="user-guide/"><span>02</span><strong>用户指南</strong><small>掌握资产、仿真、数据、训练与部署流程</small></a>
   <a href="api/"><span>03</span><strong>API 文档</strong><small>查询资源模型、服务方法与错误语义</small></a>
 </nav>
@@ -160,11 +161,11 @@ dataset = px.datasets.get(px.runs.wait(run).dataset)
 
 ## 用一个可复现实验认识 PhysReal-X
 
-从安装环境开始，注册资产、定义场景任务、运行确定性参考后端，并把结果交给参考训练与评测服务。
+先观看六模块的真实 Demo 输出，再按 Jupyter 指南配置内核、准备输入并逐单元运行。实拍重建与机器人任务当前使用两条示例数据线，依赖关系在入门页面明确列出。
 
 <div class="prx-actions prx-final-cta__actions">
   <a class="md-button" href="getting-started/installation/">安装与环境</a>
-  <a class="md-button md-button--primary" href="getting-started/first-project/">开始第一个项目</a>
+  <a class="md-button md-button--primary" href="getting-started/quickstart/">运行 Jupyter Demo</a>
 </div>
 
 </section>

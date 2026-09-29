@@ -280,6 +280,7 @@ def compile_scene(
                             "vertex": _numbers(mesh.vertices.reshape(-1)),
                             "face": " ".join(str(int(v)) for v in mesh.faces.reshape(-1)),
                             "scale": _numbers(geometry.scale),
+                            "inertia": "shell",
                             **mesh_attributes,
                         },
                     )

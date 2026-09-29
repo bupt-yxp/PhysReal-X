@@ -91,6 +91,7 @@ def test_artmodeling_source_is_inspected_and_ingested_immutably(tmp_path: Path) 
         },
     )
     manifest = platform.assets.get_observations(reference)
+    assert platform.assets.resolve_observation_source(reference) == source
     assert manifest.metadata["depth_unit"] == "mm"
     rgb_streams = {
         stream.name: stream for stream in manifest.streams if stream.name.endswith(".rgb")
@@ -116,7 +117,6 @@ def test_project_source_identity_survives_symlinked_checkout_access(tmp_path: Pa
 
     inspection = platform.assets.inspect_source(alias / "input" / "cabinet2", config=config)
     assert inspection.source_uri == "project:///input/cabinet2"
-    assert platform._same_source((alias / "input" / "cabinet2").as_uri(), source)
     reference = platform.assets.ingest(
         alias / "input" / "cabinet2",
         resource_id="cabinet2.observations",
@@ -132,6 +132,7 @@ def test_project_source_identity_survives_symlinked_checkout_access(tmp_path: Pa
         config=config,
     )
     assert platform.assets.get_observations(reference).source_uri == "project:///input/cabinet2"
+    assert platform.assets.resolve_observation_source(reference) == source
 
     different_source = _source(project / "input" / "other")
     with pytest.raises(ResourceConflictError, match="different or unaudited"):
@@ -142,6 +143,47 @@ def test_project_source_identity_survives_symlinked_checkout_access(tmp_path: Pa
             display_name="Cabinet 2 observations",
             config=config,
         )
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("project_uri", [False, True])
+def test_observation_source_resolution_rejects_missing_captures(
+    tmp_path: Path, project_uri: bool
+) -> None:
+    source = _source(tmp_path / "input" / "captured laptop")
+    platform = PhysRealX.open(
+        tmp_path / (".physrealx" if project_uri else "workspace"), discover_plugins=False
+    )
+    reference = platform.assets.ingest(
+        source,
+        resource_id="capture",
+        version="1.0.0",
+        display_name="Capture",
+        config={"depth_unit": "mm", "coordinate_frame": "camera"},
+    )
+    assert platform.assets.resolve_observation_source(reference) == source
+    source.rename(source.with_name("moved capture"))
+    with pytest.raises(SourcePackageError, match="missing or cannot be resolved locally"):
+        platform.assets.resolve_observation_source(reference)
+
+
+@pytest.mark.integration
+def test_project_observation_source_rejects_symlink_escape(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    source = _source(project / "input" / "capture")
+    platform = PhysRealX.open(project / ".physrealx", discover_plugins=False)
+    reference = platform.assets.ingest(
+        source,
+        resource_id="capture",
+        version="1.0.0",
+        display_name="Capture",
+        config={"depth_unit": "mm", "coordinate_frame": "camera"},
+    )
+    outside = tmp_path / "outside"
+    source.rename(outside)
+    source.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(SourcePackageError, match="cannot be resolved locally"):
+        platform.assets.resolve_observation_source(reference)
 
 
 @pytest.mark.integration

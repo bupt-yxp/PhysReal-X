@@ -8,15 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-
-MODULES = (
-    "real_assets_and_digital_twin",
-    "physical_asset_building",
-    "scene_and_task_generation",
-    "simulation_and_data_generation",
-    "data_management_and_training",
-    "evaluation_and_feedback",
-)
+from examples.catalog import DEMOS, MODULES, dependencies_for, dependents_of
 
 EXPECTED_APIS = {
     "real_assets_and_digital_twin": (
@@ -75,6 +67,16 @@ EXPECTED_APIS = {
         "px.feedback.preview_cycle(",
     ),
 }
+
+
+def test_demo_catalog_matches_actual_data_dependencies():
+    assert len(MODULES) == len(set(MODULES)) == 6
+    for demo in DEMOS:
+        assert (Path("docs") / demo.guide).is_file()
+        assert set(demo.dependencies) <= set(MODULES[: MODULES.index(demo.slug)])
+    assert dependencies_for(MODULES[3:]) == (MODULES[2],)
+    assert dependents_of(MODULES[:1]) == MODULES[:2]
+    assert dependents_of((MODULES[2],)) == MODULES[2:]
 
 
 def _load_notebook(module_name: str) -> dict[str, Any]:
@@ -223,7 +225,7 @@ def test_real_asset_demo_exports_one_reconstruction_animation() -> None:
     assert '"reconstruction-comparison.gif": reconstruction_animation' in source
 
 
-def test_scene_task_demo_exports_one_execution_animation() -> None:
+def test_scene_task_demo_exports_four_scene_execution_animations() -> None:
     notebook = _load_notebook("scene_and_task_generation")
     source = "\n".join(
         _cell_source(cell) for cell in notebook["cells"] if cell["cell_type"] == "code"
@@ -231,21 +233,40 @@ def test_scene_task_demo_exports_one_execution_animation() -> None:
 
     assert source.count("show_animation(") == 1
     assert source.count("px.scenes.preview_task(") == 1
+    assert 'SCENE_TYPES = ("home", "tabletop", "shelf", "industrial")' in source
+    assert "for scene_type in SCENE_TYPES:" in source
+    assert '"target": "laptop"' in source
+    assert '"target": "bottle"' in source
+    assert '"target": "cabinet"' in source
+    assert '"target": "safe"' in source
+    assert '"require_success": False' in source
+    assert 'method="SceneSmith"' in source
+    assert "px.assets.retrieve_partnet_mobility(" in source
+    assert "candidate_count=6" in source
+    assert 'report["status"] == "PASSED"' in source
+    assert '"candidate_evaluations"' in source
+    assert '"retrieval_reports"' in source
+    assert "for position_gain, velocity_gain in ((200.0, 20.0), (400.0, 40.0)):" in source
+    assert '"cabinet", "relation": "left_of"' in source
+    assert '"safe", "relation": "front_of"' in source
     assert "matplotlib" not in source
     assert "trajectory.png" not in source
-    assert '"task-preview.gif": task_preview' in source
+    assert 'f"task-preview-{scene_type}.gif": preview' in source
+    assert '"primary_scenario": "home"' in source
     assert '"task_instance": task_instance.model_dump' in source
 
 
-def test_simulation_demo_exports_one_synchronized_animation() -> None:
+def test_simulation_demo_displays_input_and_synchronized_execution() -> None:
     notebook = _load_notebook("simulation_and_data_generation")
     source = "\n".join(
         _cell_source(cell) for cell in notebook["cells"] if cell["cell_type"] == "code"
     )
 
-    assert source.count("show_animation(") == 1
+    assert source.count("show_animation(") == 2
+    assert source.count("px.scenes.preview_task(") == 1
     assert source.count("px.datasets.preview_episode(") == 1
-    assert 'files={"simulation-preview.gif": preview}' in source
+    assert '"task-input-preview.gif": input_preview' in source
+    assert '"simulation-preview.gif": preview' in source
     assert "pusher/extension" not in source
     assert "registered_artgs" not in source
     assert 'upstream["backend_config"]' not in source

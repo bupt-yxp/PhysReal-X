@@ -18,7 +18,7 @@ from physrealx.domain import (
     OperationSpec,
     VersionedRef,
 )
-from physrealx.errors import DomainValidationError, MethodExecutionError
+from physrealx.errors import DomainValidationError, MethodExecutionError, ResourceConflictError
 from physrealx.methods import builtin_method
 from physrealx.platform import PhysRealX
 from physrealx.reference import reference_asset
@@ -27,12 +27,14 @@ from physrealx.reference import reference_asset
 class _CanonicalAdapter:
     def __init__(self, descriptor: MethodDescriptor) -> None:
         self.descriptor = descriptor
+        self.calls = 0
 
     def execute(
         self,
         spec: OperationSpec,
         artifacts: ArtifactStore,
     ) -> MethodExecutionOutput:
+        self.calls += 1
         outputs = []
         for requirement in spec.outputs:
             media_type = (
@@ -130,6 +132,36 @@ def _install(
 
 
 AssetInvocation = Callable[[PhysRealX, str, VersionedRef, ArtifactRef], OperationManifest]
+
+
+def test_capability_and_explicit_operation_share_validated_execution(tmp_path: Path) -> None:
+    platform = PhysRealX.open(tmp_path, discover_plugins=False)
+    adapter = _CanonicalAdapter(
+        builtin_method(
+            MethodCapability.PHYSICS_CALIBRATE,
+            "counted_identification",
+            input_contract="JointSystemIdentificationEvidence/1",
+            output_contract="IdentifiedJointPhysics/1+PhysicsIdentificationReport/1",
+        )
+    )
+    platform.plugins.register_adapter(adapter)
+    evidence = platform.artifacts.put_json({"fixture": "identification"})
+
+    original = platform.assets.calibrate_physics(evidence, method=adapter.descriptor.name)
+    assert platform.operations.execute(original.spec) == original
+    assert platform.assets.calibrate_physics(evidence, method=adapter.descriptor.name) == original
+    assert adapter.calls == 1
+
+    changed = original.spec.model_copy(update={"arguments": {"different": True}})
+    with pytest.raises(ResourceConflictError, match="different specification"):
+        platform.operations.execute(changed)
+    assert adapter.calls == 1
+
+    missing = original.outputs[0].artifact
+    next((tmp_path / "artifacts").rglob(missing.artifact_id)).unlink()
+    with pytest.raises(DomainValidationError, match="unavailable or corrupt output"):
+        platform.operations.execute(original.spec)
+    assert adapter.calls == 1
 
 
 @pytest.mark.parametrize(

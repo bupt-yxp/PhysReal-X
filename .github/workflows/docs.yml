@@ -8,6 +8,9 @@ on:
       - "overrides/**"
       - "mkdocs.yml"
       - "pyproject.toml"
+      - "examples/catalog.py"
+      - "examples/*/demo.ipynb"
+      - "README.md"
       - ".github/workflows/docs.yml"
   pull_request:
     paths:
@@ -15,6 +18,9 @@ on:
       - "overrides/**"
       - "mkdocs.yml"
       - "pyproject.toml"
+      - "examples/catalog.py"
+      - "examples/*/demo.ipynb"
+      - "README.md"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 

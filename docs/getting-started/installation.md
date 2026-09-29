@@ -22,7 +22,7 @@ Matplotlib 3.5.3 与 matplotlib-inline 0.2.2 不兼容。项目 Demo 与 ArtGS �
 使用发生错误的解释器执行 `python -m pip install --upgrade 'matplotlib>=3.8,<4'`，然后在 Jupyter 点击
 **Restart**；仅重跑单元格不会替换内核内已导入的旧模块。
 
-六模块完整 Notebook 使用 CPU COLMAP/深度处理与 CUDA ArtGS、ACT、DINO-WM。完整执行需要实际 CUDA 设备、编译器和原生扩展；子进程始终使用当前 `sys.executable`。ArtGS 依赖在同一环境执行 `python -m pip install --no-build-isolation -e ".[artgs]"` 安装。
+六模块完整 Notebook 使用 CPU COLMAP/深度处理与 CUDA ArtGS、ACT、DINO-WM。完整执行需要实际 CUDA 设备、编译器和原生扩展；重建训练子进程使用当前 `sys.executable`。ArtGS 依赖在同一环境执行 `python -m pip install --no-build-isolation -e ".[artgs]"` 安装。
 
 本地元数据库使用 SQLite `STRICT` 表，因此系统 SQLite 必须为 3.37.0 或更高版本：
 
@@ -120,3 +120,9 @@ physrealx doctor --strict
 无界面 RGB/Depth 渲染可在启动解释器前设置 `MUJOCO_GL=egl`；缺少可用图形驱动会明确失败。数值物理运行无需创建渲染器。
 
 MuJoCo 无窗口渲染使用 `PyOpenGL==3.1.10`。DTArt 的间接依赖 pyrender 采用官方固定提交 `a59963ef890891656fd17c90e12d663233dcaa99`，其 PyOpenGL 约束已放宽；避免旧发行版将环境降回缺少 EGL 类型的 3.1.0。
+
+## Demo 的额外运行依赖
+
+房间、机械臂与多模态预览调用 Blender；可执行文件需在 PATH 中。模块二的 VLM 使用 Notebook 显式配置的解释器与固定模型版本，允许与重建环境隔离；图像、模型版本和几何一致时才复用预测。
+
+Isaac Sim 使用独立安装的 4.5.0 与其 `python.sh`，通过 `PHYSREALX_ISAAC_SIM_ROOT` 指定。原生相机需要可用的 GPU/RTX 运行环境，详见[仿真后端](../user-guide/simulation-and-data-generation.md)。

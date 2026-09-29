@@ -69,7 +69,9 @@ def load_meshes(store: ArtifactStore, reference: ArtifactRef, *, process: bool =
     return meshes
 
 
-def _exterior_samples(parts: list[Any], proxy: Any, seed: int) -> Any:
+def _exterior_samples(
+    parts: list[Any], proxy: Any, seed: int, *, include_vertices: bool = False
+) -> Any:
     """Sample the proxy union boundary, excluding buried convex partition faces."""
     import numpy as np
     import trimesh
@@ -77,7 +79,17 @@ def _exterior_samples(parts: list[Any], proxy: Any, seed: int) -> Any:
 
     samples, faces = trimesh.sample.sample_surface(proxy, 5000, seed=seed)
     epsilon = max(float(np.ptp(proxy.vertices, axis=0).max()) * 1e-7, 1e-9)
-    outside = samples + proxy.face_normals[faces] * epsilon
+    normals = proxy.face_normals[faces]
+    if include_vertices:
+        # Include every candidate vertex and face center so small boundary defects
+        # cannot move out of a random sample after each subdivision.
+        samples = np.concatenate(
+            [samples, *[p.vertices for p in parts], *[p.triangles_center for p in parts]]
+        )
+        normals = np.concatenate(
+            [normals, *[p.vertex_normals for p in parts], *[p.face_normals for p in parts]]
+        )
+    outside = samples + normals * epsilon
     buried = np.zeros(len(samples), dtype=bool)
     for part in parts:
         bounds = part.bounds
@@ -94,6 +106,28 @@ def _exterior_samples(parts: list[Any], proxy: Any, seed: int) -> Any:
     if int((~buried).sum()) < 500:
         raise MethodExecutionError("collision proxy has insufficient exterior surface samples")
     return samples[~buried]
+
+
+def _allocate_component_budgets(areas: list[float], total: int) -> list[int]:
+    """Split one global convex-part budget across disconnected source surfaces."""
+    if not areas:
+        return []
+    if total < len(areas):
+        raise MethodExecutionError(
+            f"collision input has {len(areas)} non-convex components but only {total} parts"
+        )
+    remaining = total - len(areas)
+    positive = [max(float(area), 0.0) for area in areas]
+    area_sum = sum(positive)
+    weights = positive if area_sum > 0 else [1.0] * len(areas)
+    weight_sum = sum(weights)
+    shares = [remaining * weight / weight_sum for weight in weights]
+    extras = [math.floor(share) for share in shares]
+    for index in sorted(
+        range(len(areas)), key=lambda item: (shares[item] - extras[item], -item), reverse=True
+    )[: remaining - sum(extras)]:
+        extras[index] += 1
+    return [1 + extra for extra in extras]
 
 
 class CollisionConfig(DomainModel):
@@ -114,7 +148,7 @@ class CollisionAdapter:
         input_contract="VisualMesh/1",
         output_contract="CollisionGeometry/1+CollisionBuildReport/1",
         python=">=3.10,<3.13",
-        version="1.4.0",
+        version="1.5.0",
     )
 
     def probe(self) -> MethodProbe:
@@ -163,43 +197,52 @@ class CollisionAdapter:
             raise DomainValidationError(
                 "collision input must be watertight, consistently wound positive volumes"
             )
-        parts = []
-        for mesh in (part for original in meshes for part in original.split(only_watertight=False)):
+        components = [part for original in meshes for part in original.split(only_watertight=False)]
+        fixed_parts = []
+        decomposable = []
+        for mesh in components:
             hull = mesh.convex_hull
             convex_volume_agrees = mesh.volume > 0 and math.isclose(
                 float(hull.volume), float(mesh.volume), rel_tol=1e-6
             )
             if mesh.is_volume and (mesh.is_convex or convex_volume_agrees):
-                parts.append(hull)
+                fixed_parts.append(hull)
             else:
-                decomposition = coacd.run_coacd(
-                    coacd.Mesh(mesh.vertices, mesh.faces),
-                    threshold=config.threshold_m,
-                    real_metric=True,
-                    max_convex_hull=config.max_parts,
-                    preprocess_mode="off" if mesh.is_volume else "on",
-                    preprocess_resolution=max(
-                        50,
-                        min(
-                            256,
-                            math.ceil(
-                                math.sqrt(3)
-                                * float(np.ptp(mesh.vertices, axis=0).max())
-                                / config.threshold_m
-                            ),
+                decomposable.append(mesh)
+        remaining_budget = config.max_parts - len(fixed_parts)
+        component_budgets = _allocate_component_budgets(
+            [float(mesh.area) for mesh in decomposable], remaining_budget
+        )
+        parts = list(fixed_parts)
+        for mesh, component_budget in zip(decomposable, component_budgets, strict=True):
+            decomposition = coacd.run_coacd(
+                coacd.Mesh(mesh.vertices, mesh.faces),
+                threshold=config.threshold_m,
+                real_metric=True,
+                max_convex_hull=component_budget,
+                preprocess_mode="off" if mesh.is_volume else "on",
+                preprocess_resolution=max(
+                    50,
+                    min(
+                        256,
+                        math.ceil(
+                            math.sqrt(3)
+                            * float(np.ptp(mesh.vertices, axis=0).max())
+                            / config.threshold_m
                         ),
-                    )
-                    if not mesh.is_volume
-                    else 50,
-                    seed=config.seed,
+                    ),
                 )
-                # Rebuild each convex hull from its vertices. Native triangulation can
-                # contain coplanar degeneracies after float conversion; hulls are the
-                # actual collision representation, not the tessellation of that hull.
-                parts.extend(
-                    trimesh.Trimesh(vertices=v, faces=f, process=True).convex_hull
-                    for v, f in decomposition
-                )
+                if not mesh.is_volume
+                else 50,
+                seed=config.seed,
+            )
+            # Rebuild each convex hull from its vertices. Native triangulation can
+            # contain coplanar degeneracies after float conversion; hulls are the
+            # actual collision representation, not the tessellation of that hull.
+            parts.extend(
+                trimesh.Trimesh(vertices=v, faces=f, process=True).convex_hull
+                for v, f in decomposition
+            )
         # GLB stores positions as float32. Build topology at that precision so
         # quantization cannot turn nearly coplanar hull faces non-convex on reload.
         parts = [trimesh.convex.convex_hull(part.vertices.astype(np.float32)) for part in parts]
@@ -271,6 +314,7 @@ class CollisionAdapter:
                 else "not_applicable_open_surface",
                 "source_surface_samples": 0 if source_closed else len(source_samples),
                 "proxy_surface_samples": 0 if source_closed else len(proxy_samples),
+                "component_part_budgets": component_budgets,
             },
             "metrics": metrics,
             "gates": {

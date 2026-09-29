@@ -2,6 +2,10 @@
 
 模块六从模块五的策略权重开始，归档部署 Episode，诊断失败、生成恢复示范、重新训练，并使用独立种子比较模型更新效果。
 
+<!-- demo-preview:evaluation_and_feedback -->
+
+<!-- demo-image:evaluation_and_feedback:feedback-dashboard.png -->
+
 ## 评测和日志
 
 `evaluations.submit` 固定模型、场景、任务、后端和种子。`telemetry.record(..., method="episode_telemetry")` 消费 `DeploymentEvidence`，重新读取不可变 Episode 与 TaskSpec，计算目标误差、轨迹跟踪 RMSE、接触稳定性和感知数据质量。
@@ -32,4 +36,4 @@ ACT 微调使用完整父模型清单作为训练器检查点，复用权重、�
 
 核心 `robot_agent.py` 提供机器人接口、安全约束、影子/受限执行和看门狗协议。Notebook 当前输入为 MuJoCo Episode，因此校准计划返回 `AWAITING_REAL_EVIDENCE`，不会把仿真轨迹当作真机数据。
 
-真实部署日志到位后，`feedback.prepare_physics_calibration` 从两个独立采集生成系统辨识证据（每条至少 16 个样本）。Episode 必须声明 `gravity_compensated=true` 与 `isolated_joint`，且关节索引、时间和信号单位通过校验，再由 `assets.calibrate_physics(..., method="bounded_inverse_dynamics")` 估计惯量、黏性阻尼和库仑摩擦，并使用独立 holdout 验证。见[功能验收](../acceptance.md)。
+真实部署日志到位后，`feedback.prepare_physics_calibration` 从两个独立采集生成系统辨识证据（每条至少 16 个样本）。Episode 必须声明 `gravity_compensated=true` 与 `isolated_joint`，且关节索引、时间和信号单位通过校验，再由 `assets.calibrate_physics(..., method="bounded_inverse_dynamics")` 估计惯量、黏性阻尼和库仑摩擦，并使用独立 holdout 验证。

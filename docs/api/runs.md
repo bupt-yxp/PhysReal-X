@@ -9,7 +9,8 @@
 
 ```python
 run = px.simulations.run(
-    scene_ref, task_ref,
+    scene_ref,
+    task_ref,
     backend="isaac_sim",  # 或 "mujoco"
     config=control_config,
     policy=policy,
@@ -28,7 +29,7 @@ backend = px.methods.bind(
     MethodCapability.SIMULATION_RUN,
     "mujoco",
     config={
-        "controlled_joints": ["pusher/extension"],
+        "controlled_joints": ["robot_arm/joint1"],
         "initial_positions": [0.0],
         "effort_limits": [40.0],
         "timestep_seconds": 0.002,
@@ -36,7 +37,7 @@ backend = px.methods.bind(
     },
 )
 policy = px.methods.bind(
-    MethodCapability.POLICY_INFERENCE, "joint_target", config={"target": [0.195]}
+    MethodCapability.POLICY_INFERENCE, "joint_target", config={"target": [0.3]}
 )
 run = px.runs.submit(
     RunSpec(
@@ -46,7 +47,7 @@ run = px.runs.submit(
         policy=policy,
         episode_count=4,
         base_seed=2026,
-        dataset_id="oven4.simulation",
+        dataset_id="robot.simulation",
         dataset_version="1.0.0",
         record_signals=("joint.position", "joint.velocity", "contact.force"),
     )

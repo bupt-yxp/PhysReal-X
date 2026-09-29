@@ -9,7 +9,7 @@ from physrealx import MethodCapability, TrainingSpec
 
 model_ref = px.training.submit(
     TrainingSpec(
-        resource_id="oven4.act",
+        resource_id="laptop1.act",
         version="1.0.0",
         dataset=train_dataset,
         trainer=px.methods.bind(
@@ -54,4 +54,4 @@ prediction = px.world_models.rollout(
 
 方法依赖按需安装到现有环境，权重不可变发布，训练结束后必须重载推理。配置和适配详情见[训练指南](../user-guide/data-management-and-training.md)。
 
-世界模型训练展开长度支持 1–128 步；示例在 20 Hz 下使用 100 步覆盖五秒验收时长。检查点按验证集的状态 RMSE 比率平方、潜在特征 MSE 比率和 RGB MSE 比率三者最大值选择（均以保持原状态为基线），避免量纲或单项误差主导选择；各项比率保存在训练诊断中，测试集仅用于最终评估。
+世界模型训练展开长度支持 1–128 步。检查点和视觉残差增益按 validation 组选择，test 组只用于最终对照；详细配置与可视化见[训练指南](../user-guide/data-management-and-training.md)。

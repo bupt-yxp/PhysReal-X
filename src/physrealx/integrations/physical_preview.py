@@ -65,9 +65,7 @@ def preview_physics_video(
         ):
             raise DomainValidationError("video preview found invalid synchronized observations")
         overlay = rgb.copy()
-        overlay[mask] = (0.45 * overlay[mask] + 0.55 * np.array([0, 208, 190])).astype(
-            np.uint8
-        )
+        overlay[mask] = (0.45 * overlay[mask] + 0.55 * np.array([0, 208, 190])).astype(np.uint8)
         valid = depth > 0
         if not np.any(valid):
             depth_rgb = np.zeros_like(rgb)
@@ -119,7 +117,7 @@ def preview_physics_report(
     import numpy as np
     from matplotlib.figure import Figure
 
-    prediction = read_json(store, prior, "physrealx.visual-physics-prior/1")
+    prediction = read_json(store, prior, "physrealx.visual-physics-prior/3")
     report = read_json(store, feasibility, "physrealx.physical-feasibility-report/1")
     video = read_json(store, readiness, "physrealx.video-physics-readiness/1")
     assembly = read_json(
@@ -143,9 +141,7 @@ def preview_physics_report(
     left.grid(axis="y", alpha=0.2)
     rows = report["sweep"]
     if initial_feasibility is not None:
-        initial = read_json(
-            store, initial_feasibility, "physrealx.physical-feasibility-report/1"
-        )
+        initial = read_json(store, initial_feasibility, "physrealx.physical-feasibility-report/1")
         initial_rows = initial["sweep"]
         if initial["locked_range"] != report["locked_range"]:
             raise DomainValidationError("collision comparison changed the locked joint range")
@@ -170,7 +166,9 @@ def preview_physics_report(
     right.legend()
     right.grid(alpha=0.2)
     figure.suptitle(
-        f"Fixed start/end | Video: {video['geometry_status']} | Physics remains PRIOR", fontsize=10
+        "Module-one predicted joint and start/end fixed | "
+        f"Video: {video['geometry_status']} | Physics remains PRIOR",
+        fontsize=10,
     )
     stream = io.BytesIO()
     figure.savefig(stream, format="png")
@@ -179,16 +177,31 @@ def preview_physics_report(
 
 
 def preview_physical_asset(
-    store: ArtifactStore, assembly: ArtifactRef, *, frames: int = 24, fps: int = 12
+    store: ArtifactStore,
+    assembly: ArtifactRef,
+    *,
+    frames: int = 24,
+    fps: int = 12,
+    rejected_refinement: ArtifactRef | None = None,
 ) -> ArtifactRef:
-    """Animate visual and collision geometry through the asset's declared joint limits."""
+    """Animate geometry while marking only measured proxy contacts as contacts."""
     import numpy as np
     import trimesh
+    from matplotlib import colormaps
     from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.cm import ScalarMappable
+    from matplotlib.colors import Normalize
     from matplotlib.figure import Figure
     from PIL import Image
 
+    from physrealx.integrations._collision_refit import nearest
+    from physrealx.integrations.physical_feasibility import (
+        FeasibilityConfig,
+        evaluate_asset_feasibility,
+    )
+
     Poly3DCollection = import_module("mpl_toolkits.mplot3d.art3d").Poly3DCollection
+    proj3d = import_module("mpl_toolkits.mplot3d.proj3d")
     if type(frames) is not int or not 2 <= frames <= 120:
         raise DomainValidationError("preview frames must be an integer between 2 and 120")
     if type(fps) is not int or not 1 <= fps <= 50:
@@ -198,18 +211,80 @@ def preview_physical_asset(
         asset = AssetSpec.model_validate(document["asset_spec"])
     except (KeyError, ValueError) as error:
         raise DomainValidationError("asset assembly has no valid asset specification") from error
-    geometry = asset_geometry(store, asset, roles=(GeometryRole.VISUAL, GeometryRole.COLLISION))
-    timeline = np.linspace(0, 1, frames)
-    states = [
-        link_transforms(
-            asset,
-            {
-                joint.name: joint.lower_limit
-                + float(fraction) * (joint.upper_limit - joint.lower_limit)
-                for joint in asset.joints
-            },
+    if rejected_refinement is not None:
+        report = read_json(store, rejected_refinement, "physrealx.articulated-collision-repair/4")
+        if (
+            report.get("status") != "FAILED"
+            or report.get("source_assembly") != assembly.model_dump(mode="json")
+            or set(report.get("diagnostic_collision_geometries", {})) != set(asset.links)
+        ):
+            raise DomainValidationError(
+                "diagnostic preview requires this assembly's rejected refinement"
+            )
+        replacements = {
+            link: ArtifactRef.model_validate(ref)
+            for link, ref in report["diagnostic_collision_geometries"].items()
+        }
+        asset = asset.model_copy(
+            update={
+                "geometries": tuple(
+                    g.model_copy(update={"uri": f"artifact://{replacements[g.link].artifact_id}"})
+                    if g.role is GeometryRole.COLLISION
+                    else g
+                    for g in asset.geometries
+                )
+            }
         )
+    geometry = asset_geometry(store, asset, roles=(GeometryRole.VISUAL, GeometryRole.COLLISION))
+    # Proxy colors identify link ownership. They are not collision highlights.
+    # Sample MuJoCo at these exact animation states so a small red point, rather
+    # than an entire proxy, carries the collision meaning.
+    evidence_samples = max(3, frames)
+    collision_evidence = evaluate_asset_feasibility(
+        store,
+        asset,
+        config=FeasibilityConfig(sweep_samples=evidence_samples),
+    )
+    # Use per-face maximum vertex/centroid distance to expose small missing patches.
+    fit_colors = []
+    color_limit_mm = 3.0
+    for link, mesh in geometry[GeometryRole.VISUAL]:
+        proxy = trimesh.util.concatenate(
+            [p for name, p in geometry[GeometryRole.COLLISION] if name == link]
+        )
+        vertex_distance, _ = nearest(proxy, mesh.vertices)
+        face_distance, _ = nearest(proxy, mesh.triangles_center)
+        fit_error = np.maximum(vertex_distance[mesh.faces].max(axis=1), face_distance) * 1000
+        fit_colors.append(colormaps["YlOrRd"](np.clip(fit_error / color_limit_mm, 0, 1)))
+    if len(asset.joints) != 1:
+        raise DomainValidationError("physical preview currently requires one joint")
+    joint = asset.joints[0]
+    motion = asset.metadata.get("reconstructed_motion")
+    reconstructed_playback = (
+        isinstance(motion, dict)
+        and motion.get("joint") == joint.name
+        and motion.get("range") == [float(joint.lower_limit), float(joint.upper_limit)]
+        and len(motion.get("positions", ())) == 2
+    )
+    if not reconstructed_playback:
+        motion = {
+            "joint": joint.name,
+            "positions": [float(joint.lower_limit), float(joint.upper_limit)],
+            "states": ["lower_limit", "upper_limit"],
+        }
+    timeline = np.linspace(0, 1, frames)
+    playback_positions = [
+        (1 - float(fraction)) * motion["positions"][0]
+        + float(fraction) * motion["positions"][1]
         for fraction in timeline
+    ]
+    states = [
+        link_transforms(asset, {motion["joint"]: float(position)})
+        for position in playback_positions
+    ]
+    sweep_positions = np.asarray([row["q"] for row in collision_evidence["sweep"]])
+    evidence_indices = [
+        int(np.argmin(np.abs(sweep_positions - position))) for position in playback_positions
     ]
 
     lower, upper = np.full(3, np.inf), np.full(3, -np.inf)
@@ -227,13 +302,40 @@ def preview_physical_asset(
     padded_extent = np.maximum(extent, longest * 0.06) * 1.1
     box_aspect = tuple(float(value) for value in padded_extent)
 
-    figure = Figure(figsize=(9, 3.6), dpi=100, facecolor="white")
+    figure = Figure(figsize=(13.5, 3.6), dpi=100, facecolor="white")
+    joint_ranges = {
+        joint.name: [float(joint.lower_limit), float(joint.upper_limit)] for joint in asset.joints
+    }
+    start, end = motion["positions"]
+    range_text = (
+        f"{joint.name}: {np.degrees(start):.1f}° → {np.degrees(end):.1f}°"
+        if joint.joint_type.value == "revolute"
+        else f"{joint.name}: {start:.4g} → {end:.4g} m"
+    )
+    if rejected_refinement is not None:
+        figure.suptitle(
+            f"REJECTED candidate · diagnostic only · {range_text}",
+            fontsize=11,
+            color="#b91c1c",
+            y=0.995,
+        )
+    elif reconstructed_playback:
+        figure.suptitle(
+            f"Module-one reconstructed start → end · {range_text}", fontsize=11, y=0.995
+        )
+    else:
+        figure.suptitle(f"Declared joint limits · {range_text}", fontsize=11, y=0.995)
     canvas: Any = FigureCanvasAgg(figure)
+    axes = []
     collections = []
     for index, title in enumerate(
-        ("Visual geometry · RGB surface", "Collision proxy · shape only")
+        (
+            "Visual geometry · RGB surface",
+            "Proxy shapes · link colors are not contact",
+            "Proxy ↔ visual surface error · mm",
+        )
     ):
-        axis = figure.add_subplot(1, 2, index + 1, projection="3d")
+        axis = figure.add_subplot(1, 3, index + 1, projection="3d")
         axis.set_title(title, fontsize=11, pad=-2, y=0.99)
         axis.set(
             xlim=(center[0] - padded_extent[0] / 2, center[0] + padded_extent[0] / 2),
@@ -243,11 +345,41 @@ def preview_physical_asset(
         axis.set_box_aspect(box_aspect, zoom=1.22)
         axis.view_init(elev=20, azim=-40)
         axis.set_axis_off()
-        axis.set_position((index * 0.5 + 0.015, 0.045, 0.47, 0.91))
+        axis.set_position((index / 3 + 0.010, 0.065, 0.313, 0.89))
         collection = Poly3DCollection([], edgecolors="none", linewidths=0)
         axis.add_collection3d(collection)
+        axes.append(axis)
         collections.append(collection)
 
+    contact_marker = axes[1].text2D(
+        0,
+        0,
+        "",
+        transform=axes[1].transAxes,
+        ha="center",
+        va="center",
+        fontsize=8,
+        color="#dc2626",
+        fontweight="bold",
+        clip_on=True,
+    )
+    contact_label = axes[1].text2D(
+        0.5,
+        0.01,
+        "",
+        transform=axes[1].transAxes,
+        ha="center",
+        va="bottom",
+        fontsize=8.5,
+        color="#991b1b",
+    )
+    color_axis = figure.add_axes((0.72, 0.085, 0.23, 0.025))
+    figure.colorbar(
+        ScalarMappable(norm=Normalize(0, color_limit_mm), cmap="YlOrRd"),
+        cax=color_axis,
+        orientation="horizontal",
+        extend="max",
+    )
     visual_palette = (
         (0.65, 0.69, 0.74),
         (0.16, 0.55, 0.84),
@@ -263,10 +395,26 @@ def preview_physical_asset(
         link: collision_palette[index % len(collision_palette)]
         for index, link in enumerate(sorted(asset.links))
     }
+    color_names = ("orange", "purple", "brown")
+    ownership_legend = " · ".join(
+        f"{color_names[index % len(color_names)]} = {link} proxy"
+        for index, link in enumerate(sorted(asset.links))
+    )
+    figure.text(
+        0.5,
+        0.005,
+        f"{ownership_legend} · red point = deepest MuJoCo contact",
+        ha="center",
+        va="bottom",
+        fontsize=8,
+        color="#4b5563",
+    )
     images = []
     try:
-        for transforms in states:
-            for role, collection in zip((GeometryRole.VISUAL, GeometryRole.COLLISION), collections):
+        for frame_index, transforms in enumerate(states):
+            for panel, (role, collection) in enumerate(
+                zip((GeometryRole.VISUAL, GeometryRole.COLLISION, GeometryRole.VISUAL), collections)
+            ):
                 triangles, face_colors = [], []
                 for link, mesh in geometry[role]:
                     transform = transforms[link]
@@ -292,7 +440,22 @@ def preview_physical_asset(
                         base = np.tile(color, (len(mesh.faces), 1))
                     face_colors.append(brightness[:, None] * base)
                 collection.set_verts(np.concatenate(triangles))
-                collection.set_facecolor(np.concatenate(face_colors))
+                collection.set_facecolor(np.concatenate(fit_colors if panel == 2 else face_colors))
+            row = collision_evidence["sweep"][int(evidence_indices[frame_index])]
+            contact = row["deepest_contact"]
+            if contact is None:
+                contact_marker.set_text("")
+                contact_label.set_text("No penetrating proxy contact")
+            else:
+                x, y, z = contact["position_m"]
+                projected_x, projected_y, _ = proj3d.proj_transform(x, y, z, axes[1].get_proj())
+                display_xy = axes[1].transData.transform((projected_x, projected_y))
+                axes_xy = axes[1].transAxes.inverted().transform(display_xy)
+                contact_marker.set_position(axes_xy)
+                contact_marker.set_text("●")
+                contact_label.set_text(
+                    f"Deepest proxy penetration: {1000 * row['penetration_m']:.3f} mm"
+                )
             canvas.draw()
             images.append(Image.fromarray(np.asarray(canvas.buffer_rgba()).copy()).convert("RGB"))
         output = io.BytesIO()
@@ -306,9 +469,26 @@ def preview_physical_asset(
             disposal=2,
             comment=json.dumps(
                 {
+                    "rejected_refinement": rejected_refinement.model_dump(mode="json")
+                    if rejected_refinement
+                    else None,
+                    "surface_fit_error_color_limit_mm": color_limit_mm,
+                    "contact_annotation": {
+                        "backend": "mujoco",
+                        "meaning": "red point is the deepest penetrating proxy contact per frame",
+                        "proxy_link_colors_are_contact_highlights": False,
+                        "max_penetration_m": collision_evidence["max_penetration_m"],
+                    },
                     "assembly": assembly.model_dump(mode="json"),
                     "joints": [joint.name for joint in asset.joints],
-                    "motion": "declared lower-to-upper joint limits",
+                    "joint_ranges": joint_ranges,
+                    "motion": (
+                        "module-one predicted start-to-end"
+                        if reconstructed_playback
+                        else "declared lower-to-upper joint limits"
+                    ),
+                    "states": motion["states"],
+                    "playback_positions": playback_positions,
                     "fps": fps,
                 }
             ).encode(),

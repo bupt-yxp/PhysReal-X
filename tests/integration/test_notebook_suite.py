@@ -45,7 +45,7 @@ def test_all_six_notebooks_execute_and_publish_actual_evidence() -> None:
     output = root / "examples/real_assets_and_digital_twin/output"
     import hashlib
 
-    from physrealx import ArtifactRef, PhysRealX, VersionedRef
+    from physrealx import ArtifactRef, PhysRealX, RunSpec, VersionedRef
 
     px = PhysRealX.open(root / ".physrealx")
     for receipt in suite["notebooks"]:
@@ -108,11 +108,12 @@ def test_all_six_notebooks_execute_and_publish_actual_evidence() -> None:
     for metric in ("latent_mse", "rgb_mse"):
         assert metrics["test_" + metric] <= metrics["test_persistence_" + metric] + 1e-8
     valid_statuses = {"BEATS_PERSISTENCE", "MATCHES_PERSISTENCE", "BELOW_BASELINE"}
+    learning_task = px.tasks.get(RunSpec.model_validate(learning["evaluation_run"]).task)
     for key, signal in (
         ("long_prediction_evaluation", "joint.position"),
         (
             "counterfactual_evaluation",
-            "joint.object.cover.joint.position",
+            learning_task.success_conditions[0].signal,
         ),
     ):
         rollout_evaluation = json.loads(
@@ -124,10 +125,15 @@ def test_all_six_notebooks_execute_and_publish_actual_evidence() -> None:
     simulation = json.loads(
         (root / "examples/simulation_and_data_generation/output/results.json").read_text()
     )
-    streams = json.loads(
-        px.artifacts.get_bytes(ArtifactRef.model_validate(simulation["render_streams"]))
-    )
-    assert max(streams["recorded_joint_positions"]) - min(streams["recorded_joint_positions"]) > 0.1
+    from physrealx.runtime import load_episode
+
+    dataset = px.datasets.get(VersionedRef.model_validate(simulation["expert_dataset"]))
+    episode = load_episode(px.artifacts, next(row for row in dataset.episodes if row.success))
+    task = px.tasks.get(episode.task)
+    positions = [
+        step.observations[task.success_conditions[0].signal].inline[0] for step in episode.steps
+    ]
+    assert max(positions) - min(positions) > 0.1
     feedback = json.loads(
         (root / "examples/evaluation_and_feedback/output/results.json").read_text()
     )

@@ -13,8 +13,7 @@ from physrealx.domain import ArtifactRef, DomainModel
 from physrealx.errors import DomainValidationError
 from physrealx.integrations._artifacts import read_array, read_json
 from physrealx.integrations.collision import load_meshes
-from physrealx.integrations.physical_estimation import locked_motion
-from physrealx.integrations.usd_reference import reference_link_transforms
+from physrealx.reconstruction import joint_transform
 
 
 class VideoGeometryFrame(DomainModel):
@@ -95,8 +94,15 @@ def _observations(
             )
         q = frame.positions.get(motion["joint"], float("nan"))
         if not motion["range"][0] <= q <= motion["range"][1]:
-            raise DomainValidationError("video position exceeds locked start/end range")
-        transforms = reference_link_transforms(model, dict(frame.positions))
+            raise DomainValidationError("video position exceeds the observed start/end interval")
+        if set(frame.positions) != {motion["joint"]}:
+            raise DomainValidationError("video positions must cover the reconstructed joint")
+        transforms = {
+            motion["parent"]: np.eye(4),
+            motion["child"]: joint_transform(
+                motion["kind"], motion["axis"], motion["origin_m"], q
+            ),
+        }
         for name, identifier in evidence.link_ids.items():
             y, x = np.where((mask == identifier) & (depth > 0))
             if len(x) < 100:
@@ -150,9 +156,7 @@ def fit_surface(
     system = sparse.vstack(
         [matrix, config.smoothness * smooth, 0.1 * sparse.eye(len(unique))]
     ).tocsr()
-    target = np.r_[
-        np.sum((points - closest) * normals, axis=1), np.zeros(len(edges) + len(unique))
-    ]
+    target = np.r_[np.sum((points - closest) * normals, axis=1), np.zeros(len(edges) + len(unique))]
     solution = lsq_linear(
         system,
         target,
@@ -202,7 +206,7 @@ def refine_video_geometry(
     source_geometry = read_json(
         store,
         evidence.source_geometry,
-        "physrealx.registered-reconstruction-geometry/1",
+        "physrealx.registered-reconstruction-geometry/4",
     )
     if registration["source_reference"] != evidence.reference.model_dump(mode="json"):
         raise DomainValidationError("video registration differs from source reference")
@@ -210,11 +214,10 @@ def refine_video_geometry(
         source_geometry.get("source_reference") != evidence.reference.model_dump(mode="json")
         or source_geometry.get("source_registration")
         != evidence.registration.model_dump(mode="json")
-        or set(source_geometry.get("geometries", {}))
-        != {link["name"] for link in model["links"]}
+        or set(source_geometry.get("geometries", {})) != {link["name"] for link in model["links"]}
     ):
         raise DomainValidationError("video source geometry differs from reconstruction")
-    motion = locked_motion(model, registration)
+    motion = source_geometry["reconstructed_motion"]
     observations = _observations(store, evidence, model, motion, config)
     geometries, reports = {}, {}
     for link in model["links"]:
@@ -239,13 +242,13 @@ def refine_video_geometry(
         reports[name] = report
     return store.put_json(
         {
-            "schema": "physrealx.video-geometry-refinement/1",
+            "schema": "physrealx.video-geometry-refinement/3",
             "source_reference": evidence.reference.model_dump(mode="json"),
             "source_geometry": evidence.source_geometry.model_dump(mode="json"),
             "registration": evidence.registration.model_dump(mode="json"),
             "source_evidence": evidence_ref.model_dump(mode="json"),
             "config": config.model_dump(mode="json"),
-            "motion": motion,
+            "reconstructed_motion": motion,
             "geometries": geometries,
             "links": reports,
             "dynamics_status": "UNCHANGED_UNKNOWN_EXTERNAL_FORCE",

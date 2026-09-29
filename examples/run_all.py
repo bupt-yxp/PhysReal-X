@@ -12,14 +12,24 @@ from pathlib import Path
 from time import monotonic
 from typing import Any, cast
 
-MODULES = (
-    "real_assets_and_digital_twin",
-    "physical_asset_building",
-    "scene_and_task_generation",
-    "simulation_and_data_generation",
-    "data_management_and_training",
-    "evaluation_and_feedback",
-)
+from examples.catalog import DEMOS, MODULES, dependencies_for, dependents_of
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _implementation_sha256(root: Path) -> str:
+    """Bind acceptance to the SDK and execution helpers, including uncommitted edits."""
+    paths = set((root / "src/physrealx").rglob("*.py"))
+    paths.update((root / "examples").glob("*.py"))
+    paths.add(root / "pyproject.toml")
+    digest = hashlib.sha256()
+    for path in sorted(paths):
+        if path.is_file():
+            digest.update(str(path.relative_to(root)).encode("utf-8") + b"\0")
+            digest.update(path.read_bytes() + b"\0")
+    return digest.hexdigest()
 
 
 def _write_json(path: Path, value: dict[str, Any]) -> None:
@@ -29,7 +39,9 @@ def _write_json(path: Path, value: dict[str, Any]) -> None:
     temporary.replace(path)
 
 
-def _load_current_receipt(root: Path, module: str) -> dict[str, Any]:
+def _load_current_receipt(
+    root: Path, module: str, *, current: dict[str, dict[str, Any]] | None = None
+) -> dict[str, Any]:
     """Load one completed receipt only when every local evidence file is current."""
     import nbformat
 
@@ -38,13 +50,19 @@ def _load_current_receipt(root: Path, module: str) -> dict[str, Any]:
     execution_path = directory / "output/execution.json"
     executed_path = directory / "output/demo.executed.ipynb"
     results_path = directory / "output/results.json"
+    current = {} if current is None else current
+    if module in current:
+        return current[module]
     try:
         receipt = cast(dict[str, Any], json.loads(execution_path.read_text()))
         results = json.loads(results_path.read_text())
         source = nbformat.read(source_path, as_version=4)  # type: ignore[no-untyped-call]
         executed = nbformat.read(executed_path, as_version=4)  # type: ignore[no-untyped-call]
-    except (FileNotFoundError, json.JSONDecodeError, nbformat.reader.NotJSONError) as error:
+    except (OSError, ValueError, nbformat.reader.NotJSONError) as error:
         raise RuntimeError(f"{module} has no valid completed execution evidence") from error
+
+    if not isinstance(receipt, dict):
+        raise RuntimeError(f"{module} execution evidence is stale or incomplete")
 
     expected_cells = [
         (index, cell.id)
@@ -60,9 +78,13 @@ def _load_current_receipt(root: Path, module: str) -> dict[str, Any]:
         cell for cell in executed.cells if cell.cell_type == "code" and cell.source.strip()
     ]
     valid = (
-        receipt.get("module") == module
+        receipt.get("schema") == "physrealx.notebook-execution/3"
+        and receipt.get("module") == module
         and receipt.get("status") == "COMPLETED"
-        and receipt.get("source_sha256") == hashlib.sha256(source_path.read_bytes()).hexdigest()
+        and receipt.get("source_sha256") == _sha256(source_path)
+        and receipt.get("implementation_sha256") == _implementation_sha256(root)
+        and receipt.get("executed_sha256") == _sha256(executed_path)
+        and receipt.get("results_sha256") == _sha256(results_path)
         and receipt.get("code_cells") == len(expected_cells)
         and recorded_cells == expected_cells
         and len(executed_cells) == len(expected_cells)
@@ -70,11 +92,21 @@ def _load_current_receipt(root: Path, module: str) -> dict[str, Any]:
         and not any(
             output.output_type == "error" for cell in executed_cells for output in cell.outputs
         )
+        and [(c.cell_type, c.source) for c in source.cells]
+        == [(c.cell_type, c.source) for c in executed.cells]
         and isinstance(results, dict)
         and bool(results)
     )
     if not valid:
         raise RuntimeError(f"{module} execution evidence is stale or incomplete")
+    demo = next(demo for demo in DEMOS if demo.slug == module)
+    upstream = {
+        name: _load_current_receipt(root, name, current=current)["results_sha256"]
+        for name in demo.dependencies
+    }
+    if receipt.get("upstream_results") != upstream:
+        raise RuntimeError(f"{module} execution evidence uses stale upstream results")
+    current[module] = receipt
     return receipt
 
 
@@ -108,6 +140,12 @@ def _execute_notebook(root: Path, receipt: dict[str, Any], timeout: int, kernel_
 
     try:
         source = source_path.read_bytes()
+        implementation = _implementation_sha256(root)
+        demo = next(demo for demo in DEMOS if demo.slug == module)
+        upstream_paths = {
+            name: root / "examples" / name / "output/results.json" for name in demo.dependencies
+        }
+        upstream_results = {name: _sha256(path) for name, path in upstream_paths.items()}
         notebook = nbformat.reads(  # type: ignore[no-untyped-call]
             source.decode("utf-8"), as_version=4
         )
@@ -122,7 +160,10 @@ def _execute_notebook(root: Path, receipt: dict[str, Any], timeout: int, kernel_
         if not cell_records:
             raise ValueError("notebook has no executable code cells")
         receipt.update(
+            schema="physrealx.notebook-execution/3",
             source_sha256=hashlib.sha256(source).hexdigest(),
+            implementation_sha256=implementation,
+            upstream_results=upstream_results,
             cells=list(cell_records.values()),
         )
         NotebookClient(
@@ -139,7 +180,12 @@ def _execute_notebook(root: Path, receipt: dict[str, Any], timeout: int, kernel_
             raise RuntimeError("not all code cells executed successfully")
         if source_path.read_bytes() != source:
             raise RuntimeError("notebook source changed during execution; rerun for acceptance")
-        results = json.loads((directory / "output/results.json").read_text())
+        if _implementation_sha256(root) != implementation:
+            raise RuntimeError("SDK source changed during execution; rerun for acceptance")
+        if {name: _sha256(path) for name, path in upstream_paths.items()} != upstream_results:
+            raise RuntimeError("upstream results changed during execution; rerun for acceptance")
+        results_path = directory / "output/results.json"
+        results = json.loads(results_path.read_text())
         if not isinstance(results, dict) or not results:
             raise ValueError("notebook did not export a nonempty result index")
         receipt.update(
@@ -147,6 +193,7 @@ def _execute_notebook(root: Path, receipt: dict[str, Any], timeout: int, kernel_
             code_cells=len(cell_records),
             executed_notebook=str(destination.relative_to(root)),
             results=str((directory / "output/results.json").relative_to(root)),
+            results_sha256=_sha256(results_path),
         )
         print(f"PASSED {module}", flush=True)
     except BaseException as error:
@@ -165,6 +212,7 @@ def _execute_notebook(root: Path, receipt: dict[str, Any], timeout: int, kernel_
             temporary = destination.with_suffix(".tmp.ipynb")
             nbformat.write(notebook, temporary)  # type: ignore[no-untyped-call]
             temporary.replace(destination)
+            receipt["executed_sha256"] = _sha256(destination)
         _write_json(execution_path, receipt)
 
 
@@ -174,11 +222,15 @@ def execute_notebooks(
     *,
     timeout: int = 3600,
     kernel_name: str = "physreal-x",
-    include_current_upstream: bool = False,
 ) -> dict[str, Any]:
     """Run fresh kernels, stop on failure, and preserve cell-level execution evidence."""
     if not modules or len(set(modules)) != len(modules) or any(m not in MODULES for m in modules):
         raise ValueError("select distinct modules from the six examples")
+    if modules != tuple(name for name in MODULES if name in modules):
+        raise ValueError("modules must follow their dependency order")
+    missing = set(dependencies_for(modules)).intersection(dependents_of(modules))
+    if missing:
+        raise ValueError(f"include intermediate dependencies in this run: {sorted(missing)}")
     if timeout < 1:
         raise ValueError("timeout must be positive")
     root = root.resolve()
@@ -192,24 +244,20 @@ def execute_notebooks(
             raise RuntimeError(
                 "another notebook acceptance run is active in this workspace"
             ) from error
-        upstream: tuple[str, ...] = ()
-        if include_current_upstream:
-            start = MODULES.index(modules[0])
-            if modules != MODULES[start:]:
-                raise ValueError("resumed acceptance must execute a contiguous module suffix")
-            upstream = MODULES[:start]
+        upstream = dependencies_for(modules)
+        current: dict[str, dict[str, Any]] = {}
         receipts: list[dict[str, Any]] = [
-            *(_load_current_receipt(root, module) for module in upstream),
+            *(_load_current_receipt(root, module, current=current) for module in upstream),
             *({"module": module, "status": "PENDING"} for module in modules),
         ]
         requested_receipts = receipts[len(upstream) :]
         report: dict[str, Any] = {
-            "schema": "physrealx.notebook-acceptance/2",
+            "schema": "physrealx.notebook-acceptance/3",
             "execution_status": "RUNNING",
             "started_at": datetime.now(timezone.utc).isoformat(),
             "python": sys.executable,
             "requested_modules": list(modules),
-            "accepted_modules": list(upstream + modules),
+            "accepted_modules": [name for name in MODULES if name in upstream + modules],
             "resumed_from_current_evidence": list(upstream),
             "evidence_scope": (
                 "software execution on captures and simulation; "
@@ -220,7 +268,7 @@ def execute_notebooks(
         _write_json(report_path, report)
         try:
             # A failed rerun cannot leave old downstream exports looking like this run's results.
-            for module in modules:
+            for module in dependents_of(modules):
                 output = root / "examples" / module / "output"
                 output.mkdir(parents=True, exist_ok=True)
                 for name in ("results.json", "execution.json", "demo.executed.ipynb"):
@@ -232,6 +280,11 @@ def execute_notebooks(
                     _execute_notebook(root, receipt, timeout, kernel_name)
                 finally:
                     _write_json(report_path, report)
+            # A prior notebook or SDK can change between kernels. Accept one
+            # coherent set of current inputs, never a mix of execution versions.
+            current = {}
+            for module in report["accepted_modules"]:
+                _load_current_receipt(root, module, current=current)
         except BaseException as error:
             report.update(execution_status="FAILED", error=f"{type(error).__name__}: {error}")
             raise
@@ -262,7 +315,6 @@ def main() -> None:
         root,
         MODULES[args.from_module - 1 :],
         timeout=args.timeout,
-        include_current_upstream=args.from_module > 1,
     )
     print(json.dumps({"completed": len(report["notebooks"])}, ensure_ascii=False))
 

@@ -39,6 +39,7 @@ class TrajectoryConfig(DomainModel):
     max_tracking_error: float = Field(default=0.05, gt=0, allow_inf_nan=False)
     max_contact_force_n: float = Field(default=100.0, gt=0, allow_inf_nan=False)
     seed: int = Field(default=2026, ge=0)
+    require_success: bool = True
 
 
 class JointTrajectoryAdapter:
@@ -152,7 +153,12 @@ class JointTrajectoryAdapter:
             if value.inline is not None and len(value.inline) == 1
         }
         success = all(predicate.evaluate(scalars) for predicate in task.success_conditions)
-        if error > config.max_tracking_error or peak > config.max_contact_force_n or not success:
+        accepted = (
+            error <= config.max_tracking_error
+            and peak <= config.max_contact_force_n
+            and success
+        )
+        if config.require_success and not accepted:
             raise MethodExecutionError(
                 f"trajectory execution failed: tracking_error={error:.6g}, "
                 f"contact_N={peak:.6g}, task_success={success}"
@@ -177,10 +183,15 @@ class JointTrajectoryAdapter:
                 },
                 "planning_report": {
                     "schema": "physrealx.planning-report/1",
-                    "status": "PASSED",
+                    "status": "PASSED" if accepted else "FAILED",
                     "validation_scope": "mujoco_execution",
                     "independent_physical_validation": False,
                     "task_success": success,
+                    "gates": {
+                        "tracking_error": error <= config.max_tracking_error,
+                        "contact_force": peak <= config.max_contact_force_n,
+                        "task_goal": success,
+                    },
                     "metrics": metrics,
                 },
             },

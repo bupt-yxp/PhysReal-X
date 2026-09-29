@@ -1,0 +1,249 @@
+{
+  "schema": "physrealx.website-demo-snapshots/1",
+  "verification": "completed_execution_and_embedded_media",
+  "acceptance_sha256": "d50f1ad7f49f02baa25d06ac84b9422468d4b4091390faccec9f625be874b01b",
+  "demos": [
+    {
+      "slug": "real_assets_and_digital_twin",
+      "title": "真实资产与数字孪生",
+      "guide": "user-guide/real-assets-and-digital-twin.md",
+      "dependencies": [],
+      "notebook": "examples/real_assets_and_digital_twin/demo.ipynb",
+      "results_sha256": "7173601b7b24f1ca0ef5d347cc69e6798228fdb40f6ae6b1ff593b4f4009c54b",
+      "execution": {
+        "schema": "physrealx.notebook-execution/3",
+        "status": "COMPLETED",
+        "finished_at": "2026-09-20T17:33:48.923710+00:00",
+        "source_sha256": "e87528e613b1751b8adc4115fc3161528a54edbe6042ef4f690461438388479d",
+        "implementation_sha256": "b01de1c8dfb79fb80ef0f692a4422834880d1cc444f3e0dfbf7b0e6e5a5fe8ec",
+        "results_sha256": "7173601b7b24f1ca0ef5d347cc69e6798228fdb40f6ae6b1ff593b4f4009c54b",
+        "executed_sha256": "cc8e0124a2ab2d8bc01e7263c0b1d868194789676c34f412f9903cb7b76baada",
+        "upstream_results": {},
+        "receipt_sha256": "dca509c03465de16be3832e1cdbf8ebccfa5d35c4a3a5c8dbd52fe122f537389"
+      },
+      "media": [
+        {
+          "path": "assets/demos/real_assets_and_digital_twin/reconstruction-comparison.gif",
+          "source": "examples/real_assets_and_digital_twin/output/reconstruction-comparison.gif",
+          "sha256": "0f63eeefaee29c28b08e7cd82e8387b31aa89281fc304c786d4ff93b8bb1faf8",
+          "size_bytes": 1933515,
+          "result_key": "reconstruction-comparison.gif",
+          "artifact": {
+            "artifact_id": "art_01e20a4fbae24cd2b1f43d3a59399445",
+            "media_type": "image/gif",
+            "size_bytes": 1933515
+          },
+          "notebook_media_type": "image/gif"
+        }
+      ]
+    },
+    {
+      "slug": "physical_asset_building",
+      "title": "物理资产构建",
+      "guide": "user-guide/physical-assets.md",
+      "dependencies": [
+        "real_assets_and_digital_twin"
+      ],
+      "notebook": "examples/physical_asset_building/demo.ipynb",
+      "results_sha256": "5fef8d85bf2ace1bfe6a9eef79d319dd08d8f808feb82df3b54c16d950b77260",
+      "execution": {
+        "schema": "physrealx.notebook-execution/3",
+        "status": "COMPLETED",
+        "finished_at": "2026-09-20T17:37:10.671317+00:00",
+        "source_sha256": "fff8c5e38e439cc1a4c603cc94125d51961da6e80333a928b974d7d4826b5344",
+        "implementation_sha256": "b01de1c8dfb79fb80ef0f692a4422834880d1cc444f3e0dfbf7b0e6e5a5fe8ec",
+        "results_sha256": "5fef8d85bf2ace1bfe6a9eef79d319dd08d8f808feb82df3b54c16d950b77260",
+        "executed_sha256": "a63eb461e60c6773e9d56b13b554e507c1acd6bd791f847cfe14ae1428ef6ef4",
+        "upstream_results": {
+          "real_assets_and_digital_twin": "7173601b7b24f1ca0ef5d347cc69e6798228fdb40f6ae6b1ff593b4f4009c54b"
+        },
+        "receipt_sha256": "ca83a0c184db3837c4917b09ad0a7bccd0f208243e7fc859cd2834ff21b4fa57"
+      },
+      "media": [
+        {
+          "path": "assets/demos/physical_asset_building/physical-asset-preview.gif",
+          "source": "examples/physical_asset_building/output/physical-asset-preview.gif",
+          "sha256": "09456eace8da837a9f3d85123f935c5e0f68795f9ba5d94ecd1828475e44b2e0",
+          "size_bytes": 1743459,
+          "result_key": "preview",
+          "artifact": {
+            "artifact_id": "art_73d9a58b6a624a22abf8e9eb1b5514fe",
+            "media_type": "image/gif",
+            "size_bytes": 1743459
+          },
+          "notebook_media_type": "image/gif"
+        }
+      ]
+    },
+    {
+      "slug": "scene_and_task_generation",
+      "title": "场景与任务生成",
+      "guide": "user-guide/scenes-and-tasks.md",
+      "dependencies": [],
+      "notebook": "examples/scene_and_task_generation/demo.ipynb",
+      "results_sha256": "2f1d3c1155508154749c51aa36c58ac9d5e3d6b97cc6cba23b1300beb8548dab",
+      "execution": {
+        "schema": "physrealx.notebook-execution/3",
+        "status": "COMPLETED",
+        "finished_at": "2026-09-20T17:39:30.186751+00:00",
+        "source_sha256": "e273614aeae975b99004cf7579980052a0669e624f3a6bc13aaf23e0e22d4271",
+        "implementation_sha256": "b01de1c8dfb79fb80ef0f692a4422834880d1cc444f3e0dfbf7b0e6e5a5fe8ec",
+        "results_sha256": "2f1d3c1155508154749c51aa36c58ac9d5e3d6b97cc6cba23b1300beb8548dab",
+        "executed_sha256": "8645bae9d715b144567d7d4eba34b8b445b1ec1e09d0128a477a1b7ffb894dcc",
+        "upstream_results": {},
+        "receipt_sha256": "63af12f1240fb09d2f9a02cdb2011578cb3da4649d5e2fea1709c1161ea981d1"
+      },
+      "media": [
+        {
+          "path": "assets/demos/scene_and_task_generation/task-preview.gif",
+          "source": "examples/scene_and_task_generation/output/task-preview.gif",
+          "sha256": "e4518717cb4628c30eec9f52cd5fa38b23558d3fab315a6dfce5043622b01520",
+          "size_bytes": 2180696,
+          "result_key": null,
+          "artifact": null,
+          "notebook_media_type": "image/gif"
+        }
+      ]
+    },
+    {
+      "slug": "simulation_and_data_generation",
+      "title": "物理仿真与多模态数据",
+      "guide": "user-guide/simulation-and-data-generation.md",
+      "dependencies": [
+        "scene_and_task_generation"
+      ],
+      "notebook": "examples/simulation_and_data_generation/demo.ipynb",
+      "results_sha256": "7a553f9f73d3d63c6717c5a18a50d60a7f3a730ad33b44f7f7ab1e28ed2d5da4",
+      "execution": {
+        "schema": "physrealx.notebook-execution/3",
+        "status": "COMPLETED",
+        "finished_at": "2026-09-20T17:53:05.371490+00:00",
+        "source_sha256": "f047d84a43f51c0fef71ad9a94cd61d57cf06b0ed71a4e97addc9933b40f567f",
+        "implementation_sha256": "b01de1c8dfb79fb80ef0f692a4422834880d1cc444f3e0dfbf7b0e6e5a5fe8ec",
+        "results_sha256": "7a553f9f73d3d63c6717c5a18a50d60a7f3a730ad33b44f7f7ab1e28ed2d5da4",
+        "executed_sha256": "f49c67c8ddad9282d035b70d3aacabf6efefa0217de9e10588a8d0ebfb5a1d62",
+        "upstream_results": {
+          "scene_and_task_generation": "2f1d3c1155508154749c51aa36c58ac9d5e3d6b97cc6cba23b1300beb8548dab"
+        },
+        "receipt_sha256": "7d39524344094812b406a4f13e9fdaa0345750585ebc9ba1988f862519b674b8"
+      },
+      "media": [
+        {
+          "path": "assets/demos/simulation_and_data_generation/simulation-preview.gif",
+          "source": "examples/simulation_and_data_generation/output/simulation-preview.gif",
+          "sha256": "dc67af73d512dc74e6d3a1d5198ff31754844d579fcf6c456ba682456432558d",
+          "size_bytes": 1984123,
+          "result_key": "preview",
+          "artifact": {
+            "artifact_id": "art_5f01afda798b49da9c6d92581f20cac8",
+            "media_type": "image/gif",
+            "size_bytes": 1984123
+          },
+          "notebook_media_type": "image/gif"
+        }
+      ]
+    },
+    {
+      "slug": "data_management_and_training",
+      "title": "数据管理与训练",
+      "guide": "user-guide/data-management-and-training.md",
+      "dependencies": [
+        "simulation_and_data_generation"
+      ],
+      "notebook": "examples/data_management_and_training/demo.ipynb",
+      "results_sha256": "d5a1fae2ec387970be52598927b3420e13e9ca286a9565d13e694fd83e8d8852",
+      "execution": {
+        "schema": "physrealx.notebook-execution/3",
+        "status": "COMPLETED",
+        "finished_at": "2026-09-20T18:09:13.702428+00:00",
+        "source_sha256": "8065b6edb10f427618778b49ca1302e9c3ab1029d1f0ed7fc7924efcfd8e911c",
+        "implementation_sha256": "b01de1c8dfb79fb80ef0f692a4422834880d1cc444f3e0dfbf7b0e6e5a5fe8ec",
+        "results_sha256": "d5a1fae2ec387970be52598927b3420e13e9ca286a9565d13e694fd83e8d8852",
+        "executed_sha256": "f16bdd5e076aad7f2820085f108e8c7aa0c8c7cfe034175019d3d71b209f8bf1",
+        "upstream_results": {
+          "simulation_and_data_generation": "7a553f9f73d3d63c6717c5a18a50d60a7f3a730ad33b44f7f7ab1e28ed2d5da4"
+        },
+        "receipt_sha256": "431d3b9e2ebdc048a1f32a33e6e7b6fca9102d2ea69fa11182d9c02972ee9b42"
+      },
+      "media": [
+        {
+          "path": "assets/demos/data_management_and_training/world-model-preview.gif",
+          "source": "examples/data_management_and_training/output/world-model-preview.gif",
+          "sha256": "7c0bfad422f3500b18b5ddbe99cbbcda081cc553617545f45ff80d4668c85fa3",
+          "size_bytes": 709874,
+          "result_key": "world_model_preview",
+          "artifact": {
+            "artifact_id": "art_8f17e5c211244cf9896968db1b78b814",
+            "media_type": "image/gif",
+            "size_bytes": 709874
+          },
+          "notebook_media_type": "image/gif"
+        },
+        {
+          "path": "assets/demos/data_management_and_training/dataset-preview.png",
+          "source": "examples/data_management_and_training/output/dataset-preview.png",
+          "sha256": "bdd564715cc6db4daeb0c10065fe4513fb772eb69cb4f56ecf2dc88a070804ea",
+          "size_bytes": 291534,
+          "result_key": "dataset_preview",
+          "artifact": {
+            "artifact_id": "art_fdc6e78520ea421b8c37ca2065c847a5",
+            "media_type": "image/png",
+            "size_bytes": 291534
+          },
+          "notebook_media_type": "image/png"
+        }
+      ]
+    },
+    {
+      "slug": "evaluation_and_feedback",
+      "title": "评测与反馈",
+      "guide": "user-guide/evaluation-and-feedback.md",
+      "dependencies": [
+        "data_management_and_training"
+      ],
+      "notebook": "examples/evaluation_and_feedback/demo.ipynb",
+      "results_sha256": "98c2991d3514c3bfa81ccae09551c24c9dfa700eba53da730c1fbe88fcf172a4",
+      "execution": {
+        "schema": "physrealx.notebook-execution/3",
+        "status": "COMPLETED",
+        "finished_at": "2026-09-20T18:58:25.062042+00:00",
+        "source_sha256": "b9dfafc8f6082a12774427799e6ad8d91adc729626eb6a3e7a03c706f3d47cbe",
+        "implementation_sha256": "b01de1c8dfb79fb80ef0f692a4422834880d1cc444f3e0dfbf7b0e6e5a5fe8ec",
+        "results_sha256": "98c2991d3514c3bfa81ccae09551c24c9dfa700eba53da730c1fbe88fcf172a4",
+        "executed_sha256": "4219d2ef93b405ac2d25ffefbb3b18584494c32ff397bdc35ca0bce5a243d433",
+        "upstream_results": {
+          "data_management_and_training": "d5a1fae2ec387970be52598927b3420e13e9ca286a9565d13e694fd83e8d8852"
+        },
+        "receipt_sha256": "38e9ccc26c3eb1688a74936882b2a4acc8ffa638e332d3cf521df8358f9561da"
+      },
+      "media": [
+        {
+          "path": "assets/demos/evaluation_and_feedback/feedback-cycle.gif",
+          "source": "examples/evaluation_and_feedback/output/feedback-cycle.gif",
+          "sha256": "f8a8f4103a308a79ab4eb3f2d455edbdf7b3447d4212b3523f68d83e67f3e2f0",
+          "size_bytes": 1147018,
+          "result_key": "feedback_cycle",
+          "artifact": {
+            "artifact_id": "art_a542967ca0044b57aca58739d48eda8c",
+            "media_type": "image/gif",
+            "size_bytes": 1147018
+          },
+          "notebook_media_type": "image/gif"
+        },
+        {
+          "path": "assets/demos/evaluation_and_feedback/feedback-dashboard.png",
+          "source": "examples/evaluation_and_feedback/output/feedback-dashboard.png",
+          "sha256": "1a51ebab97297ff135e12478aad7e3fa96dc7e9307fcab4a87656d3dc89d4dc2",
+          "size_bytes": 157036,
+          "result_key": "feedback_dashboard",
+          "artifact": {
+            "artifact_id": "art_fa8b8b2c76d44ac2b7cbe0c41dcd8246",
+            "media_type": "image/png",
+            "size_bytes": 157036
+          },
+          "notebook_media_type": "image/png"
+        }
+      ]
+    }
+  ]
+}

@@ -351,6 +351,12 @@ def preview_simulation_episode(
         events = [accumulator.update(np.asarray(rgb)) for rgb in display_rgbs]
         intrinsics_by_frame = [camera_spec.intrinsics()] * count
         source_label = "Blender PBR"
+        modality_provenance: dict[str, Any] = {
+            "visual_source": "blender_pbr_rerender_of_recorded_body_poses",
+            "pointcloud_source": f"blender.camera.{camera_name}.rgb+metric_depth",
+            "mask_labels": rendered.labels,
+            "events_source": "log_intensity_crossings_between_preview_samples",
+        }
     else:
 
         def recorded(modality: str) -> list[Any]:
@@ -364,6 +370,16 @@ def preview_simulation_episode(
         )
         intrinsics_by_frame = recorded("intrinsics")
         source_label = f"{episode.backend.name} native"
+        metadata = episode.metadata.get("sensor_metadata")
+        labels = metadata.get("segmentation_labels") if isinstance(metadata, dict) else None
+        if not isinstance(labels, dict) or not labels:
+            raise DomainValidationError("recorded masks require their native segmentation labels")
+        modality_provenance = {
+            "visual_source": "recorded_episode_observations",
+            "pointcloud_source": f"recorded.camera.{camera_name}.rgb+depth",
+            "mask_labels": labels,
+            "events_source": "recorded_episode_observations",
+        }
     point_clouds = []
     point_colours = []
     for rgb, depth, position, orientation, intrinsics in zip(
@@ -497,9 +513,15 @@ def preview_simulation_episode(
                 "episode_id": episode.episode_id,
                 "camera": camera_name,
                 "renderer": "blender_eevee_pbr",
-                "visual_source": "shared_scene_rgb_depth_mask",
-                "pointcloud_source": "front_pbr_rgb+metric_depth",
-                "mask_labels": rendered.labels,
+                "sensor_source": sensor_source,
+                **modality_provenance,
+                "overview_source": "blender_pbr_rerender_of_recorded_body_poses",
+                "pointcloud_renderer": "blender_rgb_vertex_colors",
+                "scope": "sampled_visualization_only",
+                "dataset_modified": False,
+                "training_observations_source": "recorded_episode",
+                "episode_step_count": len(episode.steps),
+                "preview_frame_count": count,
                 "camera_pose_convention": "OpenCV camera-to-world, xyzw",
                 "camera_poses": [
                     {

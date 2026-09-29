@@ -1,13 +1,10 @@
 # PhysReal-X
 
-PhysReal-X 将真实采集、数字孪生、物理资产、场景任务、多模态仿真、策略与世界模型训练、评测反馈组织为可追溯的数据闭环。功能依据见两份 PPT 的[逐项对照](docs/acceptance.md)。
+从真实物体重建、物理资产与场景任务，到多模态仿真、机器人学习和评测反馈。Python SDK、Notebook 与网页共享项目实现。
 
-```text
-实拍 RGB-D + 逆向建模 USD → 相机/前景/深度/重建/配准 → 统一物理资产与 USDZ
-→ 场景与任务 → MuJoCo 多模态数据 → ACT / IQL / DINO-WM → 失败回流、恢复示范、再训练与配对评测
-```
+[六模块与可视化](https://bupt-yxp.github.io/PhysReal-X/) · [安装](docs/getting-started/installation.md) · [API](docs/api/index.md)
 
-## 在现有环境运行
+## 运行 Demo
 
 ```bash
 conda activate PhysReal-X
@@ -15,45 +12,34 @@ python -m ipykernel install --sys-prefix --name physreal-x --display-name PhysRe
 CUDA_VISIBLE_DEVICES=0 MUJOCO_GL=egl python -m examples.run_all
 ```
 
-六个 Notebook 按依赖顺序执行，同用 `.physrealx`。输入是
-`examples/real_assets_and_digital_twin/input/ArtModeling/oven4` 中的实拍与配套 USD。
-也可逐个在 Jupyter 中选择 **PhysReal-X** 内核并全部运行。方法和参数直接写在各自 Notebook 中，跨模块直接读取上游 `results.json` 中的资源引用。
+也可在 Jupyter 中打开下列 Notebook，选择 **PhysReal-X** 内核运行。输入、方法与参数直接在 Notebook 中设置，`output/results.json` 索引实际产物。
 
-完整环境已经在 Python 3.11、Torch 2.5.1+cu121 和 RTX 4090 上执行；ArtGS 使用当前解释器及仓库内 CUDA 扩展。新机器的依赖安装说明见[安装与环境](docs/getting-started/installation.md)。
-
-## 六个模块
-
-| Notebook | 实际执行内容 |
+| 模块 | 内容与可视化 |
 | --- | --- |
-| [01 数字孪生](examples/real_assets_and_digital_twin/demo.ipynb) | 输入与环境、相机定尺、数据集 Mask、深度增强、几何与运动重建、位姿配准及关节校核 |
-| [02 物理资产](examples/physical_asset_building/demo.ipynb) | CoACD、显式物性先验、PBR/纹理/UV、绑定高斯外观的 USDZ 封装与回读 |
-| [03 场景任务](examples/scene_and_task_generation/demo.ipynb) | PartNet-Mobility 房间布局、机械臂接触任务、控制/目标分离、MuJoCo 轨迹检查 |
-| [04 仿真数据](examples/simulation_and_data_generation/demo.ipynb) | 双视角八种输出、刚体力觉、随机化、固定时长接触轨迹、实际状态驱动高斯外观 |
-| [05 训练推演](examples/data_management_and_training/demo.ipynb) | 分层快照、ACT/IQL、DINO-WM、官方 VLA/世界模型接口及可视化 |
-| [06 评测回流](examples/evaluation_and_feedback/demo.ipynb) | 实际失败归档、同初态恢复示范、防泄漏样本补充、ACT 再训练与独立种子配对评测 |
+| [01 数字孪生](examples/real_assets_and_digital_twin/demo.ipynb) | laptop1 实拍 RGB-D、部件与关节重建；外观/重建/参考模型同屏动画 |
+| [02 物理资产](examples/physical_asset_building/demo.ipynb) | 模块一真实几何、VLM 物性先验、视频约束、视觉与碰撞几何修正、仿真检查、USDZ |
+| [03 场景任务](examples/scene_and_task_generation/demo.ipynb) | PartNet-Mobility 房间、官方 Panda、语言任务、接触轨迹与 Blender 动画 |
+| [04 仿真数据](examples/simulation_and_data_generation/demo.ipynb) | MuJoCo/Isaac Sim 执行、同步 RGB-D/Mask/事件/点云/位姿/力觉与多模态动画 |
+| [05 数据训练](examples/data_management_and_training/demo.ipynb) | 快照、ACT/IQL、DINO-WM、官方 VLA/世界模型训练接口与可视化 |
+| [06 评测反馈](examples/evaluation_and_feedback/demo.ipynb) | 失败诊断、恢复示范、补数、再训练、独立评测与闭环对比动画 |
 
-每个模块的 `output/results.json` 保存业务结果引用；执行脚本另外保存执行副本与 `execution.json`，总报告为 `examples/output/notebook-acceptance.json`。必要阶段失败会抛出异常，不将跳过或占位输入记为完成。
+实际依赖：**01 → 02**（实拍 laptop1），**03 → 04 → 05 → 06**（PartNet 资产库）。模块三当前独立选取资产。完整环境、输入和模型要求见[安装说明](docs/getting-started/installation.md)。
 
 ## 架构
 
 ```text
-examples / CLI
+Notebook / CLI / 文档站
     ↓
-领域服务：assets · scenes · tasks · runs · datasets · training · world_models · evaluations · feedback
+领域服务：资产 · 场景 · 任务 · 仿真 · 数据 · 训练 · 评测 · 反馈
     ↓
-冻结领域契约 / 方法操作 / 运行与训练生命周期
-    ↓ 协议
-适配器：COLMAP · ArtGS · CoACD · OpenUSD · MuJoCo · ACT · IQL · DINO-WM
-存储：SQLite 注册表 + 不可变制品库
+统一资源契约、版本与运行生命周期
+    ↓
+方法适配器 + SQLite 注册表 + 不可变制品库
 ```
 
-核心导入不启动 CUDA、仿真器或网络。所有方法沿用一个工作区、资源身份和发布通道；输入、参数、种子、代码来源及训练环境随产物固定。算法源码保留在 `algorithms/`，不依赖工作区外部 clone 或第二套执行环境。
+算法按需加载；仿真器用 `backend` 选择，算法用 `method` 选择。核心导入不启动 GPU、仿真器或网络。内嵌算法保留在 `algorithms/`，不另建一套业务资源。
 
-## 验收范围
-
-当前首个示例使用 oven4 的 start/end RGB-D-Mask，重建箱体与旋转门两个运动组，并与配套 USD 做统一尺度、位姿、关节及部件几何评估。尺度与位姿配准属于模型条件证据，不证明真实物性。
-
-USD 结构、默认质量/摩擦与仿真力觉均有明确来源。独立物性校准和真机验证需要实际测量、设备接口及部署日志。开源机械臂仿真、模拟事件、模型预测和软件测试不会被标为真机或独立物理验收。
+VLM 输出为物性先验，仿真可行性不替代独立实测；OpenVLA-OFT/TD-MPC2 当前提供训练交接接口。真机日志缺失时不声明完成真机闭环。
 
 ## 开发验证
 
@@ -67,6 +53,6 @@ python -m build
 python -m mkdocs build --strict
 ```
 
-[用户指南](docs/user-guide/index.md) · [API](docs/api/index.md) · [方法目录](docs/api/capability-methods.md)
+文档站使用 MkDocs。运行 Demo 后用 `python docs/_hooks/demo_gallery.py --refresh` 更新展示快照及来源清单，再执行严格构建；构建无需本地原始数据或模型。
 
-自有代码为 MIT。内嵌算法保留各自许可；ArtGS 的 rasterizer 与 Simple-KNN 限于非商业研究/评估，见[第三方声明](THIRD_PARTY_NOTICES.md)。
+自有代码为 MIT；内嵌算法遵守各自许可，见[第三方声明](THIRD_PARTY_NOTICES.md)。

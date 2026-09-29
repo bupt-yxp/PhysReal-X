@@ -5,7 +5,7 @@ description: 已实现的方法、冻结契约和执行边界
 
 # 能力与方法
 
-平台按 `capability + method` 选择实现：`MethodDescriptor` 固定能力、版本、代码来源、许可证和输入输出契约；`MethodSpec` 冻结配置与可选权重。跨阶段流程由现有 `MethodRecipe` 组合，输入只能来自实际发布的资源或制品。
+平台按 `capability + method` 选择实现：`MethodDescriptor` 固定能力、版本、代码来源、许可证和输入输出契约；`MethodSpec` 冻结配置与可选权重。方法不提供独立业务 API 页面，调用方直接在对应服务的 `method` 参数中选择；本页只汇总运行能力。跨阶段流程由现有 `MethodRecipe` 组合，输入只能来自实际发布的资源或制品。
 
 ## 安装与运行边界
 
@@ -30,10 +30,10 @@ python -m pip install --no-build-isolation -e '.[artgs]'
 | `camera.align_metric` | `articulated_surface_icp` | 两状态 RGB-D/运动组到给定 USD 的完整位姿与关节位置拟合；由参考资产尺寸约束前景、二阶段拟合并用独立验证视角检查 |
 | `depth.enhance` | `rgb_guided_fill` | RGB 引导局部小孔补全；显式区分独立深度参考和连续表面遮挡像素自监督，后者保留无效区域 |
 | `geometry.reconstruct` | `rgbd_fusion` | CPU 实拍可见表面重建，逐视角绑定与验证视图距离分布；不补造不可见几何或部件标签 |
-| `geometry.reconstruct` | `artgs` | 多状态视觉重建；需要米制相机、通过验证的深度、实际可用的 CUDA/扩展及独立视图 |
-| `geometry.reconstruct` | `dtart` | 两状态 RGB-D 神经隐式重建，统一部件与运动输出；实现及运行边界见 [接入说明](dtart.md) |
+| `geometry.reconstruct` | `artgs` | 多状态视觉重建；需要米制相机、通过验证的深度、实际可用的 CUDA/扩展及独立视图；见[参数与论文](assets.md#reconstruct-geometry-methods) |
+| `geometry.reconstruct` | `dtart` | 两状态 RGB-D 神经隐式重建，统一部件与运动输出；见[参数与论文](assets.md#reconstruct-geometry-methods) |
 | `articulation.recover` | `rigid_pair_fit` | 已对应、已分部件的米制点对拟合单自由度移动/转动关节；独立点集验证，不估计未观察到的限位 |
-| `collision.build` | `coacd` | 米制凸分解与 GLB 重读；拒绝非封闭输入、非凸结果和体积误差超限 |
+| `collision.build` | `coacd` | 米制凸分解与 GLB 重读；显式预处理支持开放源表面，校验凸性与体积/表面误差 |
 | `physics.calibrate` | `bounded_inverse_dynamics` | 重力补偿的单关节惯量、阻尼和库仑摩擦辨识；检查激励秩、边界、置信区间及独立轨迹改进 |
 | `asset.assemble` | `measured_asset_assembly` | 逐 link 几何和实测刚体物性、逐 joint 辨识结果闭包；不从等效关节惯量猜测 link 质量 |
 | `asset.assemble` | `reference_asset_assembly` | USD 结构与逐 link 碰撞闭包；全部物性初值和相邻接触排除显式记录为 prior |
@@ -46,6 +46,7 @@ python -m pip install --no-build-isolation -e '.[artgs]'
 | `policy.inference` | `joint_target` | 与引擎无关的确定性位置/增量目标控制 |
 | `policy.inference` | `scripted_drawer` | Reference 后端契约回归 |
 | `policy.train` / `policy.inference` | `torch_bc` | 数值行为克隆基线，支持从 MuJoCo Episode 训练并重新评测 |
+| `scene.generate` | `scenesmith` | SceneSmith 全库检索候选的支撑、碰撞、房间边界和交互可达性布局 |
 | `scene.generate` / `scene.compose` | `bounded_layout` / `collision_constraints` | 有界采样、静态包围盒约束与不可行失败 |
 | `task.compile` / `task.validate` | `articulated_templates` / `joint_constraints` | 绑定真实关节的开关语言模板与控制边界检查 |
 | `trajectory.generate` | `mujoco_joint_trajectory` | 实际执行检查初态、跟踪、接触和终态 |

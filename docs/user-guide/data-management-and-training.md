@@ -2,11 +2,15 @@
 
 模块五执行统一 Episode 数据集、分组快照、ACT/IQL 训练、独立仿真评测及 DINO-WM 多步/反事实推演，并准备 OpenVLA-OFT 与 TD-MPC2 的官方运行接口。
 
+<!-- demo-preview:data_management_and_training -->
+
+<!-- demo-image:data_management_and_training:dataset-preview.png -->
+
 ## 数据与快照
 
 `datasets.ingest(..., method="episode_dataset")` 合并相同观测/动作 Schema 的不可变数据集，核查实际 NPY 的 dtype/shape、时间戳、源标签和 Episode 摘要。`datasets.snapshot(..., method="episode_split")` 发布核心 `DatasetSnapshot`，包含精确数据、代码源树、环境及 `split.train/validation/test`。`stratify_success=True` 在保持场景、任务和种子分组隔离的同时保留成功/失败分层；训练分组不足以覆盖已有结果类型时明确失败。
 
-真实数据按 capture_id 分组；仿真按场景版本、任务版本与种子分组。所有帧与窗口留在各自 Episode 内。该划分验证新 episode/种子，不代表未见资产泛化；oven4 只有一个对象。
+真实数据按 capture_id 分组；仿真按场景版本、任务版本与种子分组。所有帧与窗口留在各自 Episode 内。该划分验证新 episode/种子，不代表未见资产泛化；当前示例仅覆盖一个笔记本关节任务。
 
 Episode 保留任务语言、观测、动作、下一状态、奖励、终止与成败信息。ACT 读取成功专家 Episode；IQL 读取训练分区内全部成功/失败 Episode。验证与测试分区均不进入训练。
 
