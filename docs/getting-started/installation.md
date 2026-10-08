@@ -117,6 +117,8 @@ physrealx doctor --strict
 
 在同一 Python 3.10–3.12 项目环境安装 `python -m pip install -e '.[physical]'`。该 extra 固定 NumPy 1.26.4、SciPy 1.13.1、Trimesh 4.5.1、CoACD 1.0.9、MuJoCo 3.3.7 与 usd-core 24.11。核心 SDK 的 Python 3.8–3.12 支持范围不变；ArtGS 的 CUDA/扩展条件仍需独立满足。
 
+模块二的受限 Delaunay 重网格还需要 C++17 与 CGAL/GMP/MPFR 开发库。Ubuntu 安装命令为 `sudo apt install build-essential libcgal-dev libgmp-dev libmpfr-dev`；首次运行会编译小型原生工作进程并缓存。视频联合优化同时使用重建环境中的 Torch/PyTorch3D 和 `physical` extra 中的 Warp、IPC Toolkit 和 HiGHS，具体方法及验收见[物理资产构建](../user-guide/physical-assets.md)。
+
 无界面 RGB/Depth 渲染可在启动解释器前设置 `MUJOCO_GL=egl`；缺少可用图形驱动会明确失败。数值物理运行无需创建渲染器。
 
 MuJoCo 无窗口渲染使用 `PyOpenGL==3.1.10`。DTArt 的间接依赖 pyrender 采用官方固定提交 `a59963ef890891656fd17c90e12d663233dcaa99`，其 PyOpenGL 约束已放宽；避免旧发行版将环境降回缺少 EGL 类型的 3.1.0。

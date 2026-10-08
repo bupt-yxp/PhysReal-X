@@ -3,7 +3,7 @@
 ```bash
 conda activate PhysReal-X
 python -m pip install -e . --no-deps --no-build-isolation
-CUDA_VISIBLE_DEVICES=0 MUJOCO_GL=egl python -m examples.run_all
+MUJOCO_GL=egl python -m examples.run_all
 ```
 
 也可打开 Notebook，选择 **PhysReal-X** 内核后全部运行。更新源码后先重启内核。

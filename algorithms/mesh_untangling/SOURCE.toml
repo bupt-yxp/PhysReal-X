@@ -1,0 +1,21 @@
+schema = "physrealx.vendored-source/1"
+name = "Mesh-Untangling"
+upstream = "https://github.com/Simulation-Intelligence/Mesh-Untangling"
+revision = "8cc1557f23562803c347b95ec24b7c445afe1d54"
+license = "Apache-2.0"
+
+[[adaptations]]
+id = "canonical-multi-pose-flow"
+description = "Project forward-flow gradients and L-BFGS directions to a shared canonical surface across fixed articulation poses. Freeze identical canonical vertices in all poses."
+
+[[adaptations]]
+id = "constrained-ipc-recovery"
+description = "Project Newton gradients and PCG operator/search vectors for canonical shape and fixed-vertex constraints. Retain finite inexact descent directions under the unchanged line search, CCD, barrier and post-step intersection checks."
+
+[[adaptations]]
+id = "cuda12-kernel-instantiation"
+description = "Explicitly instantiate four recovery Hessian kernels for CUDA 12.4; omit force-inline qualifiers on global kernels. Link Assimp includes for reverse-flow."
+
+[[adaptations]]
+id = "platform-validation"
+description = "CGAL command disabled by default; exported meshes require PhysReal-X independent topology, continuous full-range clearance and observation checks. Upstream termination is not publication approval."

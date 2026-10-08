@@ -18,6 +18,9 @@ license-files = [
   "algorithms/act/LICENSE",
   "algorithms/dinov2/LICENSE",
   "algorithms/dino_wm/LICENSE",
+  "algorithms/mesh_untangling/LICENSE",
+  "algorithms/mesh_untangling/third_party/indicators/LICENSE",
+  "algorithms/mesh_untangling/third_party/indicators/LICENSE.termcolor",
   "algorithms/scenesmith/LICENSE",
   "algorithms/dtart/LICENSE",
   "algorithms/dtart/mycuda/torch_ngp_grid_encoder/LICENSE",
@@ -55,6 +58,13 @@ physical = [
   "mujoco==3.3.7; python_version >= '3.10'",
   "PyOpenGL==3.1.10; python_version >= '3.10'",
   "usd-core==24.11; python_version >= '3.10'",
+  "warp-lang==1.17.0; python_version >= '3.10'",
+  "highspy==1.11.0; python_version >= '3.10'",
+  "clarabel==0.11.1; python_version >= '3.10'",
+  "threadpoolctl==3.6.0; python_version >= '3.10'",
+  "ipctk==1.6.0; python_version >= '3.10'",
+  "torch==2.5.1; python_version >= '3.10'",
+  "pytorch3d @ git+https://github.com/facebookresearch/pytorch3d.git@e73a7e7bfc580d1f9225ad9ff7d2c753c320aabd ; python_version >= '3.10' and python_version < '3.13'",
 ]
 train = [
   "numpy==1.24.4; python_version == '3.8'",
@@ -262,5 +272,5 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["scipy.*", "trimesh.*", "mujoco.*", "pxr.*", "coacd.*", "isaacsim.*",
-    "carb", "omni.*"]
+    "carb", "omni.*", "ipctk.*", "pytorch3d.*"]
 ignore_missing_imports = true

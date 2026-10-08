@@ -39,7 +39,7 @@ PhysReal-X 自有代码使用 MIT 许可证。`algorithms/` 中的内嵌方法�
 
 ## Optional physical pipeline bindings
 
-The `physical` extra uses unmodified official distributions: NumPy 1.26.4 (BSD-3-Clause), SciPy 1.13.1 (BSD-3-Clause), Trimesh 4.5.1 (MIT), CoACD 1.0.9 (MIT), MuJoCo 3.3.7 (Apache-2.0), and OpenUSD `usd-core` 24.11 (Apache-2.0 with its upstream modified terms). Their license files remain in the installed distributions. PhysReal-X adapters are first-party MIT code; no external cloned source tree or second interpreter is required.
+The `physical` extra uses unmodified official distributions: NumPy 1.26.4 (BSD-3-Clause), SciPy 1.13.1 (BSD-3-Clause), Trimesh 4.5.1 (MIT), CoACD 1.0.9 (MIT), MuJoCo 3.3.7 (Apache-2.0), NVIDIA Warp 1.17.0 (Apache-2.0; its binary distribution includes separately licensed libmathdx), IPC Toolkit 1.6.0 (MIT), HiGHS 1.11.0 (MIT, `highspy`), and OpenUSD `usd-core` 24.11 (Apache-2.0 with its upstream modified terms). Their license files remain in the installed distributions. PhysReal-X adapters are first-party MIT code; no external cloned source tree or second interpreter is required.
 
 ## SceneSmith
 
@@ -55,3 +55,21 @@ The `physical` extra uses unmodified official distributions: NumPy 1.26.4 (BSD-3
 - `algorithms/dino_wm/`: official causal ViT predictor, MIT, revision `0a9492fa12044b852ae9e001cc74604b79c8bb0c`. Device-safe masks, dependency injection, and the separately recorded platform residual/decoder adaptation are documented in `SOURCE.json`.
 
 Each directory includes the upstream license and a source/adaptation manifest. Demo configuration and execution results do not claim upstream benchmark performance.
+
+## CGAL（受限 Delaunay）
+
+- 模块二的 `_restricted_delaunay.cpp` 使用系统 CGAL 的精确几何谓词和构造；CGAL 源码及二进制未内嵌到仓库。
+- CGAL Delaunay/AABB 组件保留上游许可，参见系统安装的 CGAL 许可文件与 [上游许可说明](https://www.cgal.org/license.html)。运行时生成的工作进程不应被当作纯 MIT 二进制再分发。
+- ArtMesh 的部件重网格及运动一致性公式作为方法参考；本项目不是作者完整训练代码的镜像。
+
+## Mesh-Untangling
+
+- `_surface_untangling.py` 依据 [官方 Gaussian 与 Minkowski 能量源码](https://github.com/Simulation-Intelligence/Mesh-Untangling/tree/main/include/energies) 独立实现 PyTorch 版本，加入表面积分、多姿态共享参数和观测约束。
+- `algorithms/mesh_untangling/` 内嵌官方 CUDA 源码，锁定 `8cc1557f23562803c347b95ec24b7c445afe1d54`，保留 Apache-2.0 及 indicators/termcolor 许可；未包含数据集、结果和二进制。
+- 原生路径使用官方自适应 Gaussian/Minkowski 展开和 IPC 恢复，平台扩展共享多姿态顶点投影与远场固定约束；具体修改见该目录 `SOURCE.toml`。这不等于已完成 ArtMesh，也不保证视频拟合或资产验收通过。
+- 原有 PyTorch 局部联合求解器仍为独立路径；其固定带宽实现不被称为原生 Mesh-Untangling。所有候选须经过同一套导出网格、观测和连续运动验收。
+
+## Clarabel
+
+- 物理依赖中的 `clarabel==0.11.1` 用于观测约束解缠的稀疏二次投影；通过 Python 包调用，上游源代码未内嵌。
+- 上游采用 [Apache-2.0](https://github.com/oxfordcontrol/Clarabel.rs/blob/main/LICENSE.md)。所有求解结果仍须通过本项目在原始单位下的约束与几何验收。

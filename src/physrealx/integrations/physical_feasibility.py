@@ -17,7 +17,11 @@ from physrealx.integrations.mujoco import MujocoConfig, compile_scene
 
 class FeasibilityConfig(DomainModel):
     sweep_samples: int = Field(default=361, ge=3, le=2001)
+    sweep_workers: int = Field(default=0, ge=0, le=64)
+    adaptive_sweep_levels: int = Field(default=2, ge=0, le=8)
+    adaptive_top_intervals: int = Field(default=8, ge=1, le=64)
     penetration_tolerance_m: float = Field(default=0.001, ge=0, le=0.01)
+    minimum_clearance_m: float = Field(default=0.0002, gt=0, le=0.01)
     rollout_seconds: float = Field(default=1.0, gt=0, le=10)
 
 
@@ -28,8 +32,13 @@ def evaluate_asset_feasibility(
     config: FeasibilityConfig,
     retain_contact_constraints: bool = False,
     contact_constraint_tolerance_m: float | None = None,
+    run_rollouts: bool = True,
 ) -> dict[str, Any]:
-    """Evaluate one articulated asset and optionally retain all failed sweep contacts."""
+    """Evaluate articulation clearance and, when requested, dynamic stability."""
+    import os
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
     import mujoco
     import numpy as np
 
@@ -93,29 +102,123 @@ def evaluate_asset_feasibility(
     model = mujoco.MjModel.from_xml_string(
         ET.tostring(root, encoding="unicode"), assets=compiled.files
     )
-    data = mujoco.MjData(model)
+    # Expand collision detection only. Equal margin/gap increments preserve the
+    # original force activation distance; near contacts remain inactive.
+    padding = np.maximum(0.0, config.minimum_clearance_m - model.geom_margin)
+    model.geom_margin[:] += padding
+    model.geom_gap[:] += padding
+    pair_padding = np.maximum(0.0, config.minimum_clearance_m - model.pair_margin)
+    model.pair_margin[:] += pair_padding
+    model.pair_gap[:] += pair_padding
     address = int(model.joint(f"asset/{joint.name}").qposadr[0])
-    positions = np.linspace(joint.lower_limit, joint.upper_limit, config.sweep_samples)
-    rows: list[dict[str, Any]] = []
-    pair_stats: dict[tuple[str, str], dict[str, Any]] = {}
-    contact_constraints: list[dict[str, Any]] = []
-    for q in positions:
+    geom_names = [
+        str(mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, index))
+        for index in range(model.ngeom)
+    ]
+
+    worker_state = threading.local()
+
+    def evaluate_position(q: float) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """Evaluate one immutable model position using thread-local mutable state."""
+        data = getattr(worker_state, "data", None)
+        if data is None:
+            data = mujoco.MjData(model)
+            worker_state.data = data
         mujoco.mj_resetData(model, data)
         data.qpos[address] = q
         mujoco.mj_forward(model, data)
         worst = 0.0
+        clearance_lower_bound = config.minimum_clearance_m
         deepest_contact: dict[str, Any] | None = None
+        contacts: list[dict[str, Any]] = []
         for item in data.contact:
             distance = float(item.dist)
+            clearance_lower_bound = min(clearance_lower_bound, distance)
             worst = min(worst, distance)
             penetration = max(0.0, -distance)
             if penetration <= 0:
                 continue
-            names = (
-                mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, int(item.geom1)),
-                mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, int(item.geom2)),
-            )
+            names = (geom_names[int(item.geom1)], geom_names[int(item.geom2)])
             left, right = sorted(names)
+            normal = item.frame[:3] if left == names[0] else -item.frame[:3]
+            contact = {
+                "geom_a": left,
+                "link_a": geom_links[left],
+                "geom_b": right,
+                "link_b": geom_links[right],
+                "penetration_m": penetration,
+                "q": float(q),
+                "position_m": item.pos.tolist(),
+                "normal_a_to_b": normal.tolist(),
+            }
+            contacts.append(contact)
+            if deepest_contact is None or penetration > deepest_contact["penetration_m"]:
+                deepest_contact = dict(contact)
+        return (
+            {
+                "q": float(q),
+                "penetration_m": max(0.0, -worst),
+                "clearance_lower_bound_m": clearance_lower_bound,
+                "contacts": int(data.ncon),
+                "deepest_contact": deepest_contact,
+            },
+            contacts,
+        )
+
+    worker_count = config.sweep_workers or min(8, max(1, (os.cpu_count() or 1) // 2))
+    pool = (
+        ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="mujoco-sweep")
+        if worker_count > 1
+        else None
+    )
+
+    def evaluate_positions(positions: Any) -> list[tuple[dict[str, Any], list[dict[str, Any]]]]:
+        values = [float(value) for value in positions]
+        if pool is None or len(values) == 1:
+            return [evaluate_position(value) for value in values]
+        return list(pool.map(evaluate_position, values))
+
+    positions = np.linspace(joint.lower_limit, joint.upper_limit, config.sweep_samples)
+    evaluated = evaluate_positions(positions)
+    # Refine only around observed high-contact intervals. The fixed base grid remains
+    # the independent acceptance set; adaptive points protect narrow local maxima.
+    for _ in range(config.adaptive_sweep_levels):
+        ordered = sorted((value[0] for value in evaluated), key=lambda value: value["q"])
+        intervals = sorted(
+            zip(ordered[:-1], ordered[1:], strict=True),
+            key=lambda pair: (
+                max(pair[0]["penetration_m"], pair[1]["penetration_m"]),
+                abs(pair[0]["contacts"] - pair[1]["contacts"]),
+            ),
+            reverse=True,
+        )
+        active = [
+            pair
+            for pair in intervals
+            if max(pair[0]["penetration_m"], pair[1]["penetration_m"]) > 0
+            or min(pair[0]["clearance_lower_bound_m"], pair[1]["clearance_lower_bound_m"])
+            < config.minimum_clearance_m
+            or pair[0]["contacts"] != pair[1]["contacts"]
+        ][: config.adaptive_top_intervals]
+        if not active:
+            break
+        known = {float(value[0]["q"]) for value in evaluated}
+        midpoints = [
+            (float(left["q"]) + float(right["q"])) / 2
+            for left, right in active
+            if (float(left["q"]) + float(right["q"])) / 2 not in known
+        ]
+        if not midpoints:
+            break
+        evaluated.extend(evaluate_positions(midpoints))
+
+    rows = sorted((value[0] for value in evaluated), key=lambda value: value["q"])
+    pair_stats: dict[tuple[str, str], dict[str, Any]] = {}
+    contact_constraints: list[dict[str, Any]] = []
+    for _, contacts in evaluated:
+        for item in contacts:
+            left, right = item["geom_a"], item["geom_b"]
+            penetration = float(item["penetration_m"])
             stats = pair_stats.setdefault(
                 (left, right),
                 {
@@ -128,68 +231,146 @@ def evaluate_asset_feasibility(
                 },
             )
             stats["samples"] += 1
-            normal = item.frame[:3] if left == names[0] else -item.frame[:3]
-            if deepest_contact is None or penetration > deepest_contact["penetration_m"]:
-                deepest_contact = {
-                    "geom_a": left,
-                    "link_a": geom_links[left],
-                    "geom_b": right,
-                    "link_b": geom_links[right],
-                    "penetration_m": penetration,
-                    "position_m": item.pos.tolist(),
-                    "normal_a_to_b": normal.tolist(),
-                }
             if retain_contact_constraints and penetration > constraint_tolerance:
                 contact_constraints.append(
                     {
-                        "geom_a": left,
-                        "link_a": geom_links[left],
-                        "geom_b": right,
-                        "link_b": geom_links[right],
-                        "penetration_m": penetration,
-                        "q": float(q),
-                        "contact_position_m": item.pos.tolist(),
-                        "normal_a_to_b": normal.tolist(),
+                        **{key: value for key, value in item.items() if key != "position_m"},
+                        "contact_position_m": item["position_m"],
                     }
                 )
             if penetration > stats["max_penetration_m"]:
                 stats["max_penetration_m"] = penetration
-                stats["peak_q"] = float(q)
-                stats["contact_position_m"] = item.pos.tolist()
-                stats["normal_a_to_b"] = normal.tolist()
-        rows.append(
-            {
-                "q": float(q),
-                "penetration_m": max(0.0, -worst),
-                "contacts": int(data.ncon),
-                "deepest_contact": deepest_contact,
-            }
-        )
+                stats["peak_q"] = item["q"]
+                stats["contact_position_m"] = item["position_m"]
+                stats["normal_a_to_b"] = item["normal_a_to_b"]
     rollouts = []
-    for q in (joint.lower_limit, (joint.lower_limit + joint.upper_limit) / 2, joint.upper_limit):
-        mujoco.mj_resetData(model, data)
-        data.qpos[address] = q
-        stable = True
-        peak_speed = 0.0
-        for _ in range(int(config.rollout_seconds / simulation.timestep_seconds)):
-            mujoco.mj_step(model, data)
-            if (
-                any(w.number for w in data.warning)
-                or not np.isfinite(data.qpos).all()
-                or not np.isfinite(data.qvel).all()
-            ):
-                stable = False
-                break
-            peak_speed = max(peak_speed, float(np.linalg.norm(data.qvel)))
-        rollouts.append({"initial_q": q, "stable": stable, "peak_speed": peak_speed})
+    if run_rollouts:
+        import types
+
+        rollout_positions = (
+            joint.lower_limit,
+            (joint.lower_limit + joint.upper_limit) / 2,
+            joint.upper_limit,
+        )
+        native_bindings = isinstance(mujoco.MjModel, type) and isinstance(
+            mujoco.mj_step, types.BuiltinFunctionType
+        )
+        if native_bindings:
+            from mujoco import rollout as mujoco_rollout
+
+            state_spec = mujoco.mjtState.mjSTATE_FULLPHYSICS
+            state_size = mujoco.mj_stateSize(model, state_spec)
+            initial_state = np.empty((len(rollout_positions), state_size))
+            for index, q in enumerate(rollout_positions):
+                data = mujoco.MjData(model)
+                mujoco.mj_resetData(model, data)
+                data.qpos[address] = q
+                mujoco.mj_forward(model, data)
+                mujoco.mj_getState(model, data, initial_state[index], state_spec)
+            rollout_data = [
+                mujoco.MjData(model) for _ in range(min(worker_count, len(rollout_positions)))
+            ]
+            steps = int(config.rollout_seconds / simulation.timestep_seconds)
+            with mujoco_rollout.Rollout(nthread=len(rollout_data)) as runner:
+                states, _ = runner.rollout(
+                    model,
+                    rollout_data,
+                    initial_state,
+                    nstep=steps,
+                    control_spec=mujoco.mjtState.mjSTATE_CTRL,
+                )
+            velocity_start = 1 + model.nq
+            velocities = states[:, :, velocity_start : velocity_start + model.nv]
+            for index, q in enumerate(rollout_positions):
+                times = states[index, :, 0]
+                stable = bool(
+                    np.isfinite(states[index]).all()
+                    and (len(times) < 2 or np.all(np.diff(times) > 0))
+                )
+                # Re-evaluate contacts at every actual dynamic pose, including
+                # soft-limit excursions outside the nominal sweep interval.
+                dynamic_rows = evaluate_positions(states[index, :, 1 + address]) if stable else []
+                dynamic_clearance = min(
+                    (r[0]["clearance_lower_bound_m"] for r in dynamic_rows), default=None
+                )
+                rollouts.append(
+                    {
+                        "initial_q": q,
+                        "stable": stable,
+                        "minimum_clearance_lower_bound_m": dynamic_clearance,
+                        "clearance_passed": dynamic_clearance is not None
+                        and dynamic_clearance >= config.minimum_clearance_m,
+                        "contact_poses_evaluated": len(dynamic_rows),
+                        "peak_speed": float(
+                            np.linalg.norm(velocities[index], axis=1).max(initial=0.0)
+                        ),
+                    }
+                )
+        else:
+            # Keep instrumented/custom bindings observable while production uses
+            # MuJoCo's native thread-pool implementation above.
+            def evaluate_rollout(q: float) -> dict[str, Any]:
+                data = mujoco.MjData(model)
+                mujoco.mj_resetData(model, data)
+                data.qpos[address] = q
+                stable = True
+                peak_speed = 0.0
+                dynamic_clearance = config.minimum_clearance_m
+                contact_poses = 0
+                for _ in range(int(config.rollout_seconds / simulation.timestep_seconds)):
+                    mujoco.mj_step(model, data)
+                    if (
+                        any(w.number for w in data.warning)
+                        or not np.isfinite(data.qpos).all()
+                        or not np.isfinite(data.qvel).all()
+                    ):
+                        stable = False
+                        break
+                    peak_speed = max(peak_speed, float(np.linalg.norm(data.qvel)))
+                    contact_row, _ = evaluate_position(float(data.qpos[address]))
+                    dynamic_clearance = min(
+                        dynamic_clearance, contact_row["clearance_lower_bound_m"]
+                    )
+                    contact_poses += 1
+                return {
+                    "initial_q": q,
+                    "stable": stable,
+                    "peak_speed": peak_speed,
+                    "minimum_clearance_lower_bound_m": dynamic_clearance,
+                    "clearance_passed": contact_poses > 0
+                    and dynamic_clearance >= config.minimum_clearance_m,
+                    "contact_poses_evaluated": contact_poses,
+                }
+
+            if pool is None:
+                rollouts = [evaluate_rollout(q) for q in rollout_positions]
+            else:
+                rollouts = list(pool.map(evaluate_rollout, rollout_positions))
+    if pool is not None:
+        pool.shutdown(wait=True)
     maximum = max(row["penetration_m"] for row in rows)
-    passed = maximum <= config.penetration_tolerance_m and all(r["stable"] for r in rollouts)
+    minimum_clearance = min(row["clearance_lower_bound_m"] for row in rows)
+    passed = minimum_clearance >= config.minimum_clearance_m and (
+        not run_rollouts or all(r["stable"] and r["clearance_passed"] for r in rollouts)
+    )
     result = {
         "status": "PASSED" if passed else "FAILED",
         "locked_range": [joint.lower_limit, joint.upper_limit],
         "max_penetration_m": maximum,
+        "minimum_clearance_lower_bound_m": minimum_clearance,
+        "required_clearance_m": config.minimum_clearance_m,
+        "acceptance_scope": "sampled_positive_clearance_and_dynamic_contact_stability",
+        "continuous_collision_certified": False,
         "sweep": rows,
         "rollouts": rollouts,
+        "rollouts_evaluated": run_rollouts,
+        "sweep_strategy": {
+            "base_samples": config.sweep_samples,
+            "evaluated_samples": len(rows),
+            "adaptive_levels": config.adaptive_sweep_levels,
+            "adaptive_top_intervals": config.adaptive_top_intervals,
+            "workers": worker_count,
+        },
         "pair_broadphase": {
             "method": "mujoco_native",
             "parent_child_filter_disabled": True,
@@ -228,7 +409,7 @@ def check_feasibility(
             **evaluation,
             "adjacent_contact_filter_disabled_for_audit": True,
             "limitations": [
-                "discrete sweep, not continuous collision certification",
+                "adaptive sampled sweep, not formal continuous collision certification",
                 "does not validate real mass, friction or restitution",
                 "no observed force replay; not a match to hand-driven video",
             ],

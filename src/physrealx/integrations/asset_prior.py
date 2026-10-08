@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import re
 from typing import Any, Literal
 
 from pydantic import Field, model_validator
@@ -48,8 +51,8 @@ class PhysicsPrior(DomainModel):
 
 
 class ReferenceAssemblyInput(DomainModel):
-    schema_id: Literal["physrealx.reference-assembly-input/1"] = Field(
-        default="physrealx.reference-assembly-input/1", alias="schema"
+    schema_id: Literal["physrealx.reference-assembly-input/2"] = Field(
+        default="physrealx.reference-assembly-input/2", alias="schema"
     )
     resource_id: str
     version: str
@@ -59,7 +62,7 @@ class ReferenceAssemblyInput(DomainModel):
     collision_reports: tuple[ArtifactRef, ...] = Field(min_length=1)
     physics_prior: PhysicsPrior | None = None
     predicted_physics: ArtifactRef | None = None
-    geometry_refinement: ArtifactRef | None = None
+    video_articulation_refinement: ArtifactRef | None = None
     articulated_collision_refinement: ArtifactRef | None = None
     registration: ArtifactRef | None = None
 
@@ -70,15 +73,46 @@ class ReferenceAssemblyInput(DomainModel):
         return self
 
 
-def _refined_asset_version(version: str) -> str:
-    """Publish collision-refined geometry as the next immutable patch version."""
-    try:
-        major, minor, patch = (int(part) for part in version.split("."))
-    except (TypeError, ValueError) as error:
-        raise DomainValidationError(
-            "reference assembly version must use semantic versioning"
-        ) from error
-    return f"{major}.{minor}.{patch + 1}"
+_SEMVER = re.compile(
+    r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
+    r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
+)
+
+
+def _refined_asset_version(
+    version: str,
+    refinements: tuple[tuple[str, ArtifactRef], ...],
+) -> str:
+    """Version a derived asset by refinement stage and immutable evidence content.
+
+    Advancing the patch records how many accepted refinement stages changed the
+    source asset. SemVer build metadata binds that version to exact opaque evidence
+    references. Reusing the same evidence is idempotent, while newly published
+    evidence remains a distinct immutable provenance snapshot.
+    """
+    if not refinements:
+        return version
+    match = _SEMVER.fullmatch(version)
+    if match is None:
+        raise DomainValidationError("reference assembly version must use semantic versioning")
+    major, minor, patch = (int(part) for part in match.groups())
+    identity = {
+        "source_version": version,
+        "refinements": [
+            {
+                "stage": stage,
+                "artifact_id": reference.artifact_id,
+                "size_bytes": reference.size_bytes,
+                "media_type": reference.media_type,
+            }
+            for stage, reference in refinements
+        ],
+    }
+    digest = hashlib.sha256(
+        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:16]
+    return f"{major}.{minor}.{patch + len(refinements)}+evidence.{digest}"
 
 
 def _articulated_source(
@@ -91,7 +125,7 @@ def _articulated_source(
     assembly = read_json(artifacts, assembly_ref, "physrealx.asset-assembly-bundle/1")
     source_input = ArtifactRef.model_validate(assembly.get("source_input"))
     original = ReferenceAssemblyInput.model_validate(
-        read_json(artifacts, source_input, "physrealx.reference-assembly-input/1")
+        read_json(artifacts, source_input, "physrealx.reference-assembly-input/2")
     )
     mutable_fields = {"articulated_collision_refinement", "collision_reports"}
     if original.articulated_collision_refinement is not None or original.model_dump(
@@ -132,10 +166,11 @@ def reference_prior_asset(source: ArtifactRef, artifacts: ArtifactStore) -> Asse
     import numpy as np
 
     request = ReferenceAssemblyInput.model_validate(
-        read_json(artifacts, source, "physrealx.reference-assembly-input/1")
+        read_json(artifacts, source, "physrealx.reference-assembly-input/2")
     )
     reference = read_json(artifacts, request.reference_model, "physrealx.usd-reference/1")
     reconstructed: dict[str, Any] = {}
+    source_motion: dict[str, Any] = {}
     motion: dict[str, Any] = {}
     geometry_evidence: tuple[ArtifactRef, ...] = ()
     if request.reconstructed_geometry is not None:
@@ -160,8 +195,11 @@ def reference_prior_asset(source: ArtifactRef, artifacts: ArtifactStore) -> Asse
             ArtifactRef.model_validate(reconstructed.get("source_reconstruction")),
             "physrealx.geometry-reconstruction-report/1",
         )
-        motion = reconstructed_motion(source_reconstruction, registration_document, reference)
-        source_positions = {motion["joint"]: motion["positions"][0]}
+        source_motion = reconstructed_motion(
+            source_reconstruction, registration_document, reference
+        )
+        motion = source_motion
+        source_positions = {source_motion["joint"]: source_motion["positions"][0]}
         if (
             request.registration is None
             or reconstructed.get("source_reference")
@@ -172,7 +210,7 @@ def reference_prior_asset(source: ArtifactRef, artifacts: ArtifactStore) -> Asse
             or set(reconstructed.get("geometries", {}))
             != {link["name"] for link in reference["links"]}
             or reconstructed.get("source_positions") != source_positions
-            or reconstructed.get("reconstructed_motion") != motion
+            or reconstructed.get("reconstructed_motion") != source_motion
             or reconstructed.get("pose_policy") != "module_one_predicted_start_pose_locked"
             or reconstructed.get("geometry_policy") != "coordinate_transform_only"
             or any(
@@ -211,23 +249,38 @@ def reference_prior_asset(source: ArtifactRef, artifacts: ArtifactStore) -> Asse
             or predicted_document.get("evidence_state") != "prior"
         ):
             raise DomainValidationError("predicted physics is bound to another source")
-        if predicted_document["reconstructed_motion"] != motion:
+        if predicted_document["reconstructed_motion"] != source_motion:
             raise DomainValidationError("predicted physics changed reconstructed motion")
         prediction = PhysicsPrediction.model_validate(predicted_document["prediction"])
         if set(prediction.bodies) != {v["name"] for v in reference["links"]} or set(
             prediction.joints
-        ) != {motion["joint"]}:
+        ) != {source_motion["joint"]}:
             raise DomainValidationError("predicted physics must cover every link and joint")
         prediction_evidence = (request.predicted_physics,)
     refinement_evidence: tuple[ArtifactRef, ...] = ()
-    if request.geometry_refinement is not None:
-        refined = read_json(
-            artifacts, request.geometry_refinement, "physrealx.video-geometry-refinement/3"
+    if request.video_articulation_refinement is not None:
+        from physrealx.integrations.video_articulation import VideoArticulationRefinement
+
+        refined_document = read_json(
+            artifacts,
+            request.video_articulation_refinement,
+            "physrealx.video-articulation-refinement/2",
         )
+        try:
+            refined = VideoArticulationRefinement.model_validate(refined_document).model_dump(
+                mode="json", by_alias=True
+            )
+        except ValueError as error:
+            raise DomainValidationError("invalid video articulation refinement") from error
         if request.registration is None:
-            raise DomainValidationError("geometry refinement requires registered endpoints")
+            raise DomainValidationError(
+                "video articulation refinement requires registered endpoints"
+            )
+        optimized_motion = refined.get("optimized_motion")
         if (
-            refined["source_reference"] != request.reference_model.model_dump(mode="json")
+            refined.get("status") != "PASSED"
+            or refined.get("evidence_scope") != "calibrated_video_constrained_articulation"
+            or refined["source_reference"] != request.reference_model.model_dump(mode="json")
             or refined.get("source_geometry")
             != (
                 request.reconstructed_geometry.model_dump(mode="json")
@@ -235,13 +288,27 @@ def reference_prior_asset(source: ArtifactRef, artifacts: ArtifactStore) -> Asse
                 else None
             )
             or refined["registration"] != request.registration.model_dump(mode="json")
-            or refined["reconstructed_motion"] != motion
+            or refined.get("source_motion") != source_motion
+            or refined.get("range_preserved") is not True
+            or refined.get("joint_range_changed") is not False
+            or refined.get("collision_proxy_status") != "REQUIRES_REBUILD"
+            or refined.get("physical_validation") is not False
+            or not isinstance(optimized_motion, dict)
+            or optimized_motion.get("joint") != source_motion["joint"]
+            or optimized_motion.get("parent") != source_motion["parent"]
+            or optimized_motion.get("child") != source_motion["child"]
+            or optimized_motion.get("kind") != source_motion["kind"]
+            or optimized_motion.get("range") != source_motion["range"]
+            or optimized_motion.get("positions") != source_motion["positions"]
             or set(refined["geometries"]) != {link["name"] for link in reference["links"]}
         ):
-            raise DomainValidationError("geometry refinement must preserve reference and motion")
+            raise DomainValidationError(
+                "video articulation refinement changed its source identity or joint range"
+            )
         for link in reference["links"]:
             link["geometry"] = refined["geometries"][link["name"]]
-        refinement_evidence = (request.geometry_refinement,)
+        motion = optimized_motion
+        refinement_evidence = (request.video_articulation_refinement,)
     articulation_evidence: tuple[ArtifactRef, ...] = ()
     articulation_sources: dict[str, tuple[ArtifactRef, dict[str, Any]]] = {}
     refined_collision_links: set[str] = set()
@@ -249,13 +316,13 @@ def reference_prior_asset(source: ArtifactRef, artifacts: ArtifactStore) -> Asse
         refined = read_json(
             artifacts,
             request.articulated_collision_refinement,
-            "physrealx.articulated-collision-refinement/4",
+            "physrealx.articulated-collision-refinement/5",
         )
         if request.registration is None:
             raise DomainValidationError("articulated collision refinement requires registration")
         expected_upstream = (
-            request.geometry_refinement.model_dump(mode="json")
-            if request.geometry_refinement is not None
+            request.video_articulation_refinement.model_dump(mode="json")
+            if request.video_articulation_refinement is not None
             else None
         )
         original_geometries = {link["name"]: link["geometry"] for link in reference["links"]}
@@ -282,7 +349,7 @@ def reference_prior_asset(source: ArtifactRef, artifacts: ArtifactStore) -> Asse
                 if request.reconstructed_geometry is not None
                 else None
             )
-            or refined.get("upstream_geometry_refinement") != expected_upstream
+            or refined.get("upstream_video_articulation_refinement") != expected_upstream
             or refined["registration"] != request.registration.model_dump(mode="json")
             or refined["reconstructed_motion"] != motion
             or refined.get("visual_geometries") != original_geometries
@@ -362,7 +429,7 @@ def reference_prior_asset(source: ArtifactRef, artifacts: ArtifactStore) -> Asse
                 != source_report_ref.model_dump(mode="json")
                 or source_report.get("link") != name
                 or source_report.get("status") != "PASSED"
-                or refinement.get("schema") != "physrealx.articulated-collision-clearance/4"
+                or refinement.get("schema") != "physrealx.articulated-collision-clearance/5"
                 or refinement.get("source_assembly") != refined.get("source_assembly")
                 or refinement.get("source_feasibility") != refined.get("source_feasibility")
                 or refinement.get("joint") != refined.get("joint")
@@ -428,17 +495,18 @@ def reference_prior_asset(source: ArtifactRef, artifacts: ArtifactStore) -> Asse
                 coverage_distance_m=config.coverage_distance_m,
                 min_coverage=config.min_patch_coverage,
             )
-            expected_fidelity = refined.get("fidelity", {}).get(name, {})
-            numeric_agrees = all(
-                type(expected_fidelity.get(key)) in (int, float)
-                and np.isclose(value, expected_fidelity[key], rtol=1e-5, atol=1e-7)
-                for key, value in observed.items()
-                if key != "status"
-            )
+            # Recompute the hard gate independently. Diagnostic probe counts and
+            # quantiles need not be bit-identical: the optimizer may use Warp for
+            # nearest-surface queries while canonical assembly deliberately uses
+            # the CPU implementation, and equidistant boundary faces can differ.
+            # Requiring both audits to pass validates the candidate itself without
+            # coupling publication to backend-specific summaries.
             if (
-                not numeric_agrees
-                or observed["status"] != "PASSED"
+                observed["status"] != "PASSED"
                 or refined.get("fidelity", {}).get(name, {}).get("status") != "PASSED"
+                or not config.fidelity_metrics_within_limits(
+                    refined.get("fidelity", {}).get(name, {})
+                )
             ):
                 raise DomainValidationError(
                     "refitted collision geometry fails local/contact surface coverage"
@@ -561,13 +629,17 @@ def reference_prior_asset(source: ArtifactRef, artifacts: ArtifactStore) -> Asse
             raise DomainValidationError("appearance registration is bound to another USD reference")
         appearance = {"registered_appearance": request.registration.model_dump(mode="json")}
         appearance_evidence = (request.registration,)
+    refinements = tuple(
+        (stage, reference)
+        for stage, reference in (
+            ("video-articulation", request.video_articulation_refinement),
+            ("collision-proxy", request.articulated_collision_refinement),
+        )
+        if reference is not None
+    )
     return AssetSpec(
         resource_id=request.resource_id,
-        version=(
-            _refined_asset_version(request.version)
-            if request.articulated_collision_refinement is not None
-            else request.version
-        ),
+        version=_refined_asset_version(request.version, refinements),
         display_name=request.display_name,
         root_link=reference["root_link"],
         links=tuple(links),
@@ -598,10 +670,12 @@ def reference_prior_asset(source: ArtifactRef, artifacts: ArtifactStore) -> Asse
             "independent_physical_validation": False,
             "geometry_source": (
                 reconstructed.get("geometry_source", "real_artgs_reconstruction")
-                + "_with_refined_collision_proxy"
-                if request.articulated_collision_refinement is not None
-                and request.reconstructed_geometry is not None
-                else reconstructed.get("geometry_source", "real_artgs_reconstruction")
+                + ("_video_constrained" if request.video_articulation_refinement else "")
+                + (
+                    "_with_refined_collision_proxy"
+                    if request.articulated_collision_refinement
+                    else ""
+                )
                 if request.reconstructed_geometry is not None
                 else "reference_model"
             ),
@@ -615,7 +689,11 @@ def reference_prior_asset(source: ArtifactRef, artifacts: ArtifactStore) -> Asse
             if request.physics_prior
             else {},
             "joint_limit_source": (
-                "module_one_reconstruction_start_end" if reconstructed else "reference_model"
+                "module_one_start_end_preserved_by_video_refinement"
+                if request.video_articulation_refinement is not None
+                else "module_one_reconstruction_start_end"
+                if reconstructed
+                else "reference_model"
             ),
             "reconstructed_motion": motion if reconstructed else {},
         },
@@ -626,7 +704,7 @@ class ReferenceAssemblyAdapter:
     descriptor = builtin_method(
         MethodCapability.ASSET_ASSEMBLE,
         "reference_asset_assembly",
-        version="3.0.0",
+        version="4.0.0",
         input_contract="AssetAssemblyInput/1",
         output_contract="AssetAssemblyBundle/1",
         python=">=3.10,<3.13",

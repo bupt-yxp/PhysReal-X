@@ -154,9 +154,7 @@ class JointTrajectoryAdapter:
         }
         success = all(predicate.evaluate(scalars) for predicate in task.success_conditions)
         accepted = (
-            error <= config.max_tracking_error
-            and peak <= config.max_contact_force_n
-            and success
+            error <= config.max_tracking_error and peak <= config.max_contact_force_n and success
         )
         if config.require_success and not accepted:
             raise MethodExecutionError(

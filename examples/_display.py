@@ -27,7 +27,6 @@ def setup_notebook(module: str) -> tuple[Path, Path]:
             "SDK 未指向当前项目；请在 PhysReal-X 环境中执行 pip install -e . 并重启内核。"
         )
     for name, value in {
-        "CUDA_VISIBLE_DEVICES": "0",
         "MUJOCO_GL": "egl",
         "OMP_NUM_THREADS": "4",
         "MAX_JOBS": "3",

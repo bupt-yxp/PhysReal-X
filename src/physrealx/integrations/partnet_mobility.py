@@ -157,7 +157,7 @@ def _partnet_record(model: Path) -> _PartNetModelRecord | None:
         model_id=model_id,
         category=category,
         extent=max(extents),
-        dimensions=extents,
+        dimensions=(extents[0], extents[1], extents[2]),
         joint_types=joint_types,
         movable_joint_count=sum(
             node.get("type") in {"revolute", "continuous", "prismatic"}
@@ -180,9 +180,7 @@ def _scan_partnet_library(
     """
 
     return tuple(
-        record
-        for model_id in model_ids
-        if (record := _partnet_record(root / model_id)) is not None
+        record for model_id in model_ids if (record := _partnet_record(root / model_id)) is not None
     )
 
 
@@ -220,9 +218,7 @@ def _rank_record(
         return None
     semantic = _instruction_relevance(instruction, requirement)
     functionality = (
-        1.0
-        if not required
-        else min(1.0, record.movable_joint_count / max(1, len(required)))
+        1.0 if not required else min(1.0, record.movable_joint_count / max(1, len(required)))
     )
     geometry = min(1.0, min(record.visual_mesh_count, record.collision_mesh_count) / 2.0)
     scale = 1.0 / (1.0 + abs(math.log(requirement.target_extent_m / record.extent)))
@@ -237,10 +233,13 @@ def _rank_record(
         )
         source_ratio = tuple(value / max(source) for value in source)
         target_ratio = tuple(float(value) / max(target) for value in target)
-        shape_error = sum(
-            abs(math.log(wanted / observed))
-            for wanted, observed in zip(target_ratio, source_ratio)
-        ) / 3
+        shape_error = (
+            sum(
+                abs(math.log(wanted / observed))
+                for wanted, observed in zip(target_ratio, source_ratio)
+            )
+            / 3
+        )
         shape = 1.0 / (1.0 + shape_error)
     # Stable tie breaking produces reproducible diversity without depending on directory order.
     digest = hashlib.sha256(f"{seed}:{requirement.name}:{record.model_id}".encode()).digest()
@@ -252,13 +251,7 @@ def _rank_record(
         "scale": scale,
         "shape": shape,
     }
-    score = (
-        0.25 * semantic
-        + 0.25 * functionality
-        + 0.10 * geometry
-        + 0.10 * scale
-        + 0.30 * shape
-    )
+    score = 0.25 * semantic + 0.25 * functionality + 0.10 * geometry + 0.10 * scale + 0.30 * shape
     score += tie_break * 1e-6
     return PartNetSceneAsset(
         name=requirement.name,
@@ -318,10 +311,7 @@ def retrieve_partnet_scene_assets(
         matches = [
             result
             for record in records
-            if (
-                result := _rank_record(record, requirement, instruction, seed=seed)
-            )
-            is not None
+            if (result := _rank_record(record, requirement, instruction, seed=seed)) is not None
         ]
         matches.sort(key=lambda item: (-item.score, int(item.model_id)))
         if not matches:
@@ -533,9 +523,10 @@ def import_partnet_mobility_asset(
                     source_faces[role.value] += len(part.faces)
                     if len(part.vertices) < 3 or len(part.faces) < 1:
                         continue
-                    if not np.isfinite(part.vertices).all() or not np.isfinite(
-                        part.face_normals
-                    ).all():
+                    if (
+                        not np.isfinite(part.vertices).all()
+                        or not np.isfinite(part.face_normals).all()
+                    ):
                         raise DomainValidationError(
                             "PartNet-Mobility mesh contains non-finite geometry"
                         )

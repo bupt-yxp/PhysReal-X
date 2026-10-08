@@ -235,9 +235,7 @@ def predict_physics(
     if raw.startswith("```"):
         raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
     prediction = PhysicsPrediction.model_validate_json(raw)
-    if set(prediction.bodies) != set(dimensions) or set(prediction.joints) != {
-        motion["joint"]
-    }:
+    if set(prediction.bodies) != set(dimensions) or set(prediction.joints) != {motion["joint"]}:
         raise DomainValidationError("Qwen response does not cover the exact links and joints")
     return store.put_json(
         {
@@ -311,7 +309,7 @@ def inspect_video(store: ArtifactStore, directory: Path) -> ArtifactRef:
         "mask_manifest",
     } & set(missing)
     # Raw files are not a calibrated observation contract. Geometry refinement consumes
-    # VideoGeometryEvidence explicitly; an adjacent JSON file never silently supplies truth.
+    # VideoArticulationEvidence explicitly; adjacent JSON never silently supplies truth.
     missing.extend(["camera_poses", "verified_timestamps_or_fps"])
     return store.put_json(
         {

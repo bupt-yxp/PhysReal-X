@@ -6,7 +6,7 @@ import io
 import json
 from importlib import import_module
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from physrealx.contracts import ArtifactStore
 from physrealx.domain import ArtifactRef, AssetSpec, GeometryRole
@@ -212,7 +212,7 @@ def preview_physical_asset(
     except (KeyError, ValueError) as error:
         raise DomainValidationError("asset assembly has no valid asset specification") from error
     if rejected_refinement is not None:
-        report = read_json(store, rejected_refinement, "physrealx.articulated-collision-repair/4")
+        report = read_json(store, rejected_refinement, "physrealx.articulated-collision-repair/5")
         if (
             report.get("status") != "FAILED"
             or report.get("source_assembly") != assembly.model_dump(mode="json")
@@ -259,12 +259,15 @@ def preview_physical_asset(
     if len(asset.joints) != 1:
         raise DomainValidationError("physical preview currently requires one joint")
     joint = asset.joints[0]
-    motion = asset.metadata.get("reconstructed_motion")
+    raw_motion = asset.metadata.get("reconstructed_motion")
+    motion = cast(dict[str, Any], raw_motion) if isinstance(raw_motion, dict) else {}
+    positions = motion.get("positions")
     reconstructed_playback = (
-        isinstance(motion, dict)
-        and motion.get("joint") == joint.name
+        motion.get("joint") == joint.name
         and motion.get("range") == [float(joint.lower_limit), float(joint.upper_limit)]
-        and len(motion.get("positions", ())) == 2
+        and isinstance(positions, (list, tuple))
+        and len(positions) == 2
+        and all(isinstance(value, (int, float)) for value in positions)
     )
     if not reconstructed_playback:
         motion = {
@@ -272,15 +275,15 @@ def preview_physical_asset(
             "positions": [float(joint.lower_limit), float(joint.upper_limit)],
             "states": ["lower_limit", "upper_limit"],
         }
+    positions = cast(list[float], motion["positions"])
+    motion_joint = str(motion["joint"])
     timeline = np.linspace(0, 1, frames)
     playback_positions = [
-        (1 - float(fraction)) * motion["positions"][0]
-        + float(fraction) * motion["positions"][1]
+        (1 - float(fraction)) * positions[0] + float(fraction) * positions[1]
         for fraction in timeline
     ]
     states = [
-        link_transforms(asset, {motion["joint"]: float(position)})
-        for position in playback_positions
+        link_transforms(asset, {motion_joint: float(position)}) for position in playback_positions
     ]
     sweep_positions = np.asarray([row["q"] for row in collision_evidence["sweep"]])
     evidence_indices = [
@@ -306,7 +309,7 @@ def preview_physical_asset(
     joint_ranges = {
         joint.name: [float(joint.lower_limit), float(joint.upper_limit)] for joint in asset.joints
     }
-    start, end = motion["positions"]
+    start, end = positions
     range_text = (
         f"{joint.name}: {np.degrees(start):.1f}° → {np.degrees(end):.1f}°"
         if joint.joint_type.value == "revolute"
@@ -320,9 +323,12 @@ def preview_physical_asset(
             y=0.995,
         )
     elif reconstructed_playback:
-        figure.suptitle(
-            f"Module-one reconstructed start → end · {range_text}", fontsize=11, y=0.995
+        motion_label = (
+            "Video-constrained source start → end"
+            if "_video_constrained" in str(asset.metadata.get("geometry_source", ""))
+            else "Reconstructed source start → end"
         )
+        figure.suptitle(f"{motion_label} · {range_text}", fontsize=11, y=0.995)
     else:
         figure.suptitle(f"Declared joint limits · {range_text}", fontsize=11, y=0.995)
     canvas: Any = FigureCanvasAgg(figure)
@@ -483,11 +489,11 @@ def preview_physical_asset(
                     "joints": [joint.name for joint in asset.joints],
                     "joint_ranges": joint_ranges,
                     "motion": (
-                        "module-one predicted start-to-end"
+                        "source reconstructed start-to-end"
                         if reconstructed_playback
                         else "declared lower-to-upper joint limits"
                     ),
-                    "states": motion["states"],
+                    "states": motion.get("states", ["start", "end"]),
                     "playback_positions": playback_positions,
                     "fps": fps,
                 }

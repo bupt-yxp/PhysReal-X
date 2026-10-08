@@ -8,7 +8,13 @@ from subprocess import CompletedProcess
 
 import numpy as np
 import pytest
-import trimesh
+
+try:
+    import trimesh
+except ModuleNotFoundError as exc:
+    if exc.name == "trimesh":
+        pytest.skip("Install the physical extra for mesh tests", allow_module_level=True)
+    raise
 from PIL import Image
 from pydantic import ValidationError
 
@@ -18,7 +24,9 @@ from physrealx.integrations._asset_preview import link_transforms, pose_matrix
 from physrealx.integrations.physical_estimation import PhysicsPrediction
 from physrealx.integrations.reconstructed_asset import reconstructed_motion
 from physrealx.integrations.usd_reference import reference_link_transforms
-from physrealx.integrations.video_geometry import GeometryRefinementConfig, fit_surface
+from physrealx.integrations.video_articulation import (
+    VideoArticulationRefinementConfig,
+)
 from physrealx.reconstruction import joint_transform
 
 
@@ -99,8 +107,7 @@ def test_registration_preserves_reconstruction_faces_colors_and_pose(tmp_path):
     )
     source_end = trimesh.transform_points(
         captured["cover"].vertices,
-        capture_to_reference
-        @ joint_transform("hinge", [1, 0, 0], [0, 0, 0], -0.6),
+        capture_to_reference @ joint_transform("hinge", [1, 0, 0], [0, 0, 0], -0.6),
     )
     np.testing.assert_allclose(predicted_end, source_end, atol=1e-7, rtol=0)
 
@@ -279,7 +286,7 @@ def fixture(px, overlap, joint_origin=(0, 0, 0), localized_overlap=False):
         report["metrics"]["convex_parts"] = 2.0
         reports[cover_index] = px.artifacts.put_json(report).model_dump(mode="json")
     request = {
-        "schema": "physrealx.reference-assembly-input/1",
+        "schema": "physrealx.reference-assembly-input/2",
         "resource_id": "visual.fixture",
         "version": "1.0.0",
         "display_name": "Fixture",
@@ -314,6 +321,140 @@ def test_predicted_asset_preserves_reconstructed_motion_and_does_not_certify_phy
     assert result["locked_range"] == [-0.6, 0.0]
 
 
+def test_removed_reference_assembly_schema_is_rejected(tmp_path):
+    px = PhysRealX.open(tmp_path)
+    request, _, _, _ = fixture(px, False)
+    request["schema"] = "physrealx.reference-assembly-input/1"
+
+    with pytest.raises(DomainValidationError, match="requires schema"):
+        px.assets.assemble(px.artifacts.put_json(request), method="reference_asset_assembly")
+
+
+def _video_refinement_fixture(px: PhysRealX, request: dict) -> tuple[ArtifactRef, dict]:
+    source = json.loads(
+        px.artifacts.get_bytes(ArtifactRef.model_validate(request["reconstructed_geometry"]))
+    )
+    source_motion = source["reconstructed_motion"]
+    axis = np.asarray([0.99995, 0.01, 0.0])
+    axis /= np.linalg.norm(axis)
+    optimized = {
+        **source_motion,
+        "axis": axis.tolist(),
+        "origin_m": [0.0, 0.001, 0.0],
+        "policy": "video_constrained_axis_origin_fixed_range",
+    }
+    document = {
+        "schema": "physrealx.video-articulation-refinement/2",
+        "status": "PASSED",
+        "evidence_scope": "calibrated_video_constrained_articulation",
+        "source_reference": request["reference_model"],
+        "source_geometry": request["reconstructed_geometry"],
+        "registration": request["registration"],
+        "source_evidence": px.artifacts.put_json({"scope": "synthetic-video"}).model_dump(
+            mode="json"
+        ),
+        "config": VideoArticulationRefinementConfig().model_dump(mode="json"),
+        "source_motion": source_motion,
+        "optimized_motion": optimized,
+        "range_preserved": True,
+        "joint": {},
+        "links": {},
+        "heldout": {
+            name: {
+                "before": {"p90_m": 0.001, "samples": 10},
+                "candidate": {"p90_m": 0.001, "samples": 10},
+            }
+            for name in source["geometries"]
+        },
+        "heldout_images": {
+            "passed": True,
+            "frames": [
+                {
+                    side: {
+                        "frame_id": "synthetic-check",
+                        "mask_iou": 1.0,
+                        "rgb_mae": 0.0,
+                        "depth_p90_m": 0.001,
+                    }
+                    for side in ("before", "candidate")
+                }
+            ],
+        },
+        "swept_surface_clearance": {
+            "continuous_surface_clearance_certified": True,
+            "minimum_clearance_lower_bound_m": 0.0002,
+        },
+        "surface_query": {"backend": "synthetic"},
+        "optimizer": {"geometry_valid": True},
+        "diagnostic_geometries": source["geometries"],
+        "joint_range_changed": False,
+        "collision_proxy_status": "REQUIRES_REBUILD",
+        "visual_geometry_changed": False,
+        "joint_model_changed": True,
+        "independent_observation_validation": False,
+        "physical_validation": False,
+        "geometries": source["geometries"],
+    }
+    return px.artifacts.put_json(document), document
+
+
+def test_assembly_accepts_video_joint_update_but_preserves_source_range(tmp_path):
+    px = PhysRealX.open(tmp_path)
+    request, _, _, _ = fixture(px, False)
+    refinement, document = _video_refinement_fixture(px, request)
+    request["video_articulation_refinement"] = refinement.model_dump(mode="json")
+
+    assembly = px.assets.assemble(
+        px.artifacts.put_json(request), method="reference_asset_assembly"
+    ).output("asset_assembly")
+    asset = AssetSpec.model_validate(json.loads(px.artifacts.get_bytes(assembly))["asset_spec"])
+
+    assert asset.version.startswith("1.0.1+evidence.")
+    assert asset.joints[0].axis == tuple(document["optimized_motion"]["axis"])
+    assert (asset.joints[0].lower_limit, asset.joints[0].upper_limit) == (-0.6, 0.0)
+    assert asset.metadata["joint_limit_source"] == (
+        "module_one_start_end_preserved_by_video_refinement"
+    )
+    assert asset.metadata["reconstructed_motion"] == document["optimized_motion"]
+
+
+def test_assembly_rejects_video_refinement_that_changes_joint_range(tmp_path):
+    px = PhysRealX.open(tmp_path)
+    request, _, _, _ = fixture(px, False)
+    _, document = _video_refinement_fixture(px, request)
+    document["optimized_motion"]["range"] = [-0.5, 0.0]
+    request["video_articulation_refinement"] = px.artifacts.put_json(document).model_dump(
+        mode="json"
+    )
+
+    with pytest.raises(DomainValidationError, match="invalid video articulation refinement"):
+        px.assets.assemble(px.artifacts.put_json(request), method="reference_asset_assembly")
+
+
+@pytest.mark.parametrize(
+    "fault", ["missing_3d", "bad_3d", "missing_images", "bad_depth", "wrong_frame"]
+)
+def test_publication_rechecks_measurements_instead_of_trusting_passed_flags(tmp_path, fault):
+    px = PhysRealX.open(tmp_path)
+    request, _, _, _ = fixture(px, False)
+    _, document = _video_refinement_fixture(px, request)
+    if fault == "missing_3d":
+        document["heldout"] = {}
+    elif fault == "bad_3d":
+        document["heldout"]["body"]["candidate"]["p90_m"] = 0.005
+    elif fault == "missing_images":
+        document["heldout_images"]["frames"] = []
+    elif fault == "bad_depth":
+        document["heldout_images"]["frames"][0]["candidate"]["depth_p90_m"] = None
+    else:
+        document["heldout_images"]["frames"][0]["candidate"]["frame_id"] = "another-frame"
+    request["video_articulation_refinement"] = px.artifacts.put_json(document).model_dump(
+        mode="json"
+    )
+    with pytest.raises(DomainValidationError, match="invalid video articulation refinement"):
+        px.assets.assemble(px.artifacts.put_json(request), method="reference_asset_assembly")
+
+
 def test_registered_reconstruction_preserves_shared_rest_coordinates(tmp_path):
     px = PhysRealX.open(tmp_path)
     request, model, _, _ = fixture(px, False, joint_origin=(0.03, 0.04, 0.05))
@@ -335,9 +476,7 @@ def test_registered_reconstruction_preserves_shared_rest_coordinates(tmp_path):
         if geometry.link == "cover" and geometry.role.value == "visual"
     )
     expected = reference_link_transforms(model, {"hinge": -0.3})["cover"]
-    actual = link_transforms(asset, {"hinge": -0.3})["cover"] @ pose_matrix(
-        cover_visual.local_pose
-    )
+    actual = link_transforms(asset, {"hinge": -0.3})["cover"] @ pose_matrix(cover_visual.local_pose)
     np.testing.assert_allclose(actual, expected, atol=1e-12)
 
 
@@ -380,6 +519,45 @@ def test_collision_fails_without_reducing_reconstructed_joint_range(tmp_path):
     )
 
 
+def test_candidate_clearance_sweep_can_defer_dynamic_rollouts(tmp_path, monkeypatch):
+    import mujoco
+
+    from physrealx.integrations.assembly import assembled_asset
+    from physrealx.integrations.physical_feasibility import (
+        FeasibilityConfig,
+        evaluate_asset_feasibility,
+    )
+
+    px = PhysRealX.open(tmp_path)
+    request, _, _, _ = fixture(px, True)
+    assembled = px.assets.assemble(
+        px.artifacts.put_json(request), method="reference_asset_assembly"
+    ).output("asset_assembly")
+    asset = assembled_asset(json.loads(px.artifacts.get_bytes(assembled)), px.artifacts)
+
+    def unexpected_step(*args, **kwargs):
+        pytest.fail("intermediate collision candidates must defer dynamic rollouts")
+
+    monkeypatch.setattr(mujoco, "mj_step", unexpected_step)
+    result = evaluate_asset_feasibility(
+        px.artifacts,
+        asset,
+        config=FeasibilityConfig(
+            sweep_samples=3,
+            adaptive_sweep_levels=0,
+            rollout_seconds=0.02,
+        ),
+        run_rollouts=False,
+    )
+
+    assert result["rollouts"] == []
+    assert not result["rollouts_evaluated"]
+    assert len(result["sweep"]) == 3
+    assert result["sweep_strategy"]["base_samples"] == 3
+    assert result["sweep_strategy"]["evaluated_samples"] == 3
+    assert result["sweep_strategy"]["workers"] >= 1
+
+
 @pytest.fixture(scope="module")
 def repaired_geometry(tmp_path_factory):
     px = PhysRealX.open(tmp_path_factory.mktemp("articulated-repair"))
@@ -393,11 +571,13 @@ def repaired_geometry(tmp_path_factory):
 
     refinement = px.assets.refine_articulated_collision(assembled, failed)
     report = json.loads(px.artifacts.get_bytes(refinement))
-    return px, assembled, report, check_config
+    return px, assembled, failed, report, check_config
 
 
-def test_joint_local_geometry_refinement_preserves_range_and_evidence_scope(repaired_geometry):
-    px, assembled, report, check_config = repaired_geometry
+def test_joint_local_collision_refinement_preserves_range_and_evidence_scope(
+    repaired_geometry,
+):
+    px, assembled, _, report, check_config = repaired_geometry
     assert report["status"] == "PASSED"
     assert report["acceptance_scope"] == "local_surface_coverage_and_simulation_feasibility"
     assert report["physical_validation"] is False
@@ -408,8 +588,15 @@ def test_joint_local_geometry_refinement_preserves_range_and_evidence_scope(repa
     assert report["joint_model_unchanged"]
     assert report["parent_child_collision_enabled"]
     assert report["source_face_ownership_preserved"]
+    assert report["source_asset_lock"]["preserved_exactly"] is True
+    assert report["source_asset_lock"]["joint"]["range"] == [-0.6, 0.0]
     assert all(item["status"] == "PASSED" for item in report["fidelity"].values())
     assert max(item["bidirectional_sample_max_m"] for item in report["fidelity"].values()) <= 0.003
+    assert report["checkpoint"] is not None
+    assert report["surface_query"]["backend"] in {"trimesh_cpu", "warp_cuda"}
+    assert report["visual_motion_audit"]["locked_range"] == [-0.6, 0.0]
+    assert report["visual_motion_audit"]["certified_lower_bound"] is False
+    assert report["visual_motion_audit"]["samples"] == 61
 
     candidate = ArtifactRef.model_validate(report["candidate_assembly_input"])
     refined = px.assets.assemble(candidate, method="reference_asset_assembly").output(
@@ -426,7 +613,7 @@ def test_joint_local_geometry_refinement_preserves_range_and_evidence_scope(repa
         json.loads(px.artifacts.get_bytes(refined))["asset_spec"]
     )
     assert before_asset.version == "1.0.0"
-    assert after_asset.version == "1.0.1"
+    assert after_asset.version.startswith("1.0.1+evidence.")
     assert (after_asset.joints[0].lower_limit, after_asset.joints[0].upper_limit) == (-0.6, 0.0)
     before_visuals = {
         item.link: item.uri for item in before_asset.geometries if item.role.value == "visual"
@@ -447,7 +634,7 @@ def test_joint_local_geometry_refinement_preserves_range_and_evidence_scope(repa
     evidence = json.loads(
         px.artifacts.get_bytes(ArtifactRef.model_validate(report["collision_refinement"]))
     )
-    assert evidence["schema"] == "physrealx.articulated-collision-refinement/4"
+    assert evidence["schema"] == "physrealx.articulated-collision-refinement/5"
     assert evidence["status"] == "CANDIDATE"
     assert evidence["evidence_scope"] == "collision_consistency_hypothesis"
     assert evidence["visual_geometry_changed"] is False
@@ -460,6 +647,21 @@ def test_joint_local_geometry_refinement_preserves_range_and_evidence_scope(repa
     )
     assert "relative_volume_error" not in collision["metrics"]
     assert "volume_error" not in collision["gates"]
+
+
+def test_articulated_refinement_resumes_the_last_accepted_checkpoint(repaired_geometry):
+    px, assembled, failed, original, _ = repaired_geometry
+
+    repeated = json.loads(
+        px.artifacts.get_bytes(px.assets.refine_articulated_collision(assembled, failed))
+    )
+
+    assert repeated["resumed_from_checkpoint"] is True
+    assert repeated["checkpoint"] is not None
+    assert repeated["after"]["max_penetration_m"] == pytest.approx(
+        original["after"]["max_penetration_m"]
+    )
+    assert repeated["source_asset_lock"] == original["source_asset_lock"]
 
 
 @pytest.mark.parametrize(
@@ -478,7 +680,7 @@ def test_joint_local_geometry_refinement_preserves_range_and_evidence_scope(repa
     ],
 )
 def test_articulated_repair_rejects_inconsistent_provenance(repaired_geometry, tampering):
-    px, _, result, _ = repaired_geometry
+    px, _, _, result, _ = repaired_geometry
 
     def read(ref):
         return json.loads(px.artifacts.get_bytes(ArtifactRef.model_validate(ref)))
@@ -632,32 +834,11 @@ def test_physics_prior_cache_is_bound_to_inference_inputs(tmp_path, monkeypatch,
     assert updated == cached if cache_hit else px.artifacts.verify(updated)
 
 
-def test_geometry_improves_heldout_surface_without_topology_change():
-    original = trimesh.creation.icosphere(subdivisions=2, radius=0.10)
-    truth = original.copy()
-    truth.vertices *= 1.015
-    fit = trimesh.sample.sample_surface(truth, 3000, seed=1)[0]
-    check = trimesh.sample.sample_surface(truth, 1500, seed=2)[0]
-    refined, report = fit_surface(original, fit, check, GeometryRefinementConfig())
-    assert report["status"] == "ACCEPTED"
-    assert report["check_p90_candidate_m"] < report["check_p90_before_m"]
-    assert report["max_vertex_displacement_m"] <= 0.003
-    np.testing.assert_array_equal(refined.faces, original.faces)
-
-
-def test_wrong_geometry_update_is_rejected_on_heldout():
-    original = trimesh.creation.icosphere(subdivisions=2, radius=0.10)
-    wrong = original.copy()
-    wrong.vertices *= 1.015
-    fit = trimesh.sample.sample_surface(wrong, 1500, seed=1)[0]
-    check = trimesh.sample.sample_surface(original, 1500, seed=2)[0]
-    refined, report = fit_surface(original, fit, check, GeometryRefinementConfig())
-    assert report["status"] == "REJECTED"
-    np.testing.assert_array_equal(refined.vertices, original.vertices)
-
-
 def test_video_backprojection_rejects_camera_errors_and_out_of_range_motion(tmp_path):
-    from physrealx.integrations.video_geometry import VideoGeometryEvidence, _observations
+    from physrealx.integrations.video_articulation import (
+        VideoArticulationEvidence,
+        observations,
+    )
 
     px = PhysRealX.open(tmp_path)
     request, model, _, _ = fixture(px, False)
@@ -671,12 +852,16 @@ def test_video_backprojection_rejects_camera_errors_and_out_of_range_motion(tmp_
         stream = io.BytesIO()
         Image.fromarray(mask).save(stream, format="PNG")
         label = px.artifacts.put_bytes(stream.getvalue(), media_type="image/png")
+        stream = io.BytesIO()
+        Image.fromarray(np.full((20, 20, 3), index, dtype=np.uint8)).save(stream, format="PNG")
+        rgb = px.artifacts.put_bytes(stream.getvalue(), media_type="image/png")
         camera = np.eye(4)
         camera[2, 3] = 1
         frames.append(
             {
                 "frame_id": str(index),
                 "partition": "fit" if index < 2 else "check",
+                "rgb": rgb,
                 "depth": depth,
                 "link_mask": label,
                 "intrinsics": [100, 100, 10, 10],
@@ -684,7 +869,7 @@ def test_video_backprojection_rejects_camera_errors_and_out_of_range_motion(tmp_
                 "positions": {"hinge": 0},
             }
         )
-    evidence = VideoGeometryEvidence(
+    evidence = VideoArticulationEvidence(
         reference=request["reference_model"],
         registration=request["registration"],
         source_geometry=request["reconstructed_geometry"],
@@ -696,18 +881,23 @@ def test_video_backprojection_rejects_camera_errors_and_out_of_range_motion(tmp_
     motion = json.loads(
         px.artifacts.get_bytes(ArtifactRef.model_validate(request["reconstructed_geometry"]))
     )["reconstructed_motion"]
-    observed = _observations(px.artifacts, evidence, model, motion, GeometryRefinementConfig())
+    config = VideoArticulationRefinementConfig()
+    observed = observations(px.artifacts, evidence, model, motion, config)
     assert len(observed["body"]["fit"]) == 2
-    np.testing.assert_allclose(observed["body"]["fit"][0][:, 2], 0)
+    np.testing.assert_allclose(observed["body"]["fit"][0].points_reference[:, 2], 0)
     frames[0]["positions"] = {"hinge": 1.2}
-    invalid = evidence.model_copy(update={"frames": frames})
-    with pytest.raises(DomainValidationError, match="observed"):
-        _observations(px.artifacts, invalid, model, motion, GeometryRefinementConfig())
+    invalid = VideoArticulationEvidence.model_validate(
+        {**evidence.model_dump(mode="python"), "frames": frames}
+    )
+    with pytest.raises(DomainValidationError, match="exceeds"):
+        observations(px.artifacts, invalid, model, motion, config)
     frames[0]["positions"] = {"hinge": 0}
     frames[0]["camera_from_reference"][0][0] = 2
-    invalid = evidence.model_copy(update={"frames": frames})
+    invalid = VideoArticulationEvidence.model_validate(
+        {**evidence.model_dump(mode="python"), "frames": frames}
+    )
     with pytest.raises(DomainValidationError, match="calibrated"):
-        _observations(px.artifacts, invalid, model, motion, GeometryRefinementConfig())
+        observations(px.artifacts, invalid, model, motion, config)
 
 
 def test_refinement_budget_failure_does_not_publish_an_accepted_asset(tmp_path):
@@ -832,3 +1022,34 @@ def test_native_contact_detection_remains_enabled_outside_joint_limits(tmp_path,
     assert seen and all(q > result["locked_range"][1] for q in seen)
     assert len(result["rollouts"]) == 3
     assert all(row["stable"] for row in result["rollouts"])
+
+
+def test_finite_dynamic_rollout_cannot_pass_with_colliding_poses(tmp_path, monkeypatch):
+    from mujoco import rollout
+
+    px = PhysRealX.open(tmp_path)
+    request, _, _, _ = fixture(px, False, joint_origin=(0, 0, 0.04))
+    assembly = px.assets.assemble(
+        px.artifacts.put_json(request), method="reference_asset_assembly"
+    ).output("asset_assembly")
+    original = rollout.Rollout.rollout
+
+    def colliding_states(self, *args, **kwargs):
+        states, sensors = original(self, *args, **kwargs)
+        address = int(args[0].joint("asset/hinge").qposadr[0])
+        states[:, :, 1 + address] = 2.2
+        return states, sensors
+
+    monkeypatch.setattr(rollout.Rollout, "rollout", colliding_states)
+    result = json.loads(
+        px.artifacts.get_bytes(
+            px.assets.check_physics_feasibility(
+                assembly, config={"sweep_samples": 9, "rollout_seconds": 0.02}
+            )
+        )
+    )
+    assert result["minimum_clearance_lower_bound_m"] >= result["required_clearance_m"]
+    assert all(row["stable"] for row in result["rollouts"])
+    assert all(row["contact_poses_evaluated"] > 0 for row in result["rollouts"])
+    assert any(not row["clearance_passed"] for row in result["rollouts"])
+    assert result["status"] == "FAILED"

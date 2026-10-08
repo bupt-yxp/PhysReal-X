@@ -11,6 +11,8 @@ title: 六模块可视化
 
 <!-- demo-verification -->
 
+模块二单独展示本轮联合优化的诊断结果；其余模块使用归档运行快照。候选能否发布以各自的验收结果为准。
+
 当前有两条示例数据线：**实拍 laptop1 → 模块一 → 模块二**；**PartNet-Mobility → 模块三 → 四 → 五 → 六**。模块三尚未使用模块一、二的重建资产。
 
 ## 01 · 真实资产与数字孪生
@@ -25,13 +27,15 @@ title: 六模块可视化
 
 ## 02 · 物理资产构建
 
-**输入：** 模块一生成的真实重建资产、实拍视频与 VLM 物性先验。**输出：** 碰撞代理、物性与证据记录、USD 资产和仿真可行性报告。
+**输入：** 模块一生成的真实重建资产、实拍 RGB-D 视频与 VLM 物性估计。**输出：** 联合优化候选、观测拟合与间隙报告；通过全部验收后生成碰撞代理及 USD 资产。
 
-动画对比视觉几何和碰撞几何。几何修正保持 start/end 定义的关节范围；碰撞可行性通过不代表物性已得到独立实测验证。
+动画同步对比模块一原始表面、模块二候选表面和变化热图。标定视频约束局部表面及关节轴/原点，start/end 范围保持不变。候选状态和全范围正间隙单独验收；失败候选仅用于诊断，不发布为可用资产。碰撞可行性通过不代表物性已得到独立实测验证。
 
-<!-- demo-preview:physical_asset_building -->
+[![模块二最新候选诊断动画](../assets/demos/physical_asset_building/joint-refinement-comparison.gif)](../assets/demos/physical_asset_building/joint-refinement-comparison.gif)
 
-[物性、几何修正与验收](../user-guide/physical-assets.md) · Notebook：`examples/physical_asset_building/demo.ipynb`
+此处显示模块二最新诊断候选；是否可发布以[当前验收记录](../assets/demos/physical_asset_building/current-validation.json)为准。
+
+[物性、碰撞代理优化与验收](../user-guide/physical-assets.md) · Notebook：`examples/physical_asset_building/demo.ipynb`
 
 ## 03 · 场景与任务生成
 

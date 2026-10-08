@@ -26,7 +26,10 @@ EXPECTED_APIS = {
         "px.assets.build_collision(",
         "px.assets.assemble(",
         "px.assets.package(",
-        "px.assets.preview_physical_asset(",
+        "px.assets.refine_video_articulation(",
+        "px.assets.preview_video_articulation(",
+        "px.assets.rebuild_video_collision(",
+        "px.assets.validate_video_articulation(",
         "px.assets.validate(",
     ),
     "scene_and_task_generation": (

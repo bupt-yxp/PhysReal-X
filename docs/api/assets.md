@@ -112,10 +112,13 @@ report_ref = px.assets.evaluate_reconstruction(
 | API | 方法 | 输入要求 |
 | --- | --- | --- |
 | `assets.register_reconstruction_geometry(reconstruction, registration)` | 固定服务 | 仅执行输入注册坐标变换，保留模块一原始顶点数、三角面和颜色；不补面、不修改位姿 |
-| `assets.predict_physics(reference, registration, geometry, images, ...)` | VLM 先验 | 固定模型版本、真实图像和几何；返回物性候选范围 |
-| `assets.refine_video_geometry(evidence, config=...)` | 固定服务 | 部件 Mask、米制深度、逐帧位姿和关节位置；独立帧检查 |
-| `assets.refine_articulated_collision(assembly, feasibility, config=...)` | 固定服务 | 保持视觉网格、位姿、关节轴与范围不变；源面连通域细分后，以全范围接触约束序列优化局部支撑面，并硬性验收覆盖、双向误差、连续性、厚度、体积、凸性、GLB 往返和 MuJoCo 复扫；失败不发布候选资产 |
-| `assets.check_physics_feasibility(assembly, config=...)` | 固定服务 | 完整范围穿插与零外力数值检查，返回可行性报告 |
+| `assets.predict_physics(reference, registration, geometry, images, ...)` | VLM 物性估计 | 固定模型版本、真实图像和几何；返回物性候选范围 |
+| `assets.refine_video_articulation(evidence, config=..., cached_result=...)` | 固定服务 | 标定 RGB-D、整数部件 Mask、逐帧相机位姿和关节位置；用互斥的拟合/检查帧联合优化铰链轴、原点及证据覆盖的铰链邻域表面，严格保留 start/end 范围；`surface_query_backend="auto"` 使用全部可见 GPU，或回退到有界 CPU 线程；开放表面不伪造内外关系，输出要求重建碰撞代理 |
+| `assets.preview_video_articulation(refinement, frames=24)` | 固定服务 | 返回原始/候选同步动画、变化图、检查帧误差与间隙曲线；失败候选明确标记为诊断 |
+| `assets.rebuild_video_collision(refinement, max_parts=8192)` | 固定服务 | 表面通过后按正间隙分配代理误差预算，自动细分凸壳，完整保留源三角面；预算耗尽报错 |
+| `assets.validate_video_articulation(refinement, source_assembly, collision_reports, config=...)` | 固定服务 | 绑定候选的新代理，检查局部误差、完整采样覆盖、连续代理表面扫掠、361 基础姿态及加密姿态与动力学；失败候选不注册为资产 |
+| `assets.refine_articulated_collision(assembly, feasibility, config=...)` | 固定服务 | 保持输入资产的视觉网格、位姿、关节模型与范围不变；先用 `surface_fidelity_reserve_m` 把代理误差降至发布门槛以内并留出优化余量，再以多姿态接触约束联合优化局部支撑面；`surface_query_backend="auto"` 会把批量最近点和视觉扫掠分配给全部可见 GPU，未见 GPU 时显式记录有界 CPU 线程后端；接受轮次写入输入绑定检查点；最终硬性验收覆盖、双向误差、连续性、厚度、体积、凸性、GLB 往返和 MuJoCo 复扫，失败不发布候选资产 |
+| `assets.check_physics_feasibility(assembly, config=...)` | 固定服务 | 基础关节网格加危险区间自适应细分；共享只读 `MjModel`、线程独立 `MjData` 并行检查完整范围穿插，最终执行零外力稳定性检查并返回可行性报告 |
 | `assets.preview_physical_asset(assembly, frames=24, fps=12)` | 固定服务 | 原始视觉、碰撞代理、局部拟合误差三栏同步动画；代理颜色只表示 link 归属，逐帧红点和数值才表示 MuJoCo 最深穿插 |
 | `assets.preview_physics_video(directory, frames=24, fps=8)` | 固定服务 | 同步 RGB、深度、物体/部件 Mask 动画 |
 | `assets.build_collision(mesh, method=..., config=...)` | `coacd` | 明确源单位、link、误差阈值及几何预处理策略；`max_parts` 按表面积分配给各连通表面并作为全局上限 |

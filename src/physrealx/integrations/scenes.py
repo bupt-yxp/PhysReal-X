@@ -295,8 +295,7 @@ def place_robot_for_joint_task(
     # endpoint can make an otherwise feasible closing motion unreachable.
     # Purely vertical motion retains the stable room-facing approach.
     tangent_approach = (
-        target_joint.joint_type is JointType.REVOLUTE
-        and horizontal_motion_norm > 1e-4
+        target_joint.joint_type is JointType.REVOLUTE and horizontal_motion_norm > 1e-4
     )
     if tangent_approach:
         push_direction = horizontal_motion / horizontal_motion_norm
@@ -385,7 +384,7 @@ def place_robot_for_joint_task(
             colliding.append(item.name)
     if colliding:
         raise DomainValidationError(
-            "task-aware robot base placement collides with " f"{sorted(colliding)}"
+            f"task-aware robot base placement collides with {sorted(colliding)}"
         )
 
     lower = np.asarray([item.lower_limit for item in controlled]) + 1e-5
@@ -406,9 +405,7 @@ def place_robot_for_joint_task(
         span = upper - lower
         joint_offsets = np.arange(1, len(controlled) + 1, dtype=float)
         dispersed = tuple(
-            lower
-            + np.mod((sample + 1) * joint_offsets * 0.6180339887498949, 1.0)
-            * span
+            lower + np.mod((sample + 1) * joint_offsets * 0.6180339887498949, 1.0) * span
             for sample in range(12)
         )
         starts = (
@@ -431,9 +428,7 @@ def place_robot_for_joint_task(
                 xtol=1e-11,
                 gtol=1e-11,
             )
-            position_error = float(
-                np.linalg.norm(residual(result.x, seed)[:3])
-            )
+            position_error = float(np.linalg.norm(residual(result.x, seed)[:3]))
             if result.success and position_error < best_error:
                 best, best_error = result.x, position_error
             if best_error <= 0.01:

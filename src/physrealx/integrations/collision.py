@@ -91,14 +91,27 @@ def _exterior_samples(
         )
     outside = samples + normals * epsilon
     buried = np.zeros(len(samples), dtype=bool)
-    for part in parts:
-        bounds = part.bounds
-        candidates = np.flatnonzero(
-            (~buried) & np.all(outside > bounds[0], axis=1) & np.all(outside < bounds[1], axis=1)
-        )
+    bounds = np.asarray([part.bounds for part in parts], dtype=float)
+    # Query all point AABBs in native libspatialindex code.  The previous
+    # part-by-point scan materialized ``samples x 3`` boolean arrays hundreds of
+    # times for refined articulated assets, even though each sample intersects
+    # only a few part bounds.
+    tree = trimesh.util.bounds_tree(bounds)  # type: ignore[no-untyped-call]
+    part_ids, counts = tree.intersection_v(outside, outside)
+    point_ids = np.repeat(
+        np.arange(len(outside), dtype=np.int64), np.asarray(counts, dtype=np.int64)
+    )
+    for part_index in np.unique(part_ids):
+        part_index = int(part_index)
+        candidates = point_ids[part_ids == part_index]
+        candidates = candidates[
+            (~buried[candidates])
+            & np.all(outside[candidates] > bounds[part_index, 0], axis=1)
+            & np.all(outside[candidates] < bounds[part_index, 1], axis=1)
+        ]
         if not len(candidates):
             continue
-        equations = ConvexHull(part.vertices).equations
+        equations = ConvexHull(parts[part_index].vertices).equations
         buried[candidates] |= np.all(
             outside[candidates] @ equations[:, :3].T + equations[:, 3] < -epsilon / 10,
             axis=1,

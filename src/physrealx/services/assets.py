@@ -239,9 +239,7 @@ class AssetsService:
                     assets[item.name] = self.import_partnet_mobility(
                         catalog,
                         model_id=item.model_id,
-                        resource_id=(
-                            f"partnet.{scene_type}.{item.name}.{item.model_id}"
-                        ),
+                        resource_id=(f"partnet.{scene_type}.{item.name}.{item.model_id}"),
                         version=version,
                         display_name=item.category,
                         target_extent_m=item.target_extent_m,
@@ -671,23 +669,67 @@ class AssetsService:
             cached_prior=cached_prior,
         )
 
-    def refine_video_geometry(
+    def refine_video_articulation(
         self,
         evidence: ArtifactRef,
         *,
         config: Mapping[str, JSONValue] | None = None,
+        cached_result: ArtifactRef | None = None,
     ) -> ArtifactRef:
-        """Refine observed surfaces without changing the start/end joint range."""
-        from physrealx.integrations.video_geometry import (
-            GeometryRefinementConfig,
-            refine_video_geometry,
+        """Jointly refine video-supported surfaces and articulation with a fixed range."""
+        from physrealx.integrations.video_articulation import (
+            VideoArticulationRefinementConfig,
+            refine_video_articulation,
         )
 
-        return refine_video_geometry(
+        return refine_video_articulation(
             self._platform.artifacts,
             evidence,
-            config=GeometryRefinementConfig.model_validate(config or {}),
+            config=VideoArticulationRefinementConfig.model_validate(config or {}),
+            cached_result=cached_result,
         )
+
+    def rebuild_video_collision(
+        self,
+        refinement: ArtifactRef,
+        *,
+        max_parts: int = 8192,
+    ) -> tuple[ArtifactRef, ...]:
+        """Fit source-supported proxies within the certified articulation gap."""
+        from physrealx.integrations._collision_shell import rebuild_collision_shells
+
+        return rebuild_collision_shells(self._platform.artifacts, refinement, max_parts=max_parts)
+
+    def validate_video_articulation(
+        self,
+        refinement: ArtifactRef,
+        source_assembly: ArtifactRef,
+        collision_reports: tuple[ArtifactRef, ...],
+        *,
+        config: Mapping[str, JSONValue] | None = None,
+    ) -> ArtifactRef:
+        """Check rebuilt candidate proxies and dynamics, including failed diagnostics."""
+        from physrealx.integrations._articulation_validation import validate_articulation_candidate
+        from physrealx.integrations.physical_feasibility import FeasibilityConfig
+
+        return validate_articulation_candidate(
+            self._platform.artifacts,
+            refinement,
+            source_assembly,
+            list(collision_reports),
+            FeasibilityConfig.model_validate(config or {}),
+        )
+
+    def preview_video_articulation(
+        self,
+        refinement: ArtifactRef,
+        *,
+        frames: int = 24,
+    ) -> dict[str, ArtifactRef]:
+        """Show source/candidate motion, surface changes, held-out error and gap bounds."""
+        from physrealx.integrations._articulation_preview import preview_video_articulation
+
+        return preview_video_articulation(self._platform.artifacts, refinement, frames=frames)
 
     def check_physics_feasibility(
         self,
