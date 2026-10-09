@@ -53,6 +53,6 @@ python -m build
 python -m mkdocs build --strict
 ```
 
-文档站使用 MkDocs。运行 Demo 后用 `python docs/_hooks/demo_gallery.py --refresh` 更新展示快照及来源清单，再执行严格构建；构建无需本地原始数据或模型。
+文档站使用 MkDocs，`main` 分支上的文档变更由 [GitHub Actions](.github/workflows/docs.yml) 发布到 [GitHub Pages](https://bupt-yxp.github.io/PhysReal-X/)。运行 Demo 后用 `python docs/_hooks/demo_gallery.py --refresh` 更新展示快照及来源清单，再执行严格构建；构建无需本地原始数据或模型。
 
 自有代码为 MIT；内嵌算法遵守各自许可，见[第三方声明](THIRD_PARTY_NOTICES.md)。
