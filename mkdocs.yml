@@ -51,7 +51,8 @@ nav:
   - 首页: index.md
   - 入门:
       - 平台概览: getting-started/index.md
-      - 六模块可视化: getting-started/demos.md
+      - 六模块运行工作台: getting-started/live-workbench.md
+      - 历史示例快照: getting-started/demos.md
       - 安装与环境: getting-started/installation.md
       - Jupyter 入门与运行: getting-started/quickstart.md
       - 契约参考实验: getting-started/first-project.md

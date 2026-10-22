@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PhysReal-X · 六模块运行工作台</title>
+  <meta name="description" content="提交真实输入，在服务器执行 PhysReal-X 六模块并查看本次结果。">
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark">PX</span><span>PhysReal-X <small>运行工作台</small></span></div>
+    <div id="health" class="health">正在检查服务器…</div>
+  </header>
+  <main>
+    <section class="hero">
+      <div class="eyebrow">从输入到输出 · 真实计算</div>
+      <h1>让六个模块<br><em>在服务器实际运行</em></h1>
+      <p>填写参数或上传输入，提交后查看执行阶段、日志、本次生成的动画、报告和制品。下游模块会先运行其依赖的上游模块。</p>
+      <div class="hero-foot"><span>01—02 实拍资产链</span><span>03—06 场景 · 仿真 · 学习 · 反馈链</span></div>
+    </section>
+    <div class="layout">
+      <section class="workspace-panel">
+        <div class="panel-head"><div><span class="overline">NEW RUN</span><h2>选择模块与输入</h2></div><span id="panel-index" class="panel-index">01 / 06</span></div>
+        <nav id="modules" class="module-list" aria-label="模块选择"></nav>
+        <form id="run-form" class="run-form">
+          <div id="form-fields"></div>
+          <div class="form-actions"><button class="primary" type="submit">提交真实运行 <span>↗</span></button><p>任务将在此服务器排队执行；不会使用网站预存动画代替结果。</p></div>
+        </form>
+      </section>
+      <section class="results-panel">
+        <div class="panel-head"><div><span class="overline">LIVE OUTPUT</span><h2>本次执行结果</h2></div><span id="job-state" class="state-pill">待提交</span></div>
+        <div id="empty-state" class="empty-state"><div class="empty-symbol">↗</div><strong>选择模块并提交任务</strong><p>这里会显示运行进度和本次产物。</p></div>
+        <div id="job-detail" hidden></div>
+        <div class="history-head"><span class="overline">RECENT RUNS</span><button id="refresh" type="button">刷新任务</button></div>
+        <div id="history" class="history"></div>
+      </section>
+    </div>
+  </main>
+  <footer><span>PhysReal-X · 同一项目实现，同一结果契约</span><a href="https://bupt-yxp.github.io/PhysReal-X/" target="_blank" rel="noopener">文档与 Jupyter 入门 ↗</a></footer>
+  <div id="token-dialog" class="token-dialog" hidden><div class="token-card"><h2>输入工作台令牌</h2><p>此服务已启用访问令牌。令牌仅保存在当前浏览器会话中。</p><input id="token-input" type="password" autocomplete="off" placeholder="PHYSREALX_WEB_TOKEN"><button id="token-save" class="primary" type="button">连接服务器</button></div></div>
+  <script src="/app.js" defer></script>
+</body>
+</html>

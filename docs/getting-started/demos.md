@@ -1,11 +1,12 @@
 ---
-title: 六模块可视化
+title: 历史示例快照
 ---
 
-# 六模块可视化
+# 历史示例快照
 
-这里展示六个 Jupyter Demo 保存的动画和结果面板。点击图像可放大查看原尺寸；在右侧目录选择模块，或按顺序浏览。
+这里保留六个已执行 Jupyter Demo 的历史结果，供比较方法与预期输出。**要输入自己的数据并在服务器运行模块，请打开[六模块运行工作台](live-workbench.md)**；此页的动画不会响应新的输入。
 
+[在当前机器运行六模块](live-workbench.md){ .md-button .md-button--primary }
 [使用 Jupyter 运行 Demo](quickstart.md){ .md-button .md-button--primary }
 [查看六模块输入输出](../user-guide/index.md){ .md-button }
 

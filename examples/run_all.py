@@ -22,7 +22,12 @@ def _sha256(path: Path) -> str:
 def _implementation_sha256(root: Path) -> str:
     """Bind acceptance to the SDK and execution helpers, including uncommitted edits."""
     paths = set((root / "src/physrealx").rglob("*.py"))
-    paths.update((root / "examples").glob("*.py"))
+    # HTTP presentation and job transport do not change Notebook computation.
+    paths.update(
+        path
+        for path in (root / "examples").glob("*.py")
+        if path.name not in {"web_app.py", "web_worker.py"}
+    )
     paths.add(root / "pyproject.toml")
     digest = hashlib.sha256()
     for path in sorted(paths):

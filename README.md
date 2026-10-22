@@ -2,9 +2,20 @@
 
 从真实物体重建、物理资产与场景任务，到多模态仿真、机器人学习和评测反馈。Python SDK、Notebook 与网页共享项目实现。
 
-[六模块与可视化](https://bupt-yxp.github.io/PhysReal-X/) · [安装](docs/getting-started/installation.md) · [API](docs/api/index.md)
+[六模块运行工作台](docs/getting-started/live-workbench.md) · [在线文档](https://bupt-yxp.github.io/PhysReal-X/) · [安装](docs/getting-started/installation.md) · [API](docs/api/index.md)
 
 ## 运行 Demo
+
+在当前机器上启动[六模块网页工作台](docs/getting-started/live-workbench.md)：
+
+```bash
+conda activate PhysReal-X
+MUJOCO_GL=egl python -m examples.web_app --host 127.0.0.1 --port 8765
+```
+
+浏览器访问 `http://127.0.0.1:8765/`，可填写输入、提交服务器任务并查看本次结果。GitHub Pages 保留文档和历史快照，不承担 GPU 计算。
+
+也可按 Notebook 批量执行：
 
 ```bash
 conda activate PhysReal-X
